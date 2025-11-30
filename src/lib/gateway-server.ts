@@ -57,6 +57,7 @@ export class GatewayServer {
         tools: this.aggregatedTools.map((tool) => ({
           name: tool.name,
           description: tool.description,
+          // MCP protocol requires inputSchema; use generic object schema as fallback
           inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
         })),
       };

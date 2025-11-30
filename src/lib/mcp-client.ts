@@ -79,8 +79,10 @@ export async function connectToServer(
       return connectLocal(name, config);
     case "http-streamable":
       return connectHttpStreamable(name, config);
-    default:
-      throw new Error(`Unsupported transport type: ${(config as McpServerConfig).transport}`);
+    default: {
+      const exhaustiveCheck: never = config;
+      throw new Error(`Unsupported transport type: ${(exhaustiveCheck as McpServerConfig).transport}`);
+    }
   }
 }
 
