@@ -27,7 +27,9 @@ export async function createStdioClient(
     );
   }
 
-  // Build environment, filtering out undefined values
+  // Build environment, filtering out undefined values.
+  // User-provided env vars intentionally override process.env to allow
+  // customization of the subprocess environment for MCP servers.
   let env: Record<string, string> | undefined;
   if (config.env) {
     env = {};

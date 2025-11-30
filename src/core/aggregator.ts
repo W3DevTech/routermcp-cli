@@ -70,7 +70,9 @@ export async function aggregateTools(
         allTools.set(tool.name, { tool, source: name });
       }
     } catch {
-      // Skip servers that fail to list tools
+      // Graceful degradation: skip servers that fail to list tools.
+      // This allows the gateway to continue operating with other healthy upstreams.
+      // Common errors include network timeouts, server crashes, or capability mismatches.
     }
   }
 
@@ -120,7 +122,9 @@ export async function aggregateResources(
         allResources.set(resource.uri, { resource, source: name });
       }
     } catch {
-      // Skip servers that fail to list resources
+      // Graceful degradation: skip servers that fail to list resources.
+      // This allows the gateway to continue operating with other healthy upstreams.
+      // Common errors include network timeouts, server crashes, or capability mismatches.
     }
   }
 
@@ -164,7 +168,9 @@ export async function aggregatePrompts(
         allPrompts.set(prompt.name, { prompt, source: name });
       }
     } catch {
-      // Skip servers that fail to list prompts
+      // Graceful degradation: skip servers that fail to list prompts.
+      // This allows the gateway to continue operating with other healthy upstreams.
+      // Common errors include network timeouts, server crashes, or capability mismatches.
     }
   }
 

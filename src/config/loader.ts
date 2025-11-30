@@ -18,6 +18,11 @@ const CONFIG_FILE_NAMES = [
   ".routermcp.json",
 ];
 
+export interface LoadConfigResult {
+  config: RouterMcpConfig;
+  warnings: string[];
+}
+
 /**
  * Discovers and loads the RouterMCP configuration file
  *
@@ -35,7 +40,14 @@ export async function loadConfig(configPath?: string): Promise<RouterMcpConfig> 
 
   const content = readConfigFile(filePath);
   const parsed = parseJsoncContent(content, filePath);
-  const expanded = expandEnvVars(parsed);
+  const warnings: string[] = [];
+  const expanded = expandEnvVars(parsed, warnings);
+  
+  // Log any environment variable warnings
+  for (const warning of warnings) {
+    console.warn(`[config] ${warning}`);
+  }
+  
   const validated = validateConfig(expanded, filePath);
 
   return validated;
@@ -89,14 +101,21 @@ function parseJsoncContent(content: string, filePath: string): unknown {
 }
 
 /**
- * Recursively expands environment variables in strings using ${VAR} syntax
+ * Recursively expands environment variables in strings using ${VAR} syntax.
+ * Logs a warning when an environment variable is referenced but not defined.
+ * 
+ * @param obj Object to expand
+ * @param warnings Array to collect warning messages
+ * @returns Expanded object with environment variables substituted
  */
-function expandEnvVars(obj: unknown): unknown {
+function expandEnvVars(obj: unknown, warnings: string[] = []): unknown {
   if (typeof obj === "string") {
     return obj.replace(/\$\{([^}]+)\}/g, (match, varName) => {
       const value = process.env[varName];
       if (value === undefined) {
-        // Return empty string for undefined env vars
+        // Log warning for undefined env vars but continue with empty string
+        // This is intentional as the variable may be optional
+        warnings.push(`Environment variable '${varName}' is not defined, using empty string`);
         return "";
       }
       return value;
@@ -104,13 +123,13 @@ function expandEnvVars(obj: unknown): unknown {
   }
 
   if (Array.isArray(obj)) {
-    return obj.map(expandEnvVars);
+    return obj.map((item) => expandEnvVars(item, warnings));
   }
 
   if (obj !== null && typeof obj === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      result[key] = expandEnvVars(value);
+      result[key] = expandEnvVars(value, warnings);
     }
     return result;
   }
