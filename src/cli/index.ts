@@ -78,9 +78,9 @@ function parseArgs(args: string[]): {
         // Handle --tunnel=<provider> format
         if (arg.startsWith("--tunnel=")) {
           const provider = arg.slice("--tunnel=".length) as TunnelProvider;
-          if (!["cloudflare", "ngrok", "routermcp-cloud"].includes(provider)) {
+          if (!["standalone", "cloudflare", "ngrok", "routermcp-cloud"].includes(provider)) {
             console.error(`Unknown tunnel provider: ${provider}`);
-            console.error("Available providers: cloudflare, ngrok, routermcp-cloud");
+            console.error("Available providers: standalone, cloudflare, ngrok, routermcp-cloud");
             process.exit(1);
           }
           options.tunnel = provider;
@@ -120,16 +120,17 @@ SERVE OPTIONS:
 
 TUNNEL OPTIONS:
   -c, --config <path>          Path to config file (default: ./routermcp.jsonc)
-  --tunnel=<provider>          Tunnel provider: cloudflare (default), ngrok, routermcp-cloud
+  --tunnel=<provider>          Tunnel provider: standalone (default), cloudflare, ngrok, routermcp-cloud
   -p, --port <port>            HTTP server port (default: 5151, or httpServer.port in config)
   -v, --verbose                Enable verbose logging
 
 EXAMPLES:
   routermcp                           Start gateway with default config (stdio mode)
   routermcp --http 3000               Start gateway with HTTP transport on port 3000
-  routermcp tunnel                    Expose gateway via tunnel (interactive)
-  routermcp tunnel --tunnel=cloudflare   Use Cloudflare tunnel
-  routermcp tunnel --tunnel=ngrok        Use ngrok tunnel
+  routermcp tunnel                    Start HTTP server only (interactive)
+  routermcp tunnel --tunnel=standalone   Start HTTP server without tunnel
+  routermcp tunnel --tunnel=cloudflare   Expose via Cloudflare tunnel
+  routermcp tunnel --tunnel=ngrok        Expose via ngrok tunnel
   routermcp tunnel --port 8080           Use custom port
   routermcp config                    Run interactive configuration wizard
 `);

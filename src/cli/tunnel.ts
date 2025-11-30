@@ -49,12 +49,16 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
       verbose,
     });
 
-    let tunnelInfo: TunnelInfo | null = null;
-    let tunnelProviderInstance = getTunnelProvider(provider);
-
     // Setup signal handlers for graceful shutdown
+    let tunnelInfo: TunnelInfo | null = null;
+    let tunnelProviderInstance: ReturnType<typeof getTunnelProvider> | null = null;
+
+    if (provider !== "standalone") {
+      tunnelProviderInstance = getTunnelProvider(provider);
+    }
+
     setupSignalHandlers(gateway, async () => {
-      if (tunnelInfo) {
+      if (tunnelInfo && tunnelProviderInstance) {
         console.error("\nStopping tunnel...");
         await tunnelProviderInstance.stop();
       }
@@ -64,11 +68,47 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
     console.error("Starting MCP gateway...");
     await gateway.start();
 
+    // Handle standalone mode (HTTP only, no tunnel)
+    if (provider === "standalone") {
+      const url = `http://127.0.0.1:${port}/mcp`;
+
+      console.log();
+      p.log.success("Gateway running!");
+      console.log();
+      console.log("=".repeat(60));
+      console.log(`  MCP Gateway URL: ${url}`);
+      console.log("=".repeat(60));
+      console.log();
+      console.log("Add this to your MCP client configuration:");
+      console.log();
+      console.log(
+        JSON.stringify(
+          {
+            mcpServers: {
+              routermcp: {
+                transport: "http-streamable",
+                url,
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+      console.log();
+      console.error("Use --tunnel=cloudflare or --tunnel=ngrok to expose publicly.");
+      console.error("Press Ctrl+C to stop the server.");
+
+      // Keep process alive
+      await new Promise(() => {});
+      return;
+    }
+
     // Start the tunnel
-    console.error(`Starting ${tunnelProviderInstance.displayName} tunnel...`);
+    console.error(`Starting ${tunnelProviderInstance!.displayName} tunnel...`);
 
     try {
-      tunnelInfo = await tunnelProviderInstance.start(port);
+      tunnelInfo = await tunnelProviderInstance!.start(port);
 
       // Display success message
       console.log();
@@ -121,8 +161,13 @@ async function selectProvider(): Promise<TunnelProvider> {
   p.intro("RouterMCP Tunnel");
 
   const provider = await p.select({
-    message: "Select a tunnel provider:",
+    message: "Select a mode:",
     options: [
+      {
+        value: "standalone" as const,
+        label: "Standalone (HTTP only)",
+        hint: "Run local HTTP server without tunnel",
+      },
       {
         value: "cloudflare" as const,
         label: "Cloudflare Tunnel",

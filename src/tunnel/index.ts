@@ -5,7 +5,10 @@ import { RoutermcpCloudProvider } from "./routermcp-cloud.js";
 
 export * from "./providers.js";
 
-const providers: Record<TunnelProvider, () => TunnelProviderHandler> = {
+/** Actual tunnel providers (excluding standalone mode) */
+type ActualTunnelProvider = Exclude<TunnelProvider, "standalone">;
+
+const providers: Record<ActualTunnelProvider, () => TunnelProviderHandler> = {
   cloudflare: () => new CloudflareTunnelProvider(),
   ngrok: () => new NgrokTunnelProvider(),
   "routermcp-cloud": () => new RoutermcpCloudProvider(),
@@ -14,7 +17,7 @@ const providers: Record<TunnelProvider, () => TunnelProviderHandler> = {
 /**
  * Get a tunnel provider by name.
  */
-export function getTunnelProvider(name: TunnelProvider): TunnelProviderHandler {
+export function getTunnelProvider(name: ActualTunnelProvider): TunnelProviderHandler {
   const factory = providers[name];
   if (!factory) {
     throw new Error(`Unknown tunnel provider: ${name}`);
@@ -23,8 +26,8 @@ export function getTunnelProvider(name: TunnelProvider): TunnelProviderHandler {
 }
 
 /**
- * Get all available tunnel provider names.
+ * Get all available tunnel provider names (excluding standalone).
  */
-export function getAvailableProviders(): TunnelProvider[] {
-  return Object.keys(providers) as TunnelProvider[];
+export function getAvailableProviders(): ActualTunnelProvider[] {
+  return Object.keys(providers) as ActualTunnelProvider[];
 }
