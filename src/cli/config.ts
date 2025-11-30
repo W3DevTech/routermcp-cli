@@ -1,8 +1,11 @@
 import * as p from "@clack/prompts";
+import { parse as parseJsonc } from "jsonc-parser";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
 import { findConfigFile, loadConfig } from "../config/loader.js";
 import { createClientTransport } from "../transports/index.js";
+
+type MigrationClient = "cursor" | "claude-code";
 
 /**
  * Run the interactive config wizard.
@@ -41,9 +44,11 @@ export async function configCommand(): Promise<void> {
     const serverCount = Object.keys(config.mcpServers).length;
     const options = [
       { value: "add" as const, label: "Add a new server" },
+      { value: "migrate" as const, label: "Migrate MCP Client" },
       ...(serverCount > 0 ? [{ value: "edit" as const, label: "Edit an existing server" }] : []),
       ...(serverCount > 0 ? [{ value: "remove" as const, label: "Remove a server" }] : []),
       { value: "list" as const, label: "List all servers" },
+      { value: "validate-save" as const, label: "Validate, Save and exit" },
       { value: "save" as const, label: "Save and exit" },
       { value: "exit" as const, label: "Exit without saving" },
     ];
@@ -62,6 +67,9 @@ export async function configCommand(): Promise<void> {
       case "add":
         await addServer(config);
         break;
+      case "migrate":
+        await migrateFromClient(config);
+        break;
       case "edit":
         await editServer(config);
         break;
@@ -70,6 +78,11 @@ export async function configCommand(): Promise<void> {
         break;
       case "list":
         listServers(config);
+        break;
+      case "validate-save":
+        if (await validateAndSaveConfig(config)) {
+          done = true;
+        }
         break;
       case "save":
         await saveConfig(config);
@@ -469,5 +482,289 @@ async function saveConfig(config: RouterMcpConfig): Promise<void> {
     p.log.success(`Saved config to: ${path}`);
   } catch (err) {
     p.log.error(`Failed to save config: ${err}`);
+  }
+}
+
+/**
+ * Validate a single server by connecting to it.
+ */
+async function validateServer(
+  serverName: string,
+  serverConfig: ServerConfig
+): Promise<{ success: boolean; toolCount?: number; error?: string }> {
+  try {
+    const { client, cleanup } = await createClientTransport(serverName, serverConfig);
+    const result = await client.listTools();
+    const toolCount = result.tools?.length || 0;
+    await cleanup();
+    return { success: true, toolCount };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Validate all servers and save if successful.
+ * Returns true if save was completed, false otherwise.
+ */
+async function validateAndSaveConfig(config: RouterMcpConfig): Promise<boolean> {
+  const servers = Object.entries(config.mcpServers);
+
+  if (servers.length === 0) {
+    p.log.warn("No servers to validate");
+    await saveConfig(config);
+    return true;
+  }
+
+  p.log.info(`Validating ${servers.length} server(s)...`);
+
+  const results: Array<{
+    name: string;
+    success: boolean;
+    toolCount?: number;
+    error?: string;
+  }> = [];
+
+  // Validate each server
+  for (const [name, serverConfig] of servers) {
+    const spinner = p.spinner();
+    spinner.start(`Validating ${name}...`);
+
+    const result = await validateServer(name, serverConfig);
+    results.push({ name, ...result });
+
+    if (result.success) {
+      spinner.stop(`${name}: OK (${result.toolCount} tools)`);
+    } else {
+      spinner.stop(`${name}: FAILED`);
+    }
+  }
+
+  // Summary
+  const passed = results.filter((r) => r.success);
+  const failed = results.filter((r) => !r.success);
+
+  p.log.info(`\nValidation results: ${passed.length} passed, ${failed.length} failed`);
+
+  if (failed.length > 0) {
+    p.log.error("Failed servers:");
+    for (const f of failed) {
+      p.log.message(`  ${f.name}: ${f.error}`);
+    }
+
+    const saveAnyway = await p.confirm({
+      message: "Some servers failed validation. Save config anyway?",
+      initialValue: false,
+    });
+
+    if (p.isCancel(saveAnyway) || !saveAnyway) {
+      p.log.info("Config not saved");
+      return false;
+    }
+  }
+
+  await saveConfig(config);
+  return true;
+}
+
+/**
+ * Get the config file path for an MCP client.
+ */
+function getMcpClientConfigPath(client: MigrationClient): string {
+  const cwd = process.cwd();
+  switch (client) {
+    case "cursor":
+      return `${cwd}/.cursor/mcp.json`;
+    case "claude-code":
+      return `${cwd}/.mcp.json`;
+  }
+}
+
+/**
+ * Get a human-readable label for an MCP client.
+ */
+function getClientLabel(client: MigrationClient): string {
+  switch (client) {
+    case "cursor":
+      return "Cursor IDE";
+    case "claude-code":
+      return "Claude Code";
+  }
+}
+
+/**
+ * Read and parse a client's MCP config file.
+ */
+async function readClientConfig(path: string): Promise<RouterMcpConfig | null> {
+  try {
+    const file = Bun.file(path);
+    if (!(await file.exists())) {
+      return null;
+    }
+    const content = await file.text();
+    const parsed = parseJsonc(content);
+
+    // Validate structure
+    if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
+      return null;
+    }
+
+    return parsed as RouterMcpConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Merge servers from source config into target config.
+ * Handles name collisions by prompting user.
+ */
+async function mergeServerConfigs(
+  target: RouterMcpConfig,
+  source: RouterMcpConfig
+): Promise<number> {
+  let mergedCount = 0;
+
+  for (const [name, serverConfig] of Object.entries(source.mcpServers)) {
+    // Check for collision
+    if (target.mcpServers[name]) {
+      const action = await p.select({
+        message: `Server "${name}" already exists. What would you like to do?`,
+        options: [
+          { value: "skip", label: "Skip this server" },
+          { value: "rename", label: "Rename and add" },
+          { value: "replace", label: "Replace existing" },
+        ],
+      });
+
+      if (p.isCancel(action) || action === "skip") {
+        continue;
+      }
+
+      if (action === "rename") {
+        const newName = await p.text({
+          message: "Enter new name for this server:",
+          placeholder: `${name}-imported`,
+          validate: (value) => {
+            if (!value) return "Name is required";
+            if (target.mcpServers[value]) return "Server with this name already exists";
+            if (!/^[a-zA-Z0-9-_]+$/.test(value))
+              return "Name must be alphanumeric with hyphens/underscores";
+            return undefined;
+          },
+        });
+
+        if (p.isCancel(newName)) continue;
+
+        target.mcpServers[newName as string] = serverConfig;
+        mergedCount++;
+      } else {
+        // Replace
+        target.mcpServers[name] = serverConfig;
+        mergedCount++;
+      }
+    } else {
+      target.mcpServers[name] = serverConfig;
+      mergedCount++;
+    }
+  }
+
+  return mergedCount;
+}
+
+/**
+ * Replace a client's MCP config with routermcp proxy.
+ */
+async function replaceClientConfig(client: MigrationClient): Promise<void> {
+  const configPath = getMcpClientConfigPath(client);
+  const routermcpConfig = {
+    mcpServers: {
+      routermcp: {
+        command: "bunx",
+        args: ["-y", "routermcp"]
+      }
+    }
+  };
+
+  try {
+    await Bun.write(configPath, JSON.stringify(routermcpConfig, null, 2));
+    p.log.success(`Replaced ${getClientLabel(client)} config with routermcp proxy`);
+  } catch (err) {
+    p.log.error(`Failed to replace config: ${err}`);
+  }
+}
+
+/**
+ * Migrate servers from an MCP client config.
+ */
+async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
+  // 1. Select client
+  const client = await p.select({
+    message: "Select MCP client to migrate from:",
+    options: [
+      { value: "cursor" as const, label: "Cursor IDE (.cursor/mcp.json)" },
+      { value: "claude-code" as const, label: "Claude Code (.mcp.json)" },
+    ],
+  });
+
+  if (p.isCancel(client)) return;
+
+  const clientLabel = getClientLabel(client);
+  const configPath = getMcpClientConfigPath(client);
+
+  // 2. Read and parse config
+  const spinner = p.spinner();
+  spinner.start(`Reading ${clientLabel} config...`);
+
+  const clientConfig = await readClientConfig(configPath);
+
+  if (!clientConfig) {
+    spinner.stop(`Config not found or invalid`);
+    p.log.error(`Could not find or parse ${clientLabel} config at: ${configPath}`);
+    return;
+  }
+
+  const serverCount = Object.keys(clientConfig.mcpServers).length;
+  spinner.stop(`Found ${serverCount} servers in ${clientLabel} config`);
+
+  if (serverCount === 0) {
+    p.log.warn("No servers to migrate");
+    return;
+  }
+
+  // 3. List servers to migrate
+  p.log.info("Servers to migrate:");
+  for (const [name, server] of Object.entries(clientConfig.mcpServers)) {
+    const details = server.command
+      ? `command: ${server.command}`
+      : server.url
+        ? `url: ${server.url}`
+        : "unknown";
+    p.log.message(`  ${name} - ${details}`);
+  }
+
+  // 4. Confirm migration
+  const confirmMigrate = await p.confirm({
+    message: `Migrate ${serverCount} servers from ${clientLabel}?`,
+    initialValue: true,
+  });
+
+  if (p.isCancel(confirmMigrate) || !confirmMigrate) return;
+
+  // 5. Merge servers
+  const mergedCount = await mergeServerConfigs(config, clientConfig);
+  p.log.success(`Migrated ${mergedCount} servers`);
+
+  // 6. Ask about replacement
+  const shouldReplace = await p.confirm({
+    message: `Replace ${clientLabel}'s config with routermcp proxy?\nThis will replace all servers with a single routermcp entry.`,
+    initialValue: false,
+  });
+
+  if (p.isCancel(shouldReplace)) return;
+
+  if (shouldReplace) {
+    await replaceClientConfig(client);
   }
 }
