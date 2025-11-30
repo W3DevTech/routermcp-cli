@@ -1,0 +1,23 @@
+{
+  // RouterMCP configuration file
+  // This file defines the MCP servers that the gateway will connect to and aggregate.
+
+  "mcpServers": {
+    // Example: Local filesystem MCP server
+    // "filesystem": {
+    //   "transport": "local",
+    //   "command": "npx",
+    //   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"],
+    //   "allowedTools": ["read_file", "list_directory"],
+    //   "denyTools": ["write_file"],
+    //   "allowedToolsGlob": [],
+    //   "denyToolsGlob": []
+    // },
+
+    // Example: HTTP Streamable MCP server
+    // "remote-server": {
+    //   "transport": "http-streamable",
+    //   "url": "http://localhost:3000/mcp"
+    // }
+  }
+}
