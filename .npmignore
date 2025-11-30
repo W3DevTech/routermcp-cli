@@ -1,4 +1,5 @@
 src/
+src/*
 tsconfig.json
 bun.lock
 node_modules/
@@ -12,3 +13,7 @@ routermcp.jsonc.example
 .env
 .env.*
 dist/*.map
+.claude/*
+.cursor/*
+.github/
+*.tgz
