@@ -1,0 +1,38 @@
+{
+  // RouterMCP Configuration Example
+  // This file configures upstream MCP servers that will be aggregated by the gateway
+
+  "mcpServers": {
+    // Example: Filesystem MCP server via stdio
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"],
+
+      // Tool filtering - allow only specific tools
+      "allowedTools": ["read_file", "list_directory"],
+      "allowedToolsGlob": ["read_*"],
+
+      // Deny specific tools
+      "denyTools": ["delete_file"],
+      "denyToolsGlob": ["*_delete_*"]
+
+      // You can also filter resources and prompts the same way:
+      // "allowedResources": [...],
+      // "denyResourcesGlob": [...],
+      // "allowedPrompts": [...],
+      // "denyPromptsGlob": [...]
+    },
+
+    // Example: Remote MCP server via HTTP streamable
+    "github": {
+      "transport": "http-streamable",
+      "url": "http://localhost:3001/mcp",
+
+      // Headers support environment variable substitution
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_TOKEN}"
+      }
+    }
+  }
+}
