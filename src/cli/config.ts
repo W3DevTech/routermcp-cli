@@ -1,6 +1,8 @@
 import * as p from "@clack/prompts";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
 import { findConfigFile, loadConfig } from "../config/loader.js";
+import { createClientTransport } from "../transports/index.js";
 
 /**
  * Run the interactive config wizard.
@@ -80,6 +82,30 @@ export async function configCommand(): Promise<void> {
   }
 
   p.outro("Done!");
+}
+
+/**
+ * Fetch tools from a server by connecting to it temporarily.
+ */
+async function fetchServerTools(serverName: string, serverConfig: ServerConfig): Promise<Tool[]> {
+  const spinner = p.spinner();
+  spinner.start("Connecting to server...");
+
+  try {
+    const { client, cleanup } = await createClientTransport(serverName, serverConfig);
+
+    spinner.message("Fetching tools...");
+    const result = await client.listTools();
+    const tools = result.tools || [];
+
+    spinner.stop(`Found ${tools.length} tools`);
+
+    await cleanup();
+    return tools;
+  } catch (err) {
+    spinner.stop("Failed to connect");
+    throw err;
+  }
 }
 
 /**
@@ -166,7 +192,7 @@ async function addServer(config: RouterMcpConfig): Promise<void> {
   if (p.isCancel(configureFiltering)) return;
 
   if (configureFiltering) {
-    await configureServerFiltering(serverConfig);
+    await configureServerFiltering(name as string, serverConfig);
   }
 
   config.mcpServers[name as string] = serverConfig;
@@ -176,7 +202,7 @@ async function addServer(config: RouterMcpConfig): Promise<void> {
 /**
  * Configure filtering for a server.
  */
-async function configureServerFiltering(config: ServerConfig): Promise<void> {
+async function configureServerFiltering(serverName: string, config: ServerConfig): Promise<void> {
   // Tool filtering
   const toolFilterType = await p.select({
     message: "Tool filtering mode:",
@@ -190,34 +216,160 @@ async function configureServerFiltering(config: ServerConfig): Promise<void> {
   if (p.isCancel(toolFilterType)) return;
 
   if (toolFilterType === "allow") {
-    const tools = await p.text({
-      message: "Allowed tools (comma-separated, supports globs like 'read_*'):",
-      placeholder: "read_file, list_*, search_*",
-    });
-
-    if (!p.isCancel(tools) && tools) {
-      const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
-      const exact = patterns.filter((p) => !p.includes("*"));
-      const globs = patterns.filter((p) => p.includes("*"));
-
-      if (exact.length > 0) config.allowedTools = exact;
-      if (globs.length > 0) config.allowedToolsGlob = globs;
-    }
+    await configureAllowedTools(serverName, config);
   } else if (toolFilterType === "deny") {
-    const tools = await p.text({
-      message: "Denied tools (comma-separated, supports globs like 'delete_*'):",
-      placeholder: "delete_file, remove_*, *_dangerous",
+    await configureDeniedTools(serverName, config);
+  }
+}
+
+/**
+ * Configure allowed tools - either manually or by selecting from server.
+ */
+async function configureAllowedTools(serverName: string, config: ServerConfig): Promise<void> {
+  const inputMethod = await p.select({
+    message: "How would you like to specify allowed tools?",
+    options: [
+      { value: "select", label: "Select from server tools (connects to server)" },
+      { value: "manual", label: "Enter manually (supports glob patterns)" },
+    ],
+  });
+
+  if (p.isCancel(inputMethod)) return;
+
+  if (inputMethod === "select") {
+    // Connect to server and fetch tools
+    let tools: Tool[];
+    try {
+      tools = await fetchServerTools(serverName, config);
+    } catch (err) {
+      p.log.error(`Failed to fetch tools: ${err}`);
+      p.log.info("Falling back to manual entry...");
+      await manualAllowedToolsEntry(config);
+      return;
+    }
+
+    if (tools.length === 0) {
+      p.log.warn("Server has no tools. Skipping tool filtering.");
+      return;
+    }
+
+    // Show multi-select for tools
+    const selectedTools = await p.multiselect({
+      message: "Select tools to allow:",
+      options: tools.map((tool) => ({
+        value: tool.name,
+        label: tool.name,
+        hint: tool.description ? truncate(tool.description, 50) : undefined,
+      })),
+      required: false,
     });
 
-    if (!p.isCancel(tools) && tools) {
-      const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
-      const exact = patterns.filter((p) => !p.includes("*"));
-      const globs = patterns.filter((p) => p.includes("*"));
+    if (p.isCancel(selectedTools)) return;
 
-      if (exact.length > 0) config.denyTools = exact;
-      if (globs.length > 0) config.denyToolsGlob = globs;
+    if (selectedTools.length > 0) {
+      config.allowedTools = selectedTools as string[];
     }
+  } else {
+    await manualAllowedToolsEntry(config);
   }
+}
+
+/**
+ * Manual entry for allowed tools.
+ */
+async function manualAllowedToolsEntry(config: ServerConfig): Promise<void> {
+  const tools = await p.text({
+    message: "Allowed tools (comma-separated, supports globs like 'read_*'):",
+    placeholder: "read_file, list_*, search_*",
+  });
+
+  if (!p.isCancel(tools) && tools) {
+    const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
+    const exact = patterns.filter((pat) => !pat.includes("*"));
+    const globs = patterns.filter((pat) => pat.includes("*"));
+
+    if (exact.length > 0) config.allowedTools = exact;
+    if (globs.length > 0) config.allowedToolsGlob = globs;
+  }
+}
+
+/**
+ * Configure denied tools - either manually or by selecting from server.
+ */
+async function configureDeniedTools(serverName: string, config: ServerConfig): Promise<void> {
+  const inputMethod = await p.select({
+    message: "How would you like to specify denied tools?",
+    options: [
+      { value: "select", label: "Select from server tools (connects to server)" },
+      { value: "manual", label: "Enter manually (supports glob patterns)" },
+    ],
+  });
+
+  if (p.isCancel(inputMethod)) return;
+
+  if (inputMethod === "select") {
+    // Connect to server and fetch tools
+    let tools: Tool[];
+    try {
+      tools = await fetchServerTools(serverName, config);
+    } catch (err) {
+      p.log.error(`Failed to fetch tools: ${err}`);
+      p.log.info("Falling back to manual entry...");
+      await manualDeniedToolsEntry(config);
+      return;
+    }
+
+    if (tools.length === 0) {
+      p.log.warn("Server has no tools. Skipping tool filtering.");
+      return;
+    }
+
+    // Show multi-select for tools
+    const selectedTools = await p.multiselect({
+      message: "Select tools to deny:",
+      options: tools.map((tool) => ({
+        value: tool.name,
+        label: tool.name,
+        hint: tool.description ? truncate(tool.description, 50) : undefined,
+      })),
+      required: false,
+    });
+
+    if (p.isCancel(selectedTools)) return;
+
+    if (selectedTools.length > 0) {
+      config.denyTools = selectedTools as string[];
+    }
+  } else {
+    await manualDeniedToolsEntry(config);
+  }
+}
+
+/**
+ * Manual entry for denied tools.
+ */
+async function manualDeniedToolsEntry(config: ServerConfig): Promise<void> {
+  const tools = await p.text({
+    message: "Denied tools (comma-separated, supports globs like 'delete_*'):",
+    placeholder: "delete_file, remove_*, *_dangerous",
+  });
+
+  if (!p.isCancel(tools) && tools) {
+    const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
+    const exact = patterns.filter((pat) => !pat.includes("*"));
+    const globs = patterns.filter((pat) => pat.includes("*"));
+
+    if (exact.length > 0) config.denyTools = exact;
+    if (globs.length > 0) config.denyToolsGlob = globs;
+  }
+}
+
+/**
+ * Truncate a string to a maximum length.
+ */
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + "...";
 }
 
 /**
@@ -239,7 +391,7 @@ async function editServer(config: RouterMcpConfig): Promise<void> {
   const serverConfig = config.mcpServers[name as string];
 
   // Edit filtering
-  await configureServerFiltering(serverConfig);
+  await configureServerFiltering(name as string, serverConfig);
   p.log.success(`Updated server: ${name}`);
 }
 
