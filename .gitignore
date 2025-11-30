@@ -7,3 +7,4 @@ dist/
 .idea/
 .vscode/
 .history/
+.mcp.json

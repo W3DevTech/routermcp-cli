@@ -1,25 +1,8 @@
 {
   "mcpServers": {
     "context7": {
-      "transport": "http-streamable",
-      "enabled": true,
+      "type": "http",
       "url": "https://mcp.context7.com/mcp"
-    },
-    "xcodebuildmcp": {
-      "transport": "stdio",
-      "enabled": true,
-      "command": "bunx",
-      "args": [
-        "-y",
-        "xcodebuildmcp@latest"
-      ],
-      "allowedTools": [
-        "install_app_device",
-        "discover_projs",
-        "build_device",
-        "list_devices",
-        "scaffold_ios_project"
-      ]
     }
   }
 }

@@ -84,39 +84,54 @@ Create a `routermcp.jsonc` file in your project root:
 ```jsonc
 {
   "mcpServers": {
-    "server-name": {
-      // Transport type: "stdio" or "http-streamable"
-      "transport": "stdio",
-
-      // For stdio transport:
+    // Stdio transport (auto-detected from "command")
+    "local-server": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
       "env": { "KEY": "value" },
-      "cwd": "/working/directory",
+      "cwd": "/working/directory"
+    },
 
-      // For http-streamable transport:
-      // "transport": "http-streamable",
-      // "url": "http://localhost:3000/mcp",
-      // "headers": { "Authorization": "Bearer ${TOKEN}" },
+    // HTTP transport (auto-detected from "url")
+    "remote-server": {
+      "url": "http://localhost:3000/mcp",
+      "headers": { "Authorization": "Bearer ${TOKEN}" },
 
       // Tool filtering (optional)
       "allowedTools": ["tool1", "tool2"],      // Exact allow list
       "denyTools": ["tool3"],                   // Exact deny list
       "allowedToolsGlob": ["read_*", "list_*"], // Glob patterns to allow
-      "denyToolsGlob": ["delete_*", "*_admin"], // Glob patterns to deny
-
-      // Resource filtering (optional)
-      "allowedResources": ["file:///safe/*"],
-      "denyResourcesGlob": ["**/secret/**"],
-
-      // Prompt filtering (optional)
-      "allowedPrompts": ["safe_prompt"],
-      "denyPromptsGlob": ["admin_*"],
-
-      // Disable server without removing config
-      "enabled": false
+      "denyToolsGlob": ["delete_*", "*_admin"]  // Glob patterns to deny
     }
   }
+}
+```
+
+> **Note:** Transport type is auto-detected from config keys:
+> - `command` key → stdio transport
+> - `url` key → HTTP streamable transport
+>
+> You can also use explicit `"transport": "stdio"` or `"transport": "http-streamable"`.
+> For Claude Code compatibility, `"type"` and `"http"` are also accepted.
+
+### Filtering Options
+
+Each server supports optional filtering for tools, resources, and prompts:
+
+```jsonc
+{
+  "allowedTools": ["tool1", "tool2"],      // Exact allow list
+  "denyTools": ["tool3"],                   // Exact deny list
+  "allowedToolsGlob": ["read_*", "list_*"], // Glob patterns to allow
+  "denyToolsGlob": ["delete_*", "*_admin"], // Glob patterns to deny
+
+  "allowedResources": ["file:///safe/*"],
+  "denyResourcesGlob": ["**/secret/**"],
+
+  "allowedPrompts": ["safe_prompt"],
+  "denyPromptsGlob": ["admin_*"],
+
+  "enabled": false  // Disable server without removing config
 }
 ```
 

@@ -1,6 +1,8 @@
+import * as p from "@clack/prompts";
 import { loadConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
-import { RouterMcpError } from "../utils/errors.js";
+import { ConfigError, RouterMcpError } from "../utils/errors.js";
+import { configCommand } from "./config.js";
 
 /**
  * Options for the serve command.
@@ -54,6 +56,44 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       await new Promise(() => {}); // Never resolves
     }
   } catch (err) {
+    // Handle missing config file with interactive prompt
+    if (
+      err instanceof ConfigError &&
+      err.message.includes("No config file found")
+    ) {
+      console.error(`Error: ${err.message}`);
+
+      // Only offer interactive prompt if running in a TTY
+      if (process.stdin.isTTY) {
+        const shouldCreate = await p.confirm({
+          message: "Would you like to create a config file now?",
+        });
+
+        if (!p.isCancel(shouldCreate) && shouldCreate) {
+          await configCommand();
+
+          // Show MCP client configuration instructions
+          p.log.info("You can configure your MCP client as follows:");
+          console.log(`
+{
+  "mcpServers": {
+    "routermcp": {
+      "command": "bunx",
+      "args": [
+        "-y",
+        "routermcp"
+      ]
+    }
+  }
+}
+`);
+          return;
+        }
+      }
+
+      process.exit(1);
+    }
+
     if (err instanceof RouterMcpError) {
       console.error(`Error: ${err.message}`);
       process.exit(1);

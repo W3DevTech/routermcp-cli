@@ -44,7 +44,7 @@ export async function configCommand(): Promise<void> {
     const serverCount = Object.keys(config.mcpServers).length;
     const options = [
       { value: "add" as const, label: "Add a new server" },
-      { value: "migrate" as const, label: "Migrate MCP Client" },
+      { value: "migrate" as const, label: "Migrate existing MCP Config (Cursor/Claude Code)" },
       ...(serverCount > 0 ? [{ value: "edit" as const, label: "Edit an existing server" }] : []),
       ...(serverCount > 0 ? [{ value: "remove" as const, label: "Remove a server" }] : []),
       { value: "list" as const, label: "List all servers" },

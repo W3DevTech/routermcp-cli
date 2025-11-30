@@ -68,8 +68,11 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
     );
   }
 
+  // Normalize config for backwards compatibility
+  const normalized = normalizeConfig(parsed);
+
   // Expand environment variables in the config
-  const expanded = expandEnvVars(parsed);
+  const expanded = expandEnvVars(normalized);
 
   // Validate with Zod schema
   const result = RouterMcpConfigSchema.safeParse(expanded);
@@ -82,6 +85,51 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
   }
 
   return result.data as RouterMcpConfig;
+}
+
+/**
+ * Normalize config for backwards compatibility and auto-detection.
+ * - Maps "type" field to "transport" (Claude Code compatibility)
+ * - Maps "http" to "http-streamable"
+ * - Auto-detects transport from "command" or "url" keys
+ */
+function normalizeConfig(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== "object") return parsed;
+
+  const config = parsed as Record<string, unknown>;
+  const mcpServers = config.mcpServers;
+
+  if (!mcpServers || typeof mcpServers !== "object") return parsed;
+
+  for (const serverConfig of Object.values(
+    mcpServers as Record<string, unknown>
+  )) {
+    if (!serverConfig || typeof serverConfig !== "object") continue;
+
+    const server = serverConfig as Record<string, unknown>;
+
+    // Map "type" to "transport" (Claude Code uses "type")
+    if ("type" in server && !("transport" in server)) {
+      server.transport = server.type;
+      delete server.type;
+    }
+
+    // Map "http" to "http-streamable"
+    if (server.transport === "http") {
+      server.transport = "http-streamable";
+    }
+
+    // Auto-detect transport from keys if not specified
+    if (!("transport" in server)) {
+      if ("command" in server) {
+        server.transport = "stdio";
+      } else if ("url" in server) {
+        server.transport = "http-streamable";
+      }
+    }
+  }
+
+  return parsed;
 }
 
 /**

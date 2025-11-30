@@ -1,7 +1,7 @@
 {
   "name": "routermcp",
   "mcpName": "RouterMCP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Bun-based CLI MCP Gateway that aggregates multiple upstream MCP servers",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,6 +12,8 @@
     "build": "bun build src/index.ts --outdir dist --target node --minify",
     "prepublishOnly": "bun run build",
     "start": "bun run src/index.ts",
+    "pack": "npm pack",
+    "publish": "npm publish",
     "dev": "bun --watch run src/index.ts",
     "typecheck": "tsc --noEmit"
   },
