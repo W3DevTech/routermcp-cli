@@ -1,8 +1,20 @@
 /**
+ * HTTP server configuration for tunnel/serve commands.
+ */
+export interface HttpServerConfig {
+  /** Port for HTTP server (default: 5151) */
+  port?: number;
+  /** Host to bind to (default: "127.0.0.1") */
+  host?: string;
+}
+
+/**
  * Root configuration for RouterMCP.
  */
 export interface RouterMcpConfig {
   mcpServers: Record<string, ServerConfig>;
+  /** HTTP server configuration */
+  httpServer?: HttpServerConfig;
 }
 
 /**

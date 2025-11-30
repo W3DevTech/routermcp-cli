@@ -1,0 +1,174 @@
+import * as p from "@clack/prompts";
+import { loadConfigFromPath } from "../config/loader.js";
+import { createGateway, type Gateway } from "../core/gateway.js";
+import {
+  getTunnelProvider,
+  type TunnelProvider,
+  type TunnelInfo,
+} from "../tunnel/index.js";
+import { RouterMcpError } from "../utils/errors.js";
+
+/**
+ * Options for the tunnel command.
+ */
+export interface TunnelCommandOptions {
+  config?: string;
+  tunnel?: TunnelProvider;
+  port?: number;
+  verbose?: boolean;
+}
+
+const DEFAULT_PORT = 5151;
+
+/**
+ * Run the tunnel command.
+ */
+export async function tunnelCommand(options: TunnelCommandOptions): Promise<void> {
+  const verbose = options.verbose ?? false;
+
+  // If no tunnel provider specified, show interactive wizard
+  let provider: TunnelProvider = options.tunnel ?? (await selectProvider());
+
+  try {
+    // Load configuration
+    const { config, path } = await loadConfigFromPath(options.config);
+
+    if (verbose) {
+      console.error(`Loaded config from: ${path}`);
+    }
+
+    // Determine port: CLI option > config > default
+    const port = options.port ?? config.httpServer?.port ?? DEFAULT_PORT;
+
+    // Create gateway in HTTP mode
+    const gateway = createGateway({
+      config,
+      mode: "http-streamable",
+      httpPort: port,
+      httpHost: "127.0.0.1",
+      verbose,
+    });
+
+    let tunnelInfo: TunnelInfo | null = null;
+    let tunnelProviderInstance = getTunnelProvider(provider);
+
+    // Setup signal handlers for graceful shutdown
+    setupSignalHandlers(gateway, async () => {
+      if (tunnelInfo) {
+        console.error("\nStopping tunnel...");
+        await tunnelProviderInstance.stop();
+      }
+    });
+
+    // Start the gateway
+    console.error("Starting MCP gateway...");
+    await gateway.start();
+
+    // Start the tunnel
+    console.error(`Starting ${tunnelProviderInstance.displayName} tunnel...`);
+
+    try {
+      tunnelInfo = await tunnelProviderInstance.start(port);
+
+      // Display success message
+      console.log();
+      p.log.success("Tunnel established!");
+      console.log();
+      console.log("=".repeat(60));
+      console.log(`  MCP Gateway URL: ${tunnelInfo.url}/mcp`);
+      console.log("=".repeat(60));
+      console.log();
+      console.log("Add this to your MCP client configuration:");
+      console.log();
+      console.log(
+        JSON.stringify(
+          {
+            mcpServers: {
+              routermcp: {
+                transport: "http-streamable",
+                url: `${tunnelInfo.url}/mcp`,
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+      console.log();
+      console.error("Press Ctrl+C to stop the tunnel.");
+
+      // Keep process alive
+      await new Promise(() => {});
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\nFailed to start tunnel: ${message}`);
+      await gateway.stop();
+      process.exit(1);
+    }
+  } catch (err) {
+    if (err instanceof RouterMcpError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Interactive provider selection wizard.
+ */
+async function selectProvider(): Promise<TunnelProvider> {
+  p.intro("RouterMCP Tunnel");
+
+  const provider = await p.select({
+    message: "Select a tunnel provider:",
+    options: [
+      {
+        value: "cloudflare" as const,
+        label: "Cloudflare Tunnel",
+        hint: "Recommended - Free, no signup required",
+      },
+      {
+        value: "ngrok" as const,
+        label: "ngrok",
+        hint: "Requires free account",
+      },
+      {
+        value: "routermcp-cloud" as const,
+        label: "RouterMCP Cloud",
+        hint: "Coming soon!",
+      },
+    ],
+  });
+
+  if (p.isCancel(provider)) {
+    p.cancel("Tunnel setup cancelled");
+    process.exit(0);
+  }
+
+  return provider;
+}
+
+/**
+ * Setup signal handlers for graceful shutdown.
+ */
+function setupSignalHandlers(
+  gateway: Gateway,
+  additionalCleanup: () => Promise<void>
+): void {
+  const shutdown = async (signal: string) => {
+    console.error(`\nReceived ${signal}, shutting down...`);
+    try {
+      await additionalCleanup();
+      await gateway.stop();
+      console.error("Shutdown complete.");
+      process.exit(0);
+    } catch (err) {
+      console.error("Error during shutdown:", err);
+      process.exit(1);
+    }
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+}

@@ -52,6 +52,14 @@ export const ServerConfigSchema = z.discriminatedUnion("transport", [
 ]);
 
 /**
+ * Schema for HTTP server configuration.
+ */
+const HttpServerConfigSchema = z.object({
+  port: z.number().int().min(1).max(65535).optional(),
+  host: z.string().optional(),
+});
+
+/**
  * Root configuration schema.
  */
 export const RouterMcpConfigSchema = z.object({
@@ -59,6 +67,7 @@ export const RouterMcpConfigSchema = z.object({
     (servers) => Object.keys(servers).length > 0,
     { message: "At least one server must be configured" }
   ),
+  httpServer: HttpServerConfigSchema.optional(),
 });
 
 export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>;

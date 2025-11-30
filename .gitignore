@@ -1,1 +1,9 @@
 node_modules
+*.tgz
+dist/
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+.history/

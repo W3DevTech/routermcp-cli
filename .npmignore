@@ -1,0 +1,14 @@
+src/
+tsconfig.json
+bun.lock
+node_modules/
+*.test.ts
+*.test.js
+.git/
+.gitignore
+CLAUDE.md
+routermcp.jsonc
+routermcp.jsonc.example
+.env
+.env.*
+dist/*.map
