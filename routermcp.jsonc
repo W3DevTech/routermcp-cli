@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "context7": {
+      "transport": "http-streamable",
+      "url": "https://mcp.context7.com/mcp"
+    }
+  }
+}

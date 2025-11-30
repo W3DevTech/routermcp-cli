@@ -1,0 +1,45 @@
+{
+  // RouterMCP Configuration Example
+  // Copy this file to routermcp.jsonc and customize for your needs
+
+  "mcpServers": {
+    // Example: Local filesystem server
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"],
+      // Only allow read operations
+      "allowedToolsGlob": ["read_*", "list_*", "search_*"],
+      // Explicitly deny dangerous operations
+      "denyTools": ["write_file", "delete_file"]
+    },
+
+    // Example: Remote HTTP server
+    "remote-api": {
+      "transport": "http-streamable",
+      "url": "http://localhost:3001/mcp",
+      // Use environment variables for secrets
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}"
+      },
+      // Deny admin tools
+      "denyToolsGlob": ["admin_*", "*_delete", "*_destroy"]
+    },
+
+    // Example: Git server with minimal filtering
+    "git": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git"],
+      // Allow specific prompts only
+      "allowedPrompts": ["commit_message", "pr_description"]
+    },
+
+    // Example: Disabled server (won't be started)
+    "disabled-server": {
+      "transport": "stdio",
+      "command": "some-command",
+      "enabled": false
+    }
+  }
+}
