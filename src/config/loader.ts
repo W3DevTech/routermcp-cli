@@ -1,6 +1,7 @@
-import { parse as parseJsonc } from "jsonc-parser";
+import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { RouterMcpConfigSchema } from "./schema.js";
 import { ConfigError } from "../utils/errors.js";
+import { file } from "../compat/index.js";
 import type { RouterMcpConfig } from "./types.js";
 
 /**
@@ -15,8 +16,8 @@ const CONFIG_FILE_NAMES = ["routermcp.jsonc", "routermcp.json"];
 export async function findConfigFile(dir: string): Promise<string | null> {
   for (const name of CONFIG_FILE_NAMES) {
     const path = `${dir}/${name}`;
-    const file = Bun.file(path);
-    if (await file.exists()) {
+    const f = file(path);
+    if (await f.exists()) {
       return path;
     }
   }
@@ -27,15 +28,15 @@ export async function findConfigFile(dir: string): Promise<string | null> {
  * Load and validate configuration from a file path.
  */
 export async function loadConfig(path: string): Promise<RouterMcpConfig> {
-  const file = Bun.file(path);
+  const f = file(path);
 
-  if (!(await file.exists())) {
+  if (!(await f.exists())) {
     throw new ConfigError(`Config file not found: ${path}`);
   }
 
   let content: string;
   try {
-    content = await file.text();
+    content = await f.text();
   } catch (err) {
     throw new ConfigError(
       `Failed to read config file: ${path}`,

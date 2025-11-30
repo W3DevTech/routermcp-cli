@@ -1,4 +1,4 @@
-import type { Subprocess } from "bun";
+import type { CompatSubprocess } from "../compat/index.js";
 
 /**
  * Available tunnel provider types.
@@ -11,7 +11,7 @@ export type TunnelProvider = "cloudflare" | "ngrok" | "routermcp-cloud";
 export interface TunnelInfo {
   provider: TunnelProvider;
   url: string;
-  process?: Subprocess;
+  process?: CompatSubprocess;
 }
 
 /**

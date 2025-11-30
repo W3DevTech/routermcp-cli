@@ -1,5 +1,5 @@
-import type { Subprocess } from "bun";
 import type { TunnelInfo, TunnelProviderHandler } from "./providers.js";
+import { spawnProcess, type CompatSubprocess } from "../compat/index.js";
 
 /**
  * Cloudflare Tunnel provider using cloudflared.
@@ -7,11 +7,11 @@ import type { TunnelInfo, TunnelProviderHandler } from "./providers.js";
 export class CloudflareTunnelProvider implements TunnelProviderHandler {
   name = "cloudflare" as const;
   displayName = "Cloudflare Tunnel";
-  private process: Subprocess | null = null;
+  private process: CompatSubprocess | null = null;
 
   async start(port: number): Promise<TunnelInfo> {
     // Check if cloudflared is installed
-    const which = Bun.spawn(["which", "cloudflared"], {
+    const which = spawnProcess(["which", "cloudflared"], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -26,7 +26,7 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
     }
 
     // Start cloudflared tunnel
-    this.process = Bun.spawn(
+    this.process = spawnProcess(
       ["cloudflared", "tunnel", "--url", `http://localhost:${port}`],
       { stdout: "pipe", stderr: "pipe" }
     );
@@ -41,11 +41,10 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
     if (!this.process) throw new Error("Process not started");
 
     const stderr = this.process.stderr;
-    if (!stderr || typeof stderr === "number") {
+    if (!stderr) {
       throw new Error("Could not read cloudflared output");
     }
 
-    const reader = stderr.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     const urlRegex = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
@@ -54,15 +53,13 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
     const startTime = Date.now();
 
     try {
-      while (Date.now() - startTime < timeoutMs) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      for await (const chunk of stderr) {
+        if (Date.now() - startTime >= timeoutMs) break;
 
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(chunk, { stream: true });
         const match = buffer.match(urlRegex);
 
         if (match) {
-          reader.releaseLock();
           return match[0];
         }
       }
@@ -70,7 +67,6 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
       // Ignore read errors
     }
 
-    reader.releaseLock();
     throw new Error(
       "Could not parse tunnel URL from cloudflared output. Make sure cloudflared is working correctly."
     );

@@ -1,7 +1,7 @@
-import type { Subprocess } from "bun";
 import * as p from "@clack/prompts";
 import type { TunnelInfo, TunnelProviderHandler } from "./providers.js";
 import { getNgrokToken, setNgrokToken, getCredentialsPath } from "../utils/credentials.js";
+import { spawnProcess, type CompatSubprocess } from "../compat/index.js";
 
 /**
  * ngrok tunnel provider.
@@ -9,11 +9,11 @@ import { getNgrokToken, setNgrokToken, getCredentialsPath } from "../utils/crede
 export class NgrokTunnelProvider implements TunnelProviderHandler {
   name = "ngrok" as const;
   displayName = "ngrok";
-  private process: Subprocess | null = null;
+  private process: CompatSubprocess | null = null;
 
   async start(port: number): Promise<TunnelInfo> {
     // Check if ngrok is installed
-    const which = Bun.spawn(["which", "ngrok"], {
+    const which = spawnProcess(["which", "ngrok"], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -54,14 +54,14 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
     }
 
     // Configure ngrok auth
-    const authProc = Bun.spawn(["ngrok", "config", "add-authtoken", token], {
+    const authProc = spawnProcess(["ngrok", "config", "add-authtoken", token], {
       stdout: "pipe",
       stderr: "pipe",
     });
     await authProc.exited;
 
     // Start ngrok tunnel with JSON logging
-    this.process = Bun.spawn(
+    this.process = spawnProcess(
       ["ngrok", "http", String(port), "--log", "stdout", "--log-format", "json"],
       { stdout: "pipe", stderr: "pipe" }
     );
@@ -74,22 +74,20 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
     if (!this.process) throw new Error("Process not started");
 
     const stdout = this.process.stdout;
-    if (!stdout || typeof stdout === "number") {
+    if (!stdout) {
       throw new Error("Could not read ngrok output");
     }
 
-    const reader = stdout.getReader();
     const decoder = new TextDecoder();
 
     const timeoutMs = 30000; // 30 second timeout
     const startTime = Date.now();
 
     try {
-      while (Date.now() - startTime < timeoutMs) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      for await (const chunk of stdout) {
+        if (Date.now() - startTime >= timeoutMs) break;
 
-        const lines = decoder.decode(value, { stream: true }).split("\n");
+        const lines = decoder.decode(chunk, { stream: true }).split("\n");
 
         for (const line of lines) {
           if (!line.trim()) continue;
@@ -97,7 +95,6 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
             const data = JSON.parse(line);
             // ngrok logs the tunnel URL in a "url" field
             if (data.url?.startsWith("https://")) {
-              reader.releaseLock();
               return data.url;
             }
             // Also check for addr field in start_tunnel message
@@ -105,7 +102,6 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
               // Extract the public URL
               const url = data.url || `https://${data.addr}`;
               if (url.startsWith("https://")) {
-                reader.releaseLock();
                 return url;
               }
             }
@@ -118,7 +114,6 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
       // Ignore read errors
     }
 
-    reader.releaseLock();
     throw new Error(
       "Could not parse tunnel URL from ngrok output. Make sure your auth token is valid."
     );

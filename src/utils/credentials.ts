@@ -1,6 +1,7 @@
 import { homedir } from "os";
 import { join } from "path";
 import { mkdir } from "fs/promises";
+import { file, write } from "../compat/index.js";
 
 const ROUTERMCP_DIR = join(homedir(), ".routermcp");
 const CREDENTIALS_FILE = join(ROUTERMCP_DIR, "credentials.json");
@@ -32,12 +33,13 @@ export async function ensureCredentialsDir(): Promise<void> {
  * Load credentials from ~/.routermcp/credentials.json
  */
 export async function loadCredentials(): Promise<Credentials> {
-  const file = Bun.file(CREDENTIALS_FILE);
-  if (!(await file.exists())) {
+  const f = file(CREDENTIALS_FILE);
+  if (!(await f.exists())) {
     return {};
   }
   try {
-    return (await file.json()) as Credentials;
+    const text = await f.text();
+    return JSON.parse(text) as Credentials;
   } catch {
     return {};
   }
@@ -48,7 +50,7 @@ export async function loadCredentials(): Promise<Credentials> {
  */
 export async function saveCredentials(credentials: Credentials): Promise<void> {
   await ensureCredentialsDir();
-  await Bun.write(CREDENTIALS_FILE, JSON.stringify(credentials, null, 2));
+  await write(CREDENTIALS_FILE, JSON.stringify(credentials, null, 2));
 }
 
 /**

@@ -1,9 +1,10 @@
 import * as p from "@clack/prompts";
-import { parse as parseJsonc } from "jsonc-parser";
+import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
 import { findConfigFile, loadConfig } from "../config/loader.js";
 import { createClientTransport } from "../transports/index.js";
+import { file, write } from "../compat/index.js";
 
 type MigrationClient = "cursor" | "claude-code";
 
@@ -478,7 +479,7 @@ async function saveConfig(config: RouterMcpConfig): Promise<void> {
   const content = JSON.stringify(config, null, 2);
 
   try {
-    await Bun.write(path, content);
+    await write(path, content);
     p.log.success(`Saved config to: ${path}`);
   } catch (err) {
     p.log.error(`Failed to save config: ${err}`);
@@ -598,11 +599,11 @@ function getClientLabel(client: MigrationClient): string {
  */
 async function readClientConfig(path: string): Promise<RouterMcpConfig | null> {
   try {
-    const file = Bun.file(path);
-    if (!(await file.exists())) {
+    const f = file(path);
+    if (!(await f.exists())) {
       return null;
     }
-    const content = await file.text();
+    const content = await f.text();
     const parsed = parseJsonc(content);
 
     // Validate structure
@@ -688,7 +689,7 @@ async function replaceClientConfig(client: MigrationClient): Promise<void> {
   };
 
   try {
-    await Bun.write(configPath, JSON.stringify(routermcpConfig, null, 2));
+    await write(configPath, JSON.stringify(routermcpConfig, null, 2));
     p.log.success(`Replaced ${getClientLabel(client)} config with routermcp proxy`);
   } catch (err) {
     p.log.error(`Failed to replace config: ${err}`);

@@ -5,6 +5,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
 import { randomUUID } from "crypto";
+import { serve, type ServerHandle } from "../compat/index.js";
 
 /**
  * Create an HTTP streamable client transport for connecting to an upstream MCP server.
@@ -61,7 +62,7 @@ export async function createHttpClientTransport(
  */
 export interface HttpServerHandle {
   transport: Transport;
-  server: ReturnType<typeof Bun.serve> | null;
+  server: ServerHandle | null;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -151,14 +152,14 @@ class BunHttpServerTransport implements Transport {
 
 /**
  * Create an HTTP server transport for exposing the gateway.
- * Uses Bun.serve() with simple JSON-RPC over HTTP.
+ * Uses compat serve() with simple JSON-RPC over HTTP.
  */
 export function createHttpServerTransport(
   port: number,
   host: string = "127.0.0.1"
 ): HttpServerHandle {
   const transport = new BunHttpServerTransport();
-  let server: ReturnType<typeof Bun.serve> | null = null;
+  let server: ServerHandle | null = null;
 
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -172,9 +173,8 @@ export function createHttpServerTransport(
     server: null,
 
     start: async () => {
-      server = Bun.serve({
+      server = serve({
         port,
-        hostname: host,
         fetch: async (request: Request) => {
           const url = new URL(request.url);
 
