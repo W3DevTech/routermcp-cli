@@ -7,6 +7,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
 import { createServerTransport, type ServerTransportHandle } from "../transports/index.js";
 import { UpstreamManager, type ServerCapabilityCache } from "./upstream.js";
@@ -16,6 +17,11 @@ import {
   type CachedCapabilities,
   type VirtualSession,
 } from "./virtual-session.js";
+import {
+  getCodeModeMetaTools,
+  handleListTools,
+  handleExecuteCode,
+} from "./codemode/index.js";
 
 export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
 
@@ -54,8 +60,15 @@ export class Gateway {
     this.registerHandlers();
   }
 
+  private isCodeModeEnabled(): boolean {
+    return this.options.config.codeMode?.enabled === true;
+  }
+
   private registerHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      if (this.isCodeModeEnabled()) {
+        return { tools: getCodeModeMetaTools() };
+      }
       if (this.cachedCapabilities) {
         return {
           tools: Array.from(this.cachedCapabilities.tools.values()).map((t) => t.tool),
@@ -65,8 +78,13 @@ export class Gateway {
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-      const session = this.getSessionForRequest(extra);
       const { name, arguments: args } = request.params;
+
+      if (this.isCodeModeEnabled() && name.startsWith("routermcp.")) {
+        return this.handleMetaTool(name, args || {}, extra);
+      }
+
+      const session = this.getSessionForRequest(extra);
       return session.aggregator.callTool(name, args || {});
     });
 
@@ -183,6 +201,10 @@ export class Gateway {
 
       this.log(`Session manager initialized (timeout: ${sessionTimeout}s, max: ${maxSessions})`);
 
+      if (this.isCodeModeEnabled()) {
+        this.log("Code Mode enabled - exposing meta-tools instead of raw tools");
+      }
+
       this.serverTransport = createServerTransport(
         this.options.mode,
         this.options.httpPort,
@@ -260,6 +282,42 @@ export class Gateway {
   private log(message: string): void {
     if (this.options.verbose) {
       console.error(`[gateway] ${message}`);
+    }
+  }
+
+  private async handleMetaTool(
+    name: string,
+    args: Record<string, unknown>,
+    extra: unknown
+  ): Promise<CallToolResult> {
+    if (!this.cachedCapabilities) {
+      return {
+        content: [{ type: "text", text: "Gateway not initialized" }],
+        isError: true,
+      };
+    }
+
+    const codeMode = this.options.config.codeMode ?? { enabled: false };
+
+    switch (name) {
+      case "routermcp.listTools":
+        return handleListTools(args, this.cachedCapabilities.tools);
+
+      case "routermcp.executeCode": {
+        const session = this.getSessionForRequest(extra);
+        return handleExecuteCode(
+          args,
+          session.aggregator,
+          this.cachedCapabilities.tools,
+          codeMode
+        );
+      }
+
+      default:
+        return {
+          content: [{ type: "text", text: `Unknown meta-tool: ${name}` }],
+          isError: true,
+        };
     }
   }
 }

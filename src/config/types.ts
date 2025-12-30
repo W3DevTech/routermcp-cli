@@ -16,10 +16,25 @@ export interface SessionConfig {
   max_sessions?: number;
 }
 
+/**
+ * Code Mode configuration.
+ * When enabled, exposes meta-tools (listTools, executeCode) instead of raw tools.
+ */
+export interface CodeModeConfig {
+  /** Enable Code Mode (default: false) */
+  enabled?: boolean;
+  /** Execution timeout in milliseconds (default: 30000) */
+  timeout?: number;
+  /** Allow fetch() in sandbox (default: true) */
+  allowFetch?: boolean;
+}
+
 export interface RouterMcpConfig {
   mcpServers: Record<string, ServerConfig>;
   httpServer?: HttpServerConfig;
   session?: SessionConfig;
+  /** Code Mode configuration for LLM-generated code execution */
+  codeMode?: CodeModeConfig;
 
   subprocess_timeout?: number;
   discovery_concurrency?: number;

@@ -61,6 +61,12 @@ const SessionConfigSchema = z.object({
   max_sessions: z.number().int().min(1).max(1000).optional().default(25),
 });
 
+const CodeModeConfigSchema = z.object({
+  enabled: z.boolean().optional().default(false),
+  timeout: z.number().int().min(1000).max(120000).optional().default(30000),
+  allowFetch: z.boolean().optional().default(true),
+});
+
 export const RouterMcpConfigSchema = z.object({
   mcpServers: z.record(z.string().min(1), ServerConfigSchema).refine(
     (servers) => Object.keys(servers).length > 0,
@@ -68,6 +74,7 @@ export const RouterMcpConfigSchema = z.object({
   ),
   httpServer: HttpServerConfigSchema.optional(),
   session: SessionConfigSchema.optional(),
+  codeMode: CodeModeConfigSchema.optional(),
   subprocess_timeout: z.number().int().min(0).optional().default(180),
   discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
   connection_timeout: z.number().int().min(1).max(300).optional().default(30),

@@ -5,7 +5,7 @@
 
 ## OVERVIEW
 
-MCP Gateway CLI that aggregates multiple upstream MCP servers into single unified interface. Routes tool/resource/prompt calls to appropriate upstream with comprehensive filtering. Supports HTTP session multiplexing and daemon mode for process sharing across multiple MCP clients. Built with Bun runtime, TypeScript strict mode.
+MCP Gateway CLI that aggregates multiple upstream MCP servers into single unified interface. Routes tool/resource/prompt calls to appropriate upstream with comprehensive filtering. Supports HTTP session multiplexing, daemon mode for process sharing, and Code Mode for secure JavaScript execution with MCP tool access. Built with Bun runtime, TypeScript strict mode.
 
 ## STRUCTURE
 
@@ -14,6 +14,7 @@ packages/cli/
 ├── src/
 │   ├── cli/           # CLI commands (serve, connect, config, tunnel, proxy)
 │   ├── core/          # Gateway orchestration, upstream management, aggregation, sessions
+│   │   └── codemode/  # Code Mode: sandbox, codegen, meta-tools
 │   ├── daemon/        # Daemon lifecycle, project isolation, connection tracking
 │   ├── transports/    # stdio + HTTP streamable protocol implementations
 │   ├── tunnel/        # Cloudflare, ngrok, routermcp-cloud providers
@@ -40,6 +41,9 @@ packages/cli/
 | Session management | `src/core/virtual-session.ts` | VirtualSessionManager for HTTP multiplexing |
 | Daemon lifecycle | `src/daemon/lifecycle.ts` | Start/stop/health check daemon processes |
 | Daemon paths | `src/daemon/paths.ts` | File paths for daemon state (pid, port, socket) |
+| Code Mode sandbox | `src/core/codemode/sandbox.ts` | QuickJS WASM execution environment |
+| Code Mode codegen | `src/core/codemode/codegen.ts` | TypeScript definition generator |
+| Code Mode meta-tools | `src/core/codemode/meta-tools.ts` | listTools and executeCode handlers |
 
 ## CODE MAP
 
@@ -56,6 +60,10 @@ packages/cli/
 | `startDaemon` | Function | `daemon/lifecycle.ts` | Spawn background daemon process |
 | `getDaemonStatus` | Function | `daemon/lifecycle.ts` | Check if daemon is running |
 | `connectCommand` | Function | `cli/connect.ts` | Stdio-to-daemon proxy |
+| `executeCodeMode` | Function | `core/codemode/sandbox.ts` | Execute JS in QuickJS WASM sandbox |
+| `generateTypeScriptDefinitions` | Function | `core/codemode/codegen.ts` | Convert tool schemas to TS declarations |
+| `handleListTools` | Function | `core/codemode/meta-tools.ts` | Handler for routermcp.listTools |
+| `handleExecuteCode` | Function | `core/codemode/meta-tools.ts` | Handler for routermcp.executeCode |
 
 ### Module Flow
 
@@ -151,6 +159,8 @@ bun run start        # Run built CLI
 | `zod` | Config schema validation |
 | `micromatch` | Glob pattern matching for filters |
 | `jsonc-parser` | JSON with comments parsing |
+| `@sebastianwessel/quickjs` | QuickJS WASM sandbox for Code Mode |
+| `@jitl/quickjs-ng-wasmfile-release-sync` | QuickJS WASM variant |
 
 ## NOTES
 

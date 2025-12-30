@@ -87,6 +87,13 @@ RouterMCP uses a JSONC (JSON with Comments) configuration file named `routermcp.
     "max_sessions": 25   // Maximum concurrent sessions (default: 25)
   },
 
+  // Code Mode configuration (optional)
+  "codeMode": {
+    "enabled": true,       // Enable Code Mode (default: false)
+    "timeout": 30000,      // Execution timeout in ms (default: 30000)
+    "allowFetch": true     // Allow fetch() in sandbox (default: true)
+  },
+
   // MCP server configurations
   "mcpServers": {
     "server-name": {
@@ -548,6 +555,155 @@ Result: Tools starting with `read_` are allowed, except `read_sensitive_file` wh
 ```
 Result: All tools/resources/prompts from the server are exposed.
 
+## Code Mode
+
+Code Mode is an advanced feature that allows LLM clients to execute JavaScript code with access to all configured MCP tools. Instead of exposing raw tools directly, Code Mode exposes two meta-tools that enable programmatic tool orchestration.
+
+### Why Code Mode?
+
+- **Reduced Context Window**: Instead of exposing 100+ tools, expose just 2 meta-tools
+- **Complex Workflows**: LLMs can write code that chains multiple tool calls
+- **Conditional Logic**: LLMs can implement if/else logic, loops, and error handling
+- **Secure Execution**: Code runs in a WebAssembly sandbox (QuickJS) with no filesystem access
+
+### Configuration
+
+```jsonc
+{
+  "codeMode": {
+    "enabled": true,       // Enable Code Mode
+    "timeout": 30000,      // Max execution time in ms (default: 30000)
+    "allowFetch": true     // Allow fetch() API in sandbox (default: true)
+  },
+  "mcpServers": {
+    // Your MCP servers...
+  }
+}
+```
+
+### Meta-Tools
+
+When Code Mode is enabled, the gateway exposes these tools instead of raw upstream tools:
+
+#### `routermcp.listTools`
+
+Lists all available MCP tools with TypeScript type definitions. Use this to discover what tools are available before writing code.
+
+**Input:**
+- `filter` (optional): Filter tools by name or description
+
+**Output:** TypeScript declarations for all available tools
+
+**Example Response:**
+```typescript
+declare const github: {
+  /** Create a new issue */
+  create_issue: (args: { owner: string; repo: string; title: string; body?: string }) => Promise<any>;
+  /** List repository issues */
+  list_issues: (args: { owner: string; repo: string; state?: "open" | "closed" }) => Promise<any>;
+};
+
+declare const filesystem: {
+  /** Read file contents */
+  read_file: (args: { path: string }) => Promise<any>;
+};
+
+// Built-in functions:
+declare function fetch(url: string, init?: RequestInit): Promise<Response>;
+declare const console: { log: (...args: any[]) => void; error: (...args: any[]) => void };
+```
+
+#### `routermcp.executeCode`
+
+Executes JavaScript code in a secure sandbox with access to all MCP tools.
+
+**Input:**
+- `code` (required): JavaScript code to execute
+
+**Output:** Execution result including:
+- `success`: Whether execution completed without errors
+- `result`: Return value from the code
+- `logs`: Console output (console.log, etc.)
+- `errors`: Any errors that occurred
+- `toolCalls`: List of MCP tools that were called
+- `duration`: Execution time in milliseconds
+
+### Code Mode Examples
+
+**Example 1: Simple tool call**
+
+```javascript
+// Call listTools first to see available tools
+const issues = await github.list_issues({ owner: "microsoft", repo: "vscode", state: "open" });
+console.log(`Found ${issues.length} open issues`);
+return issues.slice(0, 5);  // Return first 5
+```
+
+**Example 2: Chaining multiple tools**
+
+```javascript
+// Read a file and create a GitHub issue with its contents
+const content = await filesystem.read_file({ path: "/path/to/bug-report.md" });
+const issue = await github.create_issue({
+  owner: "myorg",
+  repo: "myproject", 
+  title: "Bug Report",
+  body: content
+});
+return { issueUrl: issue.html_url };
+```
+
+**Example 3: Conditional logic**
+
+```javascript
+const issues = await github.list_issues({ owner: "org", repo: "repo", state: "open" });
+
+const criticalIssues = issues.filter(i => i.labels.some(l => l.name === "critical"));
+
+if (criticalIssues.length > 0) {
+  console.log(`Found ${criticalIssues.length} critical issues!`);
+  return { status: "alert", issues: criticalIssues };
+} else {
+  return { status: "ok", message: "No critical issues" };
+}
+```
+
+**Example 4: Using fetch (when allowFetch is enabled)**
+
+```javascript
+// Fetch external data and combine with MCP tools
+const response = await fetch("https://api.github.com/rate_limit");
+const rateLimit = await response.json();
+
+const issues = await github.list_issues({ owner: "org", repo: "repo" });
+
+return {
+  rateLimit: rateLimit.rate.remaining,
+  issueCount: issues.length
+};
+```
+
+### Security
+
+Code Mode uses QuickJS compiled to WebAssembly for secure sandboxed execution:
+
+- **No filesystem access**: Code cannot read or write files directly (only via MCP tools)
+- **No process access**: Cannot spawn processes or access environment variables
+- **Timeout enforcement**: Execution is terminated if it exceeds the configured timeout
+- **Network isolation**: `fetch()` can be disabled via `allowFetch: false`
+- **Memory limits**: WebAssembly sandbox has built-in memory constraints
+
+### Code Mode vs Direct Tools
+
+| Aspect | Direct Tools | Code Mode |
+|--------|-------------|-----------|
+| Tools exposed | All configured tools | 2 meta-tools |
+| Context window | Large (many tool definitions) | Small (2 tool definitions) |
+| Workflow complexity | Single tool calls | Multi-step workflows |
+| Error handling | Client-side | In-code try/catch |
+| Conditional logic | Not possible | Full JavaScript |
+| Best for | Simple operations | Complex orchestration |
+
 ## Tunnel Configuration
 
 The tunnel command exposes your local MCP gateway via a public URL, useful for remote access or testing.
@@ -688,6 +844,7 @@ If an upstream server fails to connect:
 ## Features
 
 - **MCP Gateway**: Expose one MCP server that proxies multiple upstream servers
+- **Code Mode**: Execute JavaScript code in a secure WebAssembly sandbox with access to all MCP tools
 - **Session Multiplexing**: Multiple HTTP clients can safely share a single gateway with isolated sessions
 - **Daemon Mode**: Background gateway process with automatic startup, idle shutdown, and process sharing
 - **Stdio-to-HTTP Proxy**: Convert any stdio MCP server to HTTP (SSE or Streamable HTTP)
