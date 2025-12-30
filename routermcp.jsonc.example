@@ -2,6 +2,27 @@
   // RouterMCP Configuration Example
   // Copy this file to routermcp.jsonc and customize for your needs
 
+  // ============================================
+  // Lazy Loading Configuration (Global Settings)
+  // ============================================
+
+  // Subprocess/connection idle timeout in seconds (default: 180)
+  // After this time of inactivity, the subprocess is terminated.
+  // Set to 0 to keep subprocesses running indefinitely.
+  "subprocess_timeout": 180,
+
+  // Maximum parallel connections during startup discovery (default: 5)
+  // Lower values reduce system load, higher values speed up startup.
+  "discovery_concurrency": 5,
+
+  // Connection timeout in seconds when spawning on-demand (default: 30)
+  // If a subprocess doesn't respond within this time, the call fails.
+  "connection_timeout": 30,
+
+  // ============================================
+  // MCP Server Configurations
+  // ============================================
+
   "mcpServers": {
     // Example: Local filesystem server
     "filesystem": {

@@ -12,19 +12,8 @@ import { createServerTransport, type ServerTransportHandle } from "../transports
 import { UpstreamManager } from "./upstream.js";
 import { Aggregator } from "./aggregator.js";
 
-/**
- * Gateway state.
- */
-export type GatewayState =
-  | "stopped"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "error";
+export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
 
-/**
- * Options for creating a gateway.
- */
 export interface GatewayOptions {
   config: RouterMcpConfig;
   mode: "stdio" | "http-streamable";
@@ -33,9 +22,6 @@ export interface GatewayOptions {
   verbose?: boolean;
 }
 
-/**
- * MCP Gateway that aggregates multiple upstream servers.
- */
 export class Gateway {
   private state: GatewayState = "stopped";
   private server: Server;
@@ -47,70 +33,46 @@ export class Gateway {
   constructor(options: GatewayOptions) {
     this.options = options;
 
-    // Initialize MCP server
     this.server = new Server(
-      {
-        name: "routermcp-gateway",
-        version: "1.0.0",
-      },
-      {
-        capabilities: {
-          tools: {},
-          resources: {},
-          prompts: {},
-        },
-      }
+      { name: "routermcp-gateway", version: "1.0.0" },
+      { capabilities: { tools: {}, resources: {}, prompts: {} } }
     );
 
-    // Initialize upstream manager and aggregator
     this.upstreamManager = new UpstreamManager(options.config, options.verbose);
     this.aggregator = new Aggregator(this.upstreamManager);
 
-    // Register MCP handlers
     this.registerHandlers();
   }
 
-  /**
-   * Register MCP protocol handlers.
-   */
   private registerHandlers(): void {
-    // List tools handler
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return { tools: this.aggregator.getTools() };
     });
 
-    // Call tool handler
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       return this.aggregator.callTool(name, args || {});
     });
 
-    // List resources handler
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       return { resources: this.aggregator.getResources() };
     });
 
-    // Read resource handler
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const { uri } = request.params;
       return this.aggregator.readResource(uri);
     });
 
-    // List prompts handler
     this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
       return { prompts: this.aggregator.getPrompts() };
     });
 
-    // Get prompt handler
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       return this.aggregator.getPrompt(name, args);
     });
   }
 
-  /**
-   * Start the gateway.
-   */
   async start(): Promise<void> {
     if (this.state !== "stopped") {
       throw new Error(`Cannot start gateway in state: ${this.state}`);
@@ -120,10 +82,10 @@ export class Gateway {
     this.log("Starting gateway...");
 
     try {
-      // Connect to upstream servers
-      await this.upstreamManager.connectAll();
+      const concurrency = this.options.config.discovery_concurrency ?? 5;
+      this.log(`Discovering upstream capabilities (concurrency: ${concurrency})...`);
+      await this.upstreamManager.discoverAll(concurrency);
 
-      // Aggregate capabilities (applies filtering, checks collisions)
       this.aggregator.refresh();
 
       const stats = this.aggregator.getStats();
@@ -131,7 +93,12 @@ export class Gateway {
         `Aggregated: ${stats.tools} tools, ${stats.resources} resources, ${stats.prompts} prompts`
       );
 
-      // Create and start server transport
+      const subprocessTimeout = this.options.config.subprocess_timeout ?? 180;
+      const connectionTimeout = this.options.config.connection_timeout ?? 30;
+      this.log(
+        `Lazy loading: subprocess_timeout=${subprocessTimeout}s, connection_timeout=${connectionTimeout}s`
+      );
+
       this.serverTransport = createServerTransport(
         this.options.mode,
         this.options.httpPort,
@@ -142,10 +109,10 @@ export class Gateway {
       await this.serverTransport.start();
 
       this.state = "running";
-      this.log("Gateway is running");
+      this.log("Gateway running (lazy loading enabled, no active upstream connections)");
 
       if (this.options.mode === "stdio") {
-        console.error("MCP Gateway ready (stdio mode)");
+        console.error("MCP Gateway ready (stdio mode, lazy loading enabled)");
       }
     } catch (err) {
       this.state = "error";
@@ -153,9 +120,6 @@ export class Gateway {
     }
   }
 
-  /**
-   * Stop the gateway.
-   */
   async stop(): Promise<void> {
     if (this.state !== "running") {
       return;
@@ -164,36 +128,25 @@ export class Gateway {
     this.state = "stopping";
     this.log("Stopping gateway...");
 
-    // Stop server transport
     if (this.serverTransport) {
       await this.serverTransport.stop();
       this.serverTransport = null;
     }
 
-    // Disconnect from upstreams
     await this.upstreamManager.disconnectAll();
 
     this.state = "stopped";
     this.log("Gateway stopped");
   }
 
-  /**
-   * Get current gateway state.
-   */
   getState(): GatewayState {
     return this.state;
   }
 
-  /**
-   * Get upstream manager for status checks.
-   */
   getUpstreamManager(): UpstreamManager {
     return this.upstreamManager;
   }
 
-  /**
-   * Get aggregator for capability info.
-   */
   getAggregator(): Aggregator {
     return this.aggregator;
   }
@@ -205,9 +158,6 @@ export class Gateway {
   }
 }
 
-/**
- * Create and return a new gateway instance.
- */
 export function createGateway(options: GatewayOptions): Gateway {
   return new Gateway(options);
 }

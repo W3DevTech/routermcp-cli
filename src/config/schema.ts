@@ -68,6 +68,9 @@ export const RouterMcpConfigSchema = z.object({
     { message: "At least one server must be configured" }
   ),
   httpServer: HttpServerConfigSchema.optional(),
+  subprocess_timeout: z.number().int().min(0).optional().default(180),
+  discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
+  connection_timeout: z.number().int().min(1).max(300).optional().default(30),
 });
 
 export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>;
