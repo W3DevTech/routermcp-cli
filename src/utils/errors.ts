@@ -68,3 +68,37 @@ export class TransportError extends RouterMcpError {
     this.name = "TransportError";
   }
 }
+
+/**
+ * Proxy child process error - thrown when child process fails to start or crashes repeatedly.
+ */
+export class ProxyChildProcessError extends RouterMcpError {
+  constructor(
+    public readonly command: string,
+    public readonly restartCount: number,
+    message: string,
+    cause?: Error
+  ) {
+    super(
+      `Child process failed after ${restartCount} restart(s): ${message}`,
+      "PROXY_CHILD_PROCESS_ERROR",
+      cause
+    );
+    this.name = "ProxyChildProcessError";
+  }
+}
+
+/**
+ * Proxy session error - thrown for session-related issues.
+ */
+export class ProxySessionError extends RouterMcpError {
+  constructor(
+    public readonly sessionId: string | undefined,
+    message: string,
+    cause?: Error
+  ) {
+    const sessionInfo = sessionId ? `[session: ${sessionId}]` : "[no session]";
+    super(`${sessionInfo} ${message}`, "PROXY_SESSION_ERROR", cause);
+    this.name = "ProxySessionError";
+  }
+}

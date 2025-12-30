@@ -240,6 +240,53 @@ routermcp -c /path/to/config.jsonc  # Use custom config file
 routermcp -v                 # Verbose logging
 ```
 
+### Proxy
+
+Proxy a stdio-based MCP server over HTTP (SSE or Streamable HTTP). This is useful when you have a single MCP server that communicates via stdio and you want to expose it over HTTP without using the full gateway configuration.
+
+```bash
+# Basic SSE proxy (default)
+routermcp proxy --stdio "npx -y @modelcontextprotocol/server-filesystem ."
+
+# Streamable HTTP proxy (stateless - one process per request)
+routermcp proxy --stdio "node server.js" --outputTransport streamableHttp
+
+# Streamable HTTP proxy (stateful - persistent sessions)
+routermcp proxy --stdio "python mcp_server.py" --outputTransport streamableHttp --stateful
+
+# With custom port and base path
+routermcp proxy --stdio "npx mcp-server" --port 3000 --basePath /api/v1
+
+# With session timeout (stateful mode)
+routermcp proxy --stdio "node server.js" --outputTransport streamableHttp --stateful --sessionTimeout 120000
+```
+
+**Proxy Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--stdio <command>` | (required) | Command to spawn the MCP server |
+| `--outputTransport` | `sse` | Output transport: `sse` or `streamableHttp` |
+| `-p, --port` | `8000` | HTTP server port |
+| `--basePath` | `""` | Base path prefix for all endpoints |
+| `--ssePath` | `/sse` | SSE endpoint path |
+| `--messagePath` | `/message` | Message endpoint path (SSE mode) |
+| `--streamableHttpPath` | `/mcp` | Streamable HTTP endpoint path |
+| `--stateful` | `false` | Enable stateful sessions (streamableHttp only) |
+| `--sessionTimeout` | `60000` | Session timeout in milliseconds |
+| `--healthEndpoint` | `/health` | Health check endpoint path |
+| `--cors` / `--no-cors` | `true` | Enable/disable CORS |
+| `--maxRestarts` | `3` | Max child process restart attempts |
+| `-v, --verbose` | `false` | Enable verbose logging |
+
+**Transport Modes:**
+
+- **SSE (Server-Sent Events)**: Legacy but widely supported. Single child process shared across all connections. Endpoints: `GET /sse` (connect), `POST /message` (send).
+
+- **Streamable HTTP (Stateless)**: Each request spawns a new child process. Best for simple, short-lived operations. Endpoint: `POST /mcp`.
+
+- **Streamable HTTP (Stateful)**: Sessions persist with dedicated child process per session. Supports server-initiated notifications. Endpoints: `POST /mcp` (send), `GET /mcp` (SSE notifications), `DELETE /mcp` (terminate session).
+
 ### Config Wizard
 
 Interactive configuration wizard:
@@ -547,24 +594,56 @@ If an upstream server fails to connect:
 
 ## CLI Options Reference
 
+### Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-v, --verbose` | Enable verbose logging |
+| `-h, --help` | Show help message |
+
+### Serve Options
+
 | Option | Description |
 |--------|-------------|
 | `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
 | `--stdio` | Use stdio transport (default) |
 | `--http <port>` | Use HTTP streamable transport on specified port |
-| `-v, --verbose` | Enable verbose logging |
-| `-h, --help` | Show help message |
-| `-p, --port <port>` | HTTP server port (for tunnel command, default: 5151 or httpServer.port) |
+
+### Proxy Options
+
+| Option | Description |
+|--------|-------------|
+| `--stdio <command>` | Command to spawn MCP server (required) |
+| `--outputTransport <type>` | Output transport: `sse` (default), `streamableHttp` |
+| `-p, --port <port>` | HTTP server port (default: 8000) |
+| `--basePath <path>` | Base path prefix for all endpoints |
+| `--ssePath <path>` | SSE endpoint path (default: `/sse`) |
+| `--messagePath <path>` | Message endpoint path for SSE (default: `/message`) |
+| `--streamableHttpPath <path>` | Streamable HTTP endpoint (default: `/mcp`) |
+| `--stateful` | Enable stateful sessions (streamableHttp only) |
+| `--sessionTimeout <ms>` | Session timeout in milliseconds (default: 60000) |
+| `--healthEndpoint <path>` | Health check endpoint (default: `/health`) |
+| `--cors` / `--no-cors` | Enable/disable CORS (default: enabled) |
+| `--maxRestarts <n>` | Max child process restart attempts (default: 3) |
+
+### Tunnel Options
+
+| Option | Description |
+|--------|-------------|
+| `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
+| `-p, --port <port>` | HTTP server port (default: 5151 or httpServer.port) |
 | `--tunnel=<provider>` | Tunnel provider: `cloudflare`, `ngrok`, or `routermcp-cloud` |
 
 ## Features
 
 - **MCP Gateway**: Expose one MCP server that proxies multiple upstream servers
+- **Stdio-to-HTTP Proxy**: Convert any stdio MCP server to HTTP (SSE or Streamable HTTP)
 - **Tool Filtering**: Allow/deny tools per server using exact names or glob patterns
 - **Resource Filtering**: Same filtering capabilities for resources
 - **Prompt Filtering**: Same filtering capabilities for prompts
 - **Multiple Transports**: Support stdio and HTTP streamable for both upstream and gateway
 - **Graceful Degradation**: Continue operating if some upstream servers fail
+- **Auto-Restart**: Automatic child process restart on failure (configurable attempts)
 - **Interactive Config**: CLI wizard for creating configuration files
 - **Tunnel Support**: Expose gateway via Cloudflare Tunnel or ngrok
 - **Environment Variables**: Use `${VAR}` syntax for configuration values
