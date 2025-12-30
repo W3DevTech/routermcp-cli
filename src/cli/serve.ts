@@ -14,6 +14,7 @@ export interface ServeCommandOptions {
   verbose?: boolean;
   daemonMode?: boolean;
   socket?: string;
+  clearCache?: boolean;
 }
 
 const DEFAULT_DAEMON_PORT = 5151;
@@ -23,6 +24,7 @@ const DAEMON_IDLE_CHECK_INTERVAL = 2000;
 export async function serveCommand(options: ServeCommandOptions): Promise<void> {
   const verbose = options.verbose ?? false;
   const isDaemon = options.daemonMode ?? false;
+  const clearCache = options.clearCache ?? false;
 
   let mode: "stdio" | "http-streamable" = options.http ? "http-streamable" : "stdio";
   let httpPort = options.http;
@@ -61,6 +63,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       mode,
       httpPort,
       verbose,
+      clearOpenApiCache: clearCache,
     });
 
     setupSignalHandlers(gateway, daemonPaths);

@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "routermcp"
+  ],
+  "enableAllProjectMcpServers": true
+}

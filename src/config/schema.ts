@@ -73,18 +73,62 @@ const CodeModeConfigSchema = z.object({
   allowFetch: z.boolean().optional().default(true),
 });
 
-export const RouterMcpConfigSchema = z.object({
-  mcpServers: z.record(z.string().min(1), ServerConfigSchema).refine(
-    (servers) => Object.keys(servers).length > 0,
-    { message: "At least one server must be configured" }
-  ),
-  httpServer: HttpServerConfigSchema.optional(),
-  session: SessionConfigSchema.optional(),
-  codeMode: CodeModeConfigSchema.optional(),
-  subprocess_timeout: z.number().int().min(0).optional().default(180),
-  discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
-  connection_timeout: z.number().int().min(1).max(300).optional().default(30),
+const OpenApiAuthSchema = z
+  .object({
+    type: z.enum(["bearer", "api-key", "basic"]),
+    token: z.string().optional(),
+    header: z.string().optional(),
+    value: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+  })
+  .refine(
+    (auth) => {
+      if (auth.type === "bearer") return !!auth.token;
+      if (auth.type === "api-key") return !!auth.header && !!auth.value;
+      if (auth.type === "basic") return !!auth.username && !!auth.password;
+      return true;
+    },
+    { message: "Missing required auth fields for the specified auth type" }
+  );
+
+const OpenApiToolFilterSchema = z.object({
+  allowedTools: z.array(z.string()).optional(),
+  denyTools: z.array(z.string()).optional(),
+  allowedToolsGlob: z.array(z.string()).optional(),
+  denyToolsGlob: z.array(z.string()).optional(),
 });
 
+const OpenApiServerConfigSchema = z
+  .object({
+    spec: z.union([z.string().min(1), z.record(z.unknown())]),
+    baseUrl: z.string().optional(),
+    auth: OpenApiAuthSchema.optional(),
+    enabled: z.boolean().optional().default(true),
+  })
+  .merge(OpenApiToolFilterSchema);
+
+export const RouterMcpConfigSchema = z
+  .object({
+    mcpServers: z.record(z.string().min(1), ServerConfigSchema).optional(),
+    openApiServers: z.record(z.string().min(1), OpenApiServerConfigSchema).optional(),
+    httpServer: HttpServerConfigSchema.optional(),
+    session: SessionConfigSchema.optional(),
+    codeMode: CodeModeConfigSchema.optional(),
+    subprocess_timeout: z.number().int().min(0).optional().default(180),
+    discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
+    connection_timeout: z.number().int().min(1).max(300).optional().default(30),
+  })
+  .refine(
+    (config) => {
+      const hasMcpServers = config.mcpServers && Object.keys(config.mcpServers).length > 0;
+      const hasOpenApiServers = config.openApiServers && Object.keys(config.openApiServers).length > 0;
+      return hasMcpServers || hasOpenApiServers;
+    },
+    { message: "At least one mcpServer or openApiServer must be configured" }
+  );
+
 export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>;
+export type ValidatedOpenApiServerConfig = z.infer<typeof OpenApiServerConfigSchema>;
 export type ValidatedRouterMcpConfig = z.infer<typeof RouterMcpConfigSchema>;
+export { OpenApiServerConfigSchema };

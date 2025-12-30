@@ -1,7 +1,11 @@
 {
     "mcpServers":{
         "rmcp":{
+            "enabled":false,
             "command":"bun run dev serve"
+        },
+        "rmcpc":{
+            "command":"./dist/index.js connect"
         }
     }
 }

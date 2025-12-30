@@ -22,6 +22,7 @@ import {
   handleListTools,
   handleExecuteCode,
 } from "./codemode/index.js";
+import { OpenApiHandler } from "../openapi/index.js";
 
 export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
 
@@ -31,6 +32,7 @@ export interface GatewayOptions {
   httpPort?: number;
   httpHost?: string;
   verbose?: boolean;
+  clearOpenApiCache?: boolean;
 }
 
 const DEFAULT_SESSION_TIMEOUT = 300;
@@ -46,6 +48,7 @@ export class Gateway {
   private serverTransport: ServerTransportHandle | null = null;
   private options: GatewayOptions;
   private stdioSession: VirtualSession | null = null;
+  private openApiHandler: OpenApiHandler | null = null;
 
   constructor(options: GatewayOptions) {
     this.options = options;
@@ -82,6 +85,10 @@ export class Gateway {
 
       if (this.isCodeModeEnabled() && name.startsWith("routermcp.")) {
         return this.handleMetaTool(name, args || {}, extra);
+      }
+
+      if (this.openApiHandler && this.openApiHandler.hasTool(name)) {
+        return this.openApiHandler.callTool(name, args || {});
       }
 
       const session = this.getSessionForRequest(extra);
@@ -170,6 +177,19 @@ export class Gateway {
       this.log(`Discovering upstream capabilities (concurrency: ${concurrency})...`);
       await this.discoveryManager.discoverAll(concurrency);
 
+      if (this.options.config.openApiServers) {
+        this.openApiHandler = new OpenApiHandler(
+          this.options.config.openApiServers,
+          this.options.verbose
+        );
+        await this.openApiHandler.initialize(this.options.clearOpenApiCache);
+
+        const openApiStats = this.openApiHandler.getStats();
+        this.log(
+          `OpenAPI: ${openApiStats.readyServers}/${openApiStats.totalServers} servers, ${openApiStats.totalTools} tools`
+        );
+      }
+
       this.cachedCapabilities = this.extractCapabilities();
 
       const stats = {
@@ -239,8 +259,20 @@ export class Gateway {
       });
     }
 
+    const toolsMap = tempAggregator.getToolsMap();
+
+    if (this.openApiHandler) {
+      for (const [name, entry] of this.openApiHandler.getToolsMap()) {
+        if (toolsMap.has(name)) {
+          console.error(`[gateway] Warning: OpenAPI tool "${name}" collides with MCP tool, skipping`);
+          continue;
+        }
+        toolsMap.set(name, entry);
+      }
+    }
+
     return {
-      tools: tempAggregator.getToolsMap(),
+      tools: toolsMap,
       resources: tempAggregator.getResourcesMap(),
       prompts: tempAggregator.getPromptsMap(),
       serverCapabilities,

@@ -27,6 +27,7 @@ interface CliOptions extends ServeCommandOptions {
   daemonMode?: boolean;
   socket?: string;
   oauthSubcommand?: OAuthSubcommand;
+  clearCache?: boolean;
 }
 
 type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "doctor" | "oauth" | "help";
@@ -203,6 +204,10 @@ function parseArgs(args: string[]): {
         options.socket = args[++i];
         break;
 
+      case "--clear":
+        options.clearCache = true;
+        break;
+
       default:
         if (arg.startsWith("--tunnel=")) {
           const provider = arg.slice("--tunnel=".length) as TunnelProvider;
@@ -247,6 +252,7 @@ SERVE OPTIONS:
   --http <port>         Use HTTP streamable transport on specified port
   --daemon-mode         Run as background daemon (for connect command)
   --socket <path>       Unix socket path (daemon mode, non-Windows)
+  --clear               Clear OpenAPI cache before starting (force re-parse)
   -v, --verbose         Enable verbose logging
 
 CONNECT OPTIONS:
@@ -322,6 +328,7 @@ export async function main(args: string[]): Promise<void> {
         verbose: options.verbose,
         daemonMode: options.daemonMode,
         socket: options.socket,
+        clearCache: options.clearCache,
       });
       break;
 

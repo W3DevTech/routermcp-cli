@@ -3,6 +3,56 @@ export interface HttpServerConfig {
   host?: string;
 }
 
+/**
+ * Authentication configuration for OpenAPI servers.
+ * Independent of security schemes defined in the OpenAPI spec itself.
+ */
+export interface OpenApiAuthConfig {
+  /** Authentication type */
+  type: "bearer" | "api-key" | "basic";
+
+  /** Bearer token (for type: "bearer") */
+  token?: string;
+
+  /** Header name for API key (for type: "api-key") */
+  header?: string;
+  /** API key value (for type: "api-key") */
+  value?: string;
+
+  /** Username (for type: "basic") */
+  username?: string;
+  /** Password (for type: "basic") */
+  password?: string;
+}
+
+/**
+ * Configuration for a single OpenAPI server.
+ * OpenAPI specs are converted to MCP tools at startup.
+ */
+export interface OpenApiServerConfig {
+  /** OpenAPI spec source - URL, file path, or inline object */
+  spec: string | Record<string, unknown>;
+
+  /** Base URL for API requests (overrides spec's servers[0].url) */
+  baseUrl?: string;
+
+  /** Authentication configuration (independent of OpenAPI security schemes) */
+  auth?: OpenApiAuthConfig;
+
+  /** Whether this server is enabled (default: true) */
+  enabled?: boolean;
+
+  // Tool filtering (applied to prefixed tool names like "petstore_getPetById")
+  /** Exact tool names to allow */
+  allowedTools?: string[];
+  /** Exact tool names to deny */
+  denyTools?: string[];
+  /** Glob patterns to allow tools */
+  allowedToolsGlob?: string[];
+  /** Glob patterns to deny tools */
+  denyToolsGlob?: string[];
+}
+
 export interface OAuthConfig {
   enabled?: boolean;
   clientId?: string;
@@ -34,9 +84,9 @@ export interface CodeModeConfig {
 
 export interface RouterMcpConfig {
   mcpServers: Record<string, ServerConfig>;
+  openApiServers?: Record<string, OpenApiServerConfig>;
   httpServer?: HttpServerConfig;
   session?: SessionConfig;
-  /** Code Mode configuration for LLM-generated code execution */
   codeMode?: CodeModeConfig;
 
   subprocess_timeout?: number;
