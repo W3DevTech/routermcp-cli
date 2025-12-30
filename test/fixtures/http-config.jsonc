@@ -1,0 +1,11 @@
+{
+	"mcpServers": {
+		"remote": {
+			"transport": "http-streamable",
+			"url": "http://localhost:3000/mcp",
+			"headers": {
+				"Authorization": "Bearer test-token"
+			}
+		}
+	}
+}

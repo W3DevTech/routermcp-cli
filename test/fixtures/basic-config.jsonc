@@ -1,0 +1,9 @@
+{
+	"mcpServers": {
+		"echo": {
+			"transport": "stdio",
+			"command": "echo",
+			"args": ["test"]
+		}
+	}
+}
