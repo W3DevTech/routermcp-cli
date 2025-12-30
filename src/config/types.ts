@@ -1,11 +1,14 @@
-/**
- * HTTP server configuration for tunnel/serve commands.
- */
 export interface HttpServerConfig {
-  /** Port for HTTP server (default: 5151) */
   port?: number;
-  /** Host to bind to (default: "127.0.0.1") */
   host?: string;
+}
+
+export interface OAuthConfig {
+  enabled?: boolean;
+  clientId?: string;
+  clientSecret?: string;
+  scopes?: string[];
+  clientName?: string;
 }
 
 /**
@@ -61,11 +64,9 @@ export interface ServerConfig {
   /** Working directory for the process */
   cwd?: string;
 
-  // HTTP transport options
-  /** URL for http-streamable transport */
   url?: string;
-  /** HTTP headers to send with requests */
   headers?: Record<string, string>;
+  oauth?: OAuthConfig;
 
   // Tool filtering
   /** Exact tool names to allow */

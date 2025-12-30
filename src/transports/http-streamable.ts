@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "../config/types.js";
@@ -7,9 +8,14 @@ import { TransportError } from "../utils/errors.js";
 import { randomUUID } from "crypto";
 import { serve, type ServerHandle } from "../compat/index.js";
 
+export interface HttpClientTransportOptions {
+  authProvider?: OAuthClientProvider;
+}
+
 export async function createHttpClientTransport(
   serverName: string,
-  config: ServerConfig
+  config: ServerConfig,
+  options?: HttpClientTransportOptions
 ): Promise<{ client: Client; cleanup: () => Promise<void> }> {
   if (config.transport !== "http-streamable") {
     throw new TransportError(
@@ -29,6 +35,7 @@ export async function createHttpClientTransport(
     requestInit: {
       headers: config.headers,
     },
+    authProvider: options?.authProvider,
   });
 
   const client = new Client(
@@ -46,9 +53,7 @@ export async function createHttpClientTransport(
   const cleanup = async () => {
     try {
       await client.close();
-    } catch {
-      // Ignore cleanup errors
-    }
+    } catch {}
   };
 
   return { client, cleanup };

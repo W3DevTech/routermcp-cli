@@ -12,14 +12,20 @@ const StdioTransportSchema = z.object({
   cwd: z.string().optional(),
 });
 
-/**
- * Schema for http-streamable transport configuration.
- */
+const OAuthConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
+  scopes: z.array(z.string()).optional(),
+  clientName: z.string().optional(),
+});
+
 const HttpTransportSchema = z.object({
   transport: z.literal("http-streamable"),
   enabled: z.boolean().optional().default(true),
   url: z.string().url("Invalid URL for http-streamable transport"),
   headers: z.record(z.string()).optional(),
+  oauth: OAuthConfigSchema.optional(),
 });
 
 /**

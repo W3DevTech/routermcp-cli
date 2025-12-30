@@ -10,31 +10,31 @@ import {
   createHttpClientTransport,
   createHttpServerTransport,
   type HttpServerHandle,
+  type HttpClientTransportOptions,
 } from "./http-streamable.js";
 
 export { createStdioServerTransport } from "./stdio.js";
-export { createHttpServerTransport, type HttpServerHandle } from "./http-streamable.js";
+export {
+  createHttpServerTransport,
+  type HttpServerHandle,
+  type HttpClientTransportOptions,
+} from "./http-streamable.js";
 
-/**
- * Result of creating a client transport.
- */
 export interface ClientConnection {
   client: Client;
   cleanup: () => Promise<void>;
 }
 
-/**
- * Create a client transport based on server configuration.
- */
 export async function createClientTransport(
   serverName: string,
-  config: ServerConfig
+  config: ServerConfig,
+  options?: HttpClientTransportOptions
 ): Promise<ClientConnection> {
   switch (config.transport) {
     case "stdio":
       return createStdioClientTransport(serverName, config);
     case "http-streamable":
-      return createHttpClientTransport(serverName, config);
+      return createHttpClientTransport(serverName, config, options);
     default:
       throw new TransportError(
         (config as ServerConfig).transport,

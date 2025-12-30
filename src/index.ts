@@ -7,6 +7,9 @@ if (typeof globalThis.Bun !== "undefined" && !process.env.FORCE_UNICODE) {
   process.env.TERM = "linux";
 }
 
+import { ensureWebCrypto } from "./oauth/crypto-polyfill.js";
+ensureWebCrypto();
+
 // Dynamic import to ensure TERM is set before @clack/prompts loads
 const { main } = await import("./cli/index.js");
 

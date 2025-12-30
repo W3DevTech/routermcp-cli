@@ -3,6 +3,8 @@ import { configCommand } from "./config.js";
 import { tunnelCommand, type TunnelCommandOptions } from "./tunnel.js";
 import { proxyCommand, type ProxyCommandOptions } from "./proxy.js";
 import { connectCommand, type ConnectCommandOptions } from "./connect.js";
+import { doctorCommand } from "./doctor.js";
+import { oauthStatusCommand, oauthLoginCommand, oauthLogoutCommand } from "./oauth.js";
 import type { TunnelProvider } from "../tunnel/index.js";
 import type { OutputTransport } from "../proxy/types.js";
 
@@ -24,9 +26,16 @@ interface CliOptions extends ServeCommandOptions {
   project?: string;
   daemonMode?: boolean;
   socket?: string;
+  oauthSubcommand?: OAuthSubcommand;
 }
 
-type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "help";
+type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "doctor" | "oauth" | "help";
+
+interface OAuthSubcommand {
+  action: "status" | "login" | "logout";
+  serverName?: string;
+  all?: boolean;
+}
 
 function parseArgs(args: string[]): {
   command: Command;
@@ -58,6 +67,31 @@ function parseArgs(args: string[]): {
       case "connect":
         command = "connect";
         break;
+
+      case "doctor":
+        command = "doctor";
+        break;
+
+      case "oauth": {
+        command = "oauth";
+        const subAction = args[++i];
+        if (subAction === "status") {
+          options.oauthSubcommand = { action: "status" };
+        } else if (subAction === "login") {
+          options.oauthSubcommand = { action: "login", serverName: args[++i] };
+        } else if (subAction === "logout") {
+          const nextArg = args[++i];
+          if (nextArg === "--all") {
+            options.oauthSubcommand = { action: "logout", all: true };
+          } else {
+            options.oauthSubcommand = { action: "logout", serverName: nextArg };
+          }
+        } else {
+          console.error("Usage: routermcp oauth <status|login|logout>");
+          process.exit(1);
+        }
+        break;
+      }
 
       case "help":
       case "--help":
@@ -203,6 +237,8 @@ COMMANDS:
   proxy     Proxy a stdio MCP server over HTTP (SSE or Streamable HTTP)
   tunnel    Expose gateway via tunnel (Cloudflare, ngrok)
   config    Interactive configuration wizard
+  doctor    Check configuration and authenticate OAuth servers
+  oauth     Manage OAuth authentication
   help      Show this help message
 
 SERVE OPTIONS:
@@ -262,6 +298,15 @@ EXAMPLES:
 
   # Config
   routermcp config                    Run interactive configuration wizard
+
+  # Doctor (OAuth setup)
+  routermcp doctor                    Check config and authenticate OAuth servers
+
+  # OAuth management
+  routermcp oauth status              Show OAuth status for all servers
+  routermcp oauth login <server>      Authenticate with a specific server
+  routermcp oauth logout <server>     Clear tokens for a specific server
+  routermcp oauth logout --all        Clear all OAuth tokens
 `);
 }
 
@@ -319,6 +364,31 @@ export async function main(args: string[]): Promise<void> {
     case "config":
       await configCommand();
       break;
+
+    case "doctor":
+      await doctorCommand(options.config || "./routermcp.jsonc");
+      break;
+
+    case "oauth": {
+      const sub = options.oauthSubcommand;
+      if (!sub) {
+        console.error("Usage: routermcp oauth <status|login|logout>");
+        process.exit(1);
+      }
+      const configPath = options.config || "./routermcp.jsonc";
+      switch (sub.action) {
+        case "status":
+          await oauthStatusCommand(configPath);
+          break;
+        case "login":
+          await oauthLoginCommand(configPath, sub.serverName || "");
+          break;
+        case "logout":
+          await oauthLogoutCommand(sub.serverName || null, sub.all || false);
+          break;
+      }
+      break;
+    }
 
     case "help":
       printHelp();

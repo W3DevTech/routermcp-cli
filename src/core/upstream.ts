@@ -3,6 +3,9 @@ import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js"
 import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
 import { createClientTransport, type ClientConnection } from "../transports/index.js";
 import { UpstreamError } from "../utils/errors.js";
+import { RouterMcpOAuthProvider, DEFAULT_CLIENT_NAME } from "../oauth/provider.js";
+import { loadOAuthStorage } from "../oauth/storage.js";
+import { ensureValidTokens } from "../oauth/refresh.js";
 
 export interface ServerCapabilityCache {
   tools: Tool[];
@@ -142,9 +145,29 @@ export class UpstreamManager {
     server.status = "connecting";
     this.log(`Connecting to ${name}...`);
 
+    if (server.config.transport === "http-streamable" && server.config.url) {
+      const storedAuth = await loadOAuthStorage(server.config.url);
+      if (storedAuth?.tokens || server.config.oauth) {
+        const refreshResult = await ensureValidTokens(server.config.url, server.config.oauth);
+
+        if (refreshResult.status === "expired" || refreshResult.status === "no-tokens") {
+          const msg = "OAuth authentication required. Run 'routermcp doctor' to authenticate.";
+          console.error(`[oauth] Server ${name}: ${msg}`);
+          server.status = "error";
+          server.error = new Error(msg);
+          throw server.error;
+        }
+
+        if (refreshResult.status === "error") {
+          this.log(`OAuth token refresh warning for ${name}: ${refreshResult.error}`);
+        }
+      }
+    }
+
     const timeoutMs = this.connectionTimeout * 1000;
 
-    const connectionPromise = createClientTransport(name, server.config);
+    const authProvider = await this.createOAuthProvider(server);
+    const connectionPromise = createClientTransport(name, server.config, { authProvider });
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
@@ -163,6 +186,41 @@ export class UpstreamManager {
       server.error = err instanceof Error ? err : new Error(String(err));
       throw err;
     }
+  }
+
+  private async createOAuthProvider(server: UpstreamServer): Promise<RouterMcpOAuthProvider | undefined> {
+    if (server.config.transport !== "http-streamable") return undefined;
+    if (!server.config.url) return undefined;
+    if (server.config.oauth?.enabled === false) return undefined;
+
+    const hasStoredTokens = await loadOAuthStorage(server.config.url);
+    const hasOAuthConfig = !!server.config.oauth;
+
+    if (!hasOAuthConfig && !hasStoredTokens?.tokens) return undefined;
+
+    return new RouterMcpOAuthProvider(
+      server.name,
+      server.config.url,
+      {
+        clientId: server.config.oauth?.clientId,
+        clientSecret: server.config.oauth?.clientSecret,
+        scopes: server.config.oauth?.scopes,
+        clientName: server.config.oauth?.clientName ?? DEFAULT_CLIENT_NAME,
+      },
+      {
+        onAuthorizationUrl: (url) => {
+          console.error(`[oauth] Authorization required for ${server.name}`);
+          console.error(`[oauth] Run 'routermcp doctor' to authenticate`);
+          console.error(`[oauth] Or visit: ${url.toString()}`);
+        },
+        onAuthorizationComplete: () => {
+          this.log(`OAuth authorization complete for ${server.name}`);
+        },
+        onError: (err) => {
+          console.error(`[oauth] Error for ${server.name}: ${err.message}`);
+        },
+      }
+    );
   }
 
   async ensureConnected(name: string): Promise<Client> {
