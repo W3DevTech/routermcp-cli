@@ -166,4 +166,26 @@ export class Aggregator {
       prompts: this.promptsMap.size,
     };
   }
+
+  initializeFromCache(cache: {
+    tools: Map<string, ToolWithSource>;
+    resources: Map<string, ResourceWithSource>;
+    prompts: Map<string, PromptWithSource>;
+  }): void {
+    this.toolsMap = new Map(cache.tools);
+    this.resourcesMap = new Map(cache.resources);
+    this.promptsMap = new Map(cache.prompts);
+  }
+
+  getToolsMap(): Map<string, ToolWithSource> {
+    return this.toolsMap;
+  }
+
+  getResourcesMap(): Map<string, ResourceWithSource> {
+    return this.resourcesMap;
+  }
+
+  getPromptsMap(): Map<string, PromptWithSource> {
+    return this.promptsMap;
+  }
 }

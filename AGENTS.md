@@ -1,25 +1,26 @@
 # PROJECT KNOWLEDGE BASE
 
 **Generated:** 2025-12-30
-**Commit:** bcaeb24
 **Branch:** main
 
 ## OVERVIEW
 
-MCP Gateway CLI that aggregates multiple upstream MCP servers into single unified interface. Routes tool/resource/prompt calls to appropriate upstream with comprehensive filtering. Built with Bun runtime, TypeScript strict mode.
+MCP Gateway CLI that aggregates multiple upstream MCP servers into single unified interface. Routes tool/resource/prompt calls to appropriate upstream with comprehensive filtering. Supports HTTP session multiplexing and daemon mode for process sharing across multiple MCP clients. Built with Bun runtime, TypeScript strict mode.
 
 ## STRUCTURE
 
 ```
 packages/cli/
 ├── src/
-│   ├── cli/           # CLI commands (serve, config, tunnel)
-│   ├── core/          # Gateway orchestration, upstream management, aggregation
+│   ├── cli/           # CLI commands (serve, connect, config, tunnel, proxy)
+│   ├── core/          # Gateway orchestration, upstream management, aggregation, sessions
+│   ├── daemon/        # Daemon lifecycle, project isolation, connection tracking
 │   ├── transports/    # stdio + HTTP streamable protocol implementations
 │   ├── tunnel/        # Cloudflare, ngrok, routermcp-cloud providers
 │   ├── filtering/     # Allow/deny filtering with glob patterns
 │   ├── config/        # JSONC loading, Zod validation, env var expansion
 │   ├── compat/        # Bun/Node compatibility layer
+│   ├── proxy/         # Stdio-to-HTTP proxy (SSE, Streamable HTTP)
 │   └── utils/         # Custom error classes
 ├── scripts/           # npm readme preparation
 └── dist/              # Built output (ESM, minified)
@@ -36,6 +37,9 @@ packages/cli/
 | Transport changes | `src/transports/` | stdio.ts or http-streamable.ts |
 | Upstream connection | `src/core/upstream.ts` | UpstreamManager handles all connections |
 | Request routing | `src/core/aggregator.ts` | Routes calls to correct upstream |
+| Session management | `src/core/virtual-session.ts` | VirtualSessionManager for HTTP multiplexing |
+| Daemon lifecycle | `src/daemon/lifecycle.ts` | Start/stop/health check daemon processes |
+| Daemon paths | `src/daemon/paths.ts` | File paths for daemon state (pid, port, socket) |
 
 ## CODE MAP
 
@@ -44,10 +48,14 @@ packages/cli/
 | `Gateway` | Class | `core/gateway.ts` | Central orchestrator - connects upstreams, serves MCP |
 | `Aggregator` | Class | `core/aggregator.ts` | Merges capabilities, applies filters, routes calls |
 | `UpstreamManager` | Class | `core/upstream.ts` | Manages parallel upstream connections |
+| `VirtualSessionManager` | Class | `core/virtual-session.ts` | Per-session isolation for HTTP multiplexing |
 | `shouldAllow` | Function | `filtering/filter.ts` | Core filter logic (deny > allow > default) |
 | `loadConfig` | Function | `config/loader.ts` | JSONC parse + normalize + expand env + validate |
 | `createClientTransport` | Function | `transports/index.ts` | Factory for upstream connections |
 | `createServerTransport` | Function | `transports/index.ts` | Factory for gateway output |
+| `startDaemon` | Function | `daemon/lifecycle.ts` | Spawn background daemon process |
+| `getDaemonStatus` | Function | `daemon/lifecycle.ts` | Check if daemon is running |
+| `connectCommand` | Function | `cli/connect.ts` | Stdio-to-daemon proxy |
 
 ### Module Flow
 
@@ -57,16 +65,49 @@ CLI (serve/tunnel/config)
     ▼
 Gateway.start()
     │
-    ├──► UpstreamManager.connectAll()
+    ├──► UpstreamManager.discoverAll()
     │         │
-    │         └──► createClientTransport() per server
+    │         └──► createClientTransport() per server (discovery only)
     │
-    ├──► Aggregator.refresh()
+    ├──► Extract & cache capabilities
     │         │
-    │         ├──► Apply filtering (shouldAllow)
-    │         └──► Check collisions
+    │         └──► Disconnect all (discovery complete)
+    │
+    ├──► VirtualSessionManager.init()
+    │         │
+    │         └──► setCapabilityCache() (shared read-only)
     │
     └──► createServerTransport() ──► MCP Server ready
+
+Per-Request Flow (HTTP mode):
+    │
+    Request with Mcp-Session-Id header
+    │
+    ▼
+VirtualSessionManager.getOrCreate(sessionId)
+    │
+    ├──► Create lazy UpstreamManager (per session)
+    │
+    └──► Aggregator routes call to upstream
+              │
+              └──► Upstream connects on-demand
+```
+
+### Daemon Mode Flow
+
+```
+routermcp connect
+    │
+    ▼
+getDaemonStatus(paths)
+    │
+    ├── Running? ──► proxyStdioToHttp()
+    │
+    └── Stopped? ──► startDaemon(paths)
+                          │
+                          └──► spawn("routermcp serve --daemon-mode")
+                                    │
+                                    └──► Write pid/port files
 ```
 
 ## CONVENTIONS
@@ -116,5 +157,8 @@ bun run start        # Run built CLI
 - Entry `src/index.ts` sets `TERM=linux` before loading @clack/prompts (Bun Unicode workaround)
 - Config files: `routermcp.jsonc` or `routermcp.json` (auto-detected)
 - HTTP default port: 5151
+- Session timeout: 300s (5 minutes), max 25 sessions by default
+- Daemon idle shutdown: 10 seconds after last client disconnects
+- Daemon files stored in `~/.routermcp/projects/<project-id>/`
 - No tests currently - consider adding before major changes
 - Monorepo member: Root has Biome config, other packages may exist

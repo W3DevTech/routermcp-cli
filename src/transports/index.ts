@@ -43,13 +43,11 @@ export async function createClientTransport(
   }
 }
 
-/**
- * Server transport handle (unified interface).
- */
 export interface ServerTransportHandle {
   transport: Transport;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  getCurrentSessionId?: () => string | null;
 }
 
 /**
@@ -85,6 +83,7 @@ export function createServerTransport(
       transport: handle.transport,
       start: handle.start,
       stop: handle.stop,
+      getCurrentSessionId: () => handle.transport.getCurrentSessionId(),
     };
   }
 

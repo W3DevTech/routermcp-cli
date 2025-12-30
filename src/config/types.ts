@@ -11,30 +11,18 @@ export interface HttpServerConfig {
 /**
  * Root configuration for RouterMCP.
  */
+export interface SessionConfig {
+  timeout?: number;
+  max_sessions?: number;
+}
+
 export interface RouterMcpConfig {
   mcpServers: Record<string, ServerConfig>;
-  /** HTTP server configuration */
   httpServer?: HttpServerConfig;
+  session?: SessionConfig;
 
-  // Lazy loading configuration (global settings)
-  /**
-   * Subprocess/connection idle timeout in seconds before auto-disconnect.
-   * After this time of inactivity, the subprocess is terminated.
-   * Set to 0 to keep subprocesses running indefinitely.
-   * Default: 180
-   */
   subprocess_timeout?: number;
-  /**
-   * Maximum parallel connections during startup discovery.
-   * Lower values reduce system load, higher values speed up startup.
-   * Default: 5
-   */
   discovery_concurrency?: number;
-  /**
-   * Connection timeout in seconds when spawning subprocess on-demand.
-   * If a subprocess doesn't respond within this time, the call fails.
-   * Default: 30
-   */
   connection_timeout?: number;
 }
 

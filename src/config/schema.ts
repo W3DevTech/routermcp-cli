@@ -51,23 +51,23 @@ export const ServerConfigSchema = z.discriminatedUnion("transport", [
   HttpTransportSchema.merge(FilterFieldsSchema),
 ]);
 
-/**
- * Schema for HTTP server configuration.
- */
 const HttpServerConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   host: z.string().optional(),
 });
 
-/**
- * Root configuration schema.
- */
+const SessionConfigSchema = z.object({
+  timeout: z.number().int().min(1).max(86400).optional().default(300),
+  max_sessions: z.number().int().min(1).max(1000).optional().default(25),
+});
+
 export const RouterMcpConfigSchema = z.object({
   mcpServers: z.record(z.string().min(1), ServerConfigSchema).refine(
     (servers) => Object.keys(servers).length > 0,
     { message: "At least one server must be configured" }
   ),
   httpServer: HttpServerConfigSchema.optional(),
+  session: SessionConfigSchema.optional(),
   subprocess_timeout: z.number().int().min(0).optional().default(180),
   discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
   connection_timeout: z.number().int().min(1).max(300).optional().default(30),

@@ -4,6 +4,12 @@ import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
 import { createClientTransport, type ClientConnection } from "../transports/index.js";
 import { UpstreamError } from "../utils/errors.js";
 
+export interface ServerCapabilityCache {
+  tools: Tool[];
+  resources: Resource[];
+  prompts: Prompt[];
+}
+
 export type UpstreamStatus =
   | "disconnected"
   | "connecting"
@@ -36,26 +42,32 @@ export class UpstreamManager {
   private subprocessTimeout: number;
   private connectionTimeout: number;
 
-  constructor(config: RouterMcpConfig, verbose: boolean = false) {
+  constructor(
+    config: RouterMcpConfig,
+    verbose: boolean = false,
+    preloadedCapabilities?: Map<string, ServerCapabilityCache>
+  ) {
     this.verbose = verbose;
     this.subprocessTimeout = config.subprocess_timeout ?? 180;
     this.connectionTimeout = config.connection_timeout ?? 30;
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
       const enabled = serverConfig.enabled !== false;
+      const cached = preloadedCapabilities?.get(name);
+
       this.servers.set(name, {
         name,
         config: serverConfig,
-        status: enabled ? "disconnected" : "disabled",
+        status: enabled ? (cached ? "discovered" : "disconnected") : "disabled",
         client: null,
         cleanup: null,
         error: null,
-        tools: [],
-        resources: [],
-        prompts: [],
-        cachedTools: [],
-        cachedResources: [],
-        cachedPrompts: [],
+        tools: cached?.tools ?? [],
+        resources: cached?.resources ?? [],
+        prompts: cached?.prompts ?? [],
+        cachedTools: cached?.tools ?? [],
+        cachedResources: cached?.resources ?? [],
+        cachedPrompts: cached?.prompts ?? [],
         lastActivity: null,
         idleTimer: null,
         connectionPromise: null,

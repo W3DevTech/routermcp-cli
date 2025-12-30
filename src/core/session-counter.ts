@@ -1,7 +1,7 @@
-type SessionData = {
+interface SessionData {
   lastAccess: number;
   timer: ReturnType<typeof setTimeout> | null;
-};
+}
 
 export class SessionAccessCounter {
   private sessions: Map<string, SessionData> = new Map();
@@ -47,12 +47,16 @@ export class SessionAccessCounter {
     return this.sessions.size;
   }
 
+  getLastAccess(sessionId: string): number | null {
+    return this.sessions.get(sessionId)?.lastAccess ?? null;
+  }
+
   destroy(): void {
-    for (const [sessionId, session] of this.sessions) {
+    for (const [, session] of this.sessions) {
       if (session.timer) {
         clearTimeout(session.timer);
       }
-      this.sessions.delete(sessionId);
     }
+    this.sessions.clear();
   }
 }

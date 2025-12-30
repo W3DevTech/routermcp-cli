@@ -2,6 +2,7 @@ import { serveCommand, type ServeCommandOptions } from "./serve.js";
 import { configCommand } from "./config.js";
 import { tunnelCommand, type TunnelCommandOptions } from "./tunnel.js";
 import { proxyCommand, type ProxyCommandOptions } from "./proxy.js";
+import { connectCommand, type ConnectCommandOptions } from "./connect.js";
 import type { TunnelProvider } from "../tunnel/index.js";
 import type { OutputTransport } from "../proxy/types.js";
 
@@ -20,9 +21,12 @@ interface CliOptions extends ServeCommandOptions {
   cors?: boolean;
   noCors?: boolean;
   maxRestarts?: number;
+  project?: string;
+  daemonMode?: boolean;
+  socket?: string;
 }
 
-type Command = "serve" | "config" | "tunnel" | "proxy" | "help";
+type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "help";
 
 function parseArgs(args: string[]): {
   command: Command;
@@ -49,6 +53,10 @@ function parseArgs(args: string[]): {
 
       case "proxy":
         command = "proxy";
+        break;
+
+      case "connect":
+        command = "connect";
         break;
 
       case "help":
@@ -149,6 +157,18 @@ function parseArgs(args: string[]): {
         }
         break;
 
+      case "--project":
+        options.project = args[++i];
+        break;
+
+      case "--daemon-mode":
+        options.daemonMode = true;
+        break;
+
+      case "--socket":
+        options.socket = args[++i];
+        break;
+
       default:
         if (arg.startsWith("--tunnel=")) {
           const provider = arg.slice("--tunnel=".length) as TunnelProvider;
@@ -179,6 +199,7 @@ USAGE:
 
 COMMANDS:
   serve     Start the MCP gateway (default)
+  connect   Connect to gateway daemon (auto-starts if needed)
   proxy     Proxy a stdio MCP server over HTTP (SSE or Streamable HTTP)
   tunnel    Expose gateway via tunnel (Cloudflare, ngrok)
   config    Interactive configuration wizard
@@ -188,6 +209,13 @@ SERVE OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --stdio               Use stdio transport (default)
   --http <port>         Use HTTP streamable transport on specified port
+  --daemon-mode         Run as background daemon (for connect command)
+  --socket <path>       Unix socket path (daemon mode, non-Windows)
+  -v, --verbose         Enable verbose logging
+
+CONNECT OPTIONS:
+  -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
+  --project <path>      Project directory (default: current directory)
   -v, --verbose         Enable verbose logging
 
 PROXY OPTIONS:
@@ -217,6 +245,10 @@ EXAMPLES:
   routermcp                           Start gateway with default config (stdio mode)
   routermcp --http 3000               Start gateway with HTTP transport on port 3000
 
+  # Connect (daemon mode - for multiple MCP clients)
+  routermcp connect                   Connect to daemon (auto-starts if needed)
+  routermcp connect --project /path   Connect using specific project directory
+
   # Proxy (single server mode)
   routermcp proxy --stdio "npx -y @modelcontextprotocol/server-filesystem ."
   routermcp proxy --stdio "node server.js" --outputTransport streamableHttp
@@ -238,7 +270,14 @@ export async function main(args: string[]): Promise<void> {
 
   switch (command) {
     case "serve":
-      await serveCommand(options);
+      await serveCommand({
+        config: options.config,
+        stdio: options.stdio,
+        http: options.http,
+        verbose: options.verbose,
+        daemonMode: options.daemonMode,
+        socket: options.socket,
+      });
       break;
 
     case "proxy":
@@ -265,6 +304,14 @@ export async function main(args: string[]): Promise<void> {
         config: options.config,
         tunnel: options.tunnel,
         port: options.port,
+        verbose: options.verbose,
+      });
+      break;
+
+    case "connect":
+      await connectCommand({
+        config: options.config,
+        project: options.project,
         verbose: options.verbose,
       });
       break;

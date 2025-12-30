@@ -7,9 +7,6 @@ import { TransportError } from "../utils/errors.js";
 import { randomUUID } from "crypto";
 import { serve, type ServerHandle } from "../compat/index.js";
 
-/**
- * Create an HTTP streamable client transport for connecting to an upstream MCP server.
- */
 export async function createHttpClientTransport(
   serverName: string,
   config: ServerConfig
@@ -57,34 +54,42 @@ export async function createHttpClientTransport(
   return { client, cleanup };
 }
 
-/**
- * Server transport handle for HTTP.
- */
 export interface HttpServerHandle {
-  transport: Transport;
+  transport: SessionAwareTransport;
   server: ServerHandle | null;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
-/**
- * Simple JSON-RPC over HTTP transport for Bun.
- * Implements MCP Transport interface for server-side usage.
- */
-class BunHttpServerTransport implements Transport {
+export interface SessionAwareTransport extends Transport {
+  getCurrentSessionId(): string | null;
+  handleRequestWithSession(message: JSONRPCMessage, sessionId: string): Promise<JSONRPCMessage | null>;
+}
+
+interface PendingRequest {
+  resolve: (response: JSONRPCMessage) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+  sessionId: string;
+}
+
+class BunHttpServerTransport implements SessionAwareTransport {
   sessionId: string;
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
 
-  private pendingResponses = new Map<
-    string | number,
-    { resolve: (response: JSONRPCMessage) => void; reject: (error: Error) => void }
-  >();
+  private pendingRequests = new Map<string | number, PendingRequest>();
   private started = false;
+  private readonly requestTimeout = 30000;
+  private currentSessionId: string | null = null;
 
   constructor() {
     this.sessionId = randomUUID();
+  }
+
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId;
   }
 
   async start(): Promise<void> {
@@ -92,43 +97,43 @@ class BunHttpServerTransport implements Transport {
   }
 
   async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
-    // Handle responses by resolving pending request promises
     if ("id" in message && message.id !== undefined) {
-      const pending = this.pendingResponses.get(message.id);
+      const pending = this.pendingRequests.get(message.id);
       if (pending) {
+        clearTimeout(pending.timeout);
         pending.resolve(message);
-        this.pendingResponses.delete(message.id);
+        this.pendingRequests.delete(message.id);
       }
     }
   }
 
   async close(): Promise<void> {
-    // Reject any pending requests
-    for (const [id, pending] of this.pendingResponses) {
+    for (const [, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
       pending.reject(new Error("Transport closed"));
     }
-    this.pendingResponses.clear();
+    this.pendingRequests.clear();
     this.onclose?.();
   }
 
-  /**
-   * Handle an incoming HTTP request with a JSON-RPC message.
-   * Returns a promise that resolves with the response.
-   */
-  async handleRequest(message: JSONRPCMessage): Promise<JSONRPCMessage | null> {
+  handleRequestWithSession(
+    message: JSONRPCMessage,
+    sessionId: string
+  ): Promise<JSONRPCMessage | null> {
     if (!this.started) {
-      throw new Error("Transport not started");
+      return Promise.reject(new Error("Transport not started"));
     }
 
-    // For requests (messages with id), set up a response promise
+    this.currentSessionId = sessionId;
+
     if ("method" in message && "id" in message && message.id !== undefined) {
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-          this.pendingResponses.delete(message.id!);
+          this.pendingRequests.delete(message.id!);
           reject(new Error("Request timeout"));
-        }, 30000); // 30 second timeout
+        }, this.requestTimeout);
 
-        this.pendingResponses.set(message.id!, {
+        this.pendingRequests.set(message.id!, {
           resolve: (response) => {
             clearTimeout(timeout);
             resolve(response);
@@ -137,23 +142,19 @@ class BunHttpServerTransport implements Transport {
             clearTimeout(timeout);
             reject(error);
           },
+          timeout,
+          sessionId,
         });
 
-        // Pass message to MCP server
         this.onmessage?.(message);
       });
     }
 
-    // For notifications (no id), just pass through
     this.onmessage?.(message);
-    return null;
+    return Promise.resolve(null);
   }
 }
 
-/**
- * Create an HTTP server transport for exposing the gateway.
- * Uses compat serve() with simple JSON-RPC over HTTP.
- */
 export function createHttpServerTransport(
   port: number,
   host: string = "127.0.0.1"
@@ -178,39 +179,37 @@ export function createHttpServerTransport(
         fetch: async (request: Request) => {
           const url = new URL(request.url);
 
-          // Only handle /mcp endpoint
           if (url.pathname !== "/mcp") {
             return new Response("Not Found", { status: 404 });
           }
 
-          // Handle CORS preflight
           if (request.method === "OPTIONS") {
             return new Response(null, { status: 204, headers: corsHeaders });
           }
 
-          // Handle POST requests with JSON-RPC messages
           if (request.method === "POST") {
             try {
+              const sessionId =
+                request.headers.get("mcp-session-id") || randomUUID();
               const body = (await request.json()) as JSONRPCMessage;
 
-              const response = await transport.handleRequest(body);
+              const response = await transport.handleRequestWithSession(body, sessionId);
 
               if (response) {
                 return new Response(JSON.stringify(response), {
                   status: 200,
                   headers: {
                     "Content-Type": "application/json",
-                    "Mcp-Session-Id": transport.sessionId,
+                    "Mcp-Session-Id": sessionId,
                     ...corsHeaders,
                   },
                 });
               }
 
-              // Notification - return accepted
               return new Response(null, {
                 status: 202,
                 headers: {
-                  "Mcp-Session-Id": transport.sessionId,
+                  "Mcp-Session-Id": sessionId,
                   ...corsHeaders,
                 },
               });

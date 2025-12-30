@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { ChildProcessManager } from "./child-process-manager.js";
-import { SessionAccessCounter } from "./session-counter.js";
+import { SessionAccessCounter } from "../core/session-counter.js";
 import type { ProxyOptions, HealthResponse, ManagedChildProcess } from "./types.js";
 
 interface StatefulSession {

@@ -81,6 +81,12 @@ RouterMCP uses a JSONC (JSON with Comments) configuration file named `routermcp.
     "host": "127.0.0.1"  // Host to bind to (default: "127.0.0.1")
   },
 
+  // Session configuration for HTTP multiplexing (optional)
+  "session": {
+    "timeout": 300,      // Session timeout in seconds (default: 300)
+    "max_sessions": 25   // Maximum concurrent sessions (default: 25)
+  },
+
   // MCP server configurations
   "mcpServers": {
     "server-name": {
@@ -238,6 +244,42 @@ routermcp --http 3000        # Start with HTTP transport on port 3000
 routermcp --stdio            # Explicitly use stdio transport
 routermcp -c /path/to/config.jsonc  # Use custom config file
 routermcp -v                 # Verbose logging
+```
+
+### Connect (Daemon Mode)
+
+Connect to a shared gateway daemon. Multiple MCP clients can share a single gateway instance, which is useful for:
+- Reducing resource usage when multiple clients need the same upstream servers
+- Sharing session state across multiple client connections
+- Background process management with automatic startup and idle shutdown
+
+```bash
+routermcp connect                    # Connect to daemon (auto-starts if needed)
+routermcp connect --project /path    # Connect using specific project directory
+routermcp connect -v                 # Verbose logging
+```
+
+**How Daemon Mode Works:**
+
+1. When you run `routermcp connect`, it checks for an existing daemon for the current project
+2. If no daemon is running, it automatically starts one in the background
+3. The daemon runs an HTTP server on port 5151 (default)
+4. The connect command proxies stdio to/from the daemon's HTTP endpoint
+5. The daemon automatically shuts down after 10 seconds of idle (no active sessions)
+
+**Daemon Files:**
+
+Daemon state is stored in `~/.routermcp/projects/<project-id>/`:
+- `daemon.pid` - Process ID of the running daemon
+- `daemon.port` - HTTP port the daemon is listening on
+
+**Manual Daemon Mode:**
+
+You can also run the gateway in daemon mode directly:
+
+```bash
+routermcp serve --daemon-mode --http 5151    # Start as daemon on port 5151
+routermcp serve --daemon-mode -v             # Daemon with verbose logging
 ```
 
 ### Proxy
@@ -608,6 +650,15 @@ If an upstream server fails to connect:
 | `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
 | `--stdio` | Use stdio transport (default) |
 | `--http <port>` | Use HTTP streamable transport on specified port |
+| `--daemon-mode` | Run as background daemon (for connect command) |
+| `--socket <path>` | Unix socket path (daemon mode, non-Windows) |
+
+### Connect Options
+
+| Option | Description |
+|--------|-------------|
+| `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
+| `--project <path>` | Project directory for daemon lookup (default: current directory) |
 
 ### Proxy Options
 
@@ -637,6 +688,8 @@ If an upstream server fails to connect:
 ## Features
 
 - **MCP Gateway**: Expose one MCP server that proxies multiple upstream servers
+- **Session Multiplexing**: Multiple HTTP clients can safely share a single gateway with isolated sessions
+- **Daemon Mode**: Background gateway process with automatic startup, idle shutdown, and process sharing
 - **Stdio-to-HTTP Proxy**: Convert any stdio MCP server to HTTP (SSE or Streamable HTTP)
 - **Tool Filtering**: Allow/deny tools per server using exact names or glob patterns
 - **Resource Filtering**: Same filtering capabilities for resources
