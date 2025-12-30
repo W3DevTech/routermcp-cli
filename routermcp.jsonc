@@ -1,4 +1,9 @@
 {
+  "codeMode": {
+    "enabled": true,
+    "allowFetch": true,
+    "timeout": 30000
+  },
   "mcpServers": {
     "axiom": {
       "type": "http",
