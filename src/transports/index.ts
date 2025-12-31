@@ -2,13 +2,13 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
-import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 import {
+  type HttpClientTransportOptions,
+  type HttpServerHandle,
   createHttpClientTransport,
   createHttpServerTransport,
-  type HttpServerHandle,
-  type HttpClientTransportOptions,
 } from "./http-streamable.js";
+import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 
 export { createStdioServerTransport } from "./stdio.js";
 export {

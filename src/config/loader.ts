@@ -1,7 +1,7 @@
 import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
-import { RouterMcpConfigSchema } from "./schema.js";
-import { ConfigError } from "../utils/errors.js";
 import { file } from "../compat/index.js";
+import { ConfigError } from "../utils/errors.js";
+import { RouterMcpConfigSchema } from "./schema.js";
 import type { RouterMcpConfig } from "./types.js";
 
 /**

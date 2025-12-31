@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { isTelemetryEnabled, setTelemetryEnabled, getConfigPath } from "../telemetry/index.js";
+import { getConfigPath, isTelemetryEnabled, setTelemetryEnabled } from "../telemetry/index.js";
 
 export type TelemetryAction = "enable" | "disable" | "status";
 

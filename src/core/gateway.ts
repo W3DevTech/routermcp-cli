@@ -1,24 +1,24 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
-  ListToolsRequestSchema,
   CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
-import { createServerTransport, type ServerTransportHandle } from "../transports/index.js";
-import { UpstreamManager, type ServerCapabilityCache } from "./upstream.js";
+import { OpenApiHandler } from "../openapi/index.js";
+import { type ServerTransportHandle, createServerTransport } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
+import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
+import { type ServerCapabilityCache, UpstreamManager } from "./upstream.js";
 import {
-  VirtualSessionManager,
   type CachedCapabilities,
   type VirtualSession,
+  VirtualSessionManager,
 } from "./virtual-session.js";
-import { getCodeModeMetaTools, handleListTools, handleExecuteCode } from "./codemode/index.js";
-import { OpenApiHandler } from "../openapi/index.js";
 
 export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
 

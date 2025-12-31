@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { executeCodeMode, type SandboxConfig } from "../../../../src/core/codemode/sandbox.js";
+import { describe, expect, it, vi } from "vitest";
 import type { Aggregator } from "../../../../src/core/aggregator.js";
+import { type SandboxConfig, executeCodeMode } from "../../../../src/core/codemode/sandbox.js";
 
 function createMockAggregator(toolResults: Record<string, unknown> = {}): Aggregator {
   return {

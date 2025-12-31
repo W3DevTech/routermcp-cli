@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
-import { Gateway, createGateway } from "../../src/core/gateway.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config/loader.js";
+import { type Gateway, createGateway } from "../../src/core/gateway.js";
 
 const FIXTURES_DIR = join(__dirname, "../fixtures");
 const EVERYTHING_CONFIG = join(FIXTURES_DIR, "everything-server-config.jsonc");

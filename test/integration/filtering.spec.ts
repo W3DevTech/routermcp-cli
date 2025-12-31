@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
-import { Gateway, createGateway } from "../../src/core/gateway.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config/loader.js";
+import { type Gateway, createGateway } from "../../src/core/gateway.js";
 
 const FIXTURES_DIR = join(__dirname, "../fixtures");
 const MULTI_SERVER_CONFIG = join(FIXTURES_DIR, "multi-server-everything-config.jsonc");
@@ -51,8 +51,7 @@ describe("Collision detection", () => {
 
     try {
       await gateway.stop();
-    } catch {
-    }
+    } catch {}
   }, 120000);
 });
 

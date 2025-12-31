@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findConfigFile, loadConfig, loadConfigFromPath } from "../../../src/config/loader.js";
-import { createTempDir, cleanupTempDir } from "../../helpers/test-utils.js";
+import { cleanupTempDir, createTempDir } from "../../helpers/test-utils.js";
 
 describe("findConfigFile", () => {
   let tempDir: string;

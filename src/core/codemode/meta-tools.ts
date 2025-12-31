@@ -1,6 +1,6 @@
-import type { Tool, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { Aggregator, ToolWithSource } from "../aggregator.js";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CodeModeConfig } from "../../config/types.js";
+import type { Aggregator, ToolWithSource } from "../aggregator.js";
 import { generateTypeScriptDefinitions, groupToolsByServer, toolsToToolInfo } from "./codegen.js";
 import { executeCodeMode } from "./sandbox.js";
 

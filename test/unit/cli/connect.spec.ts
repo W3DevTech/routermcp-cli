@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:readline", () => ({
   createInterface: vi.fn(() => ({
@@ -34,17 +34,17 @@ vi.mock("../../../src/daemon/index.js", () => ({
   isWindows: vi.fn(() => false),
 }));
 
-import { connectCommand, type ConnectCommandOptions } from "../../../src/cli/connect.js";
+import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
+import { type ConnectCommandOptions, connectCommand } from "../../../src/cli/connect.js";
 import { findConfigFile } from "../../../src/config/loader.js";
 import {
-  getProjectId,
   getDaemonPaths,
   getDaemonStatus,
-  startDaemon,
+  getProjectId,
   isWindows,
+  startDaemon,
 } from "../../../src/daemon/index.js";
-import { createInterface } from "node:readline";
-import { createConnection } from "node:net";
 
 describe("connectCommand", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -90,9 +90,7 @@ describe("connectCommand", () => {
 
       await expect(connectCommand({})).rejects.toThrow("process.exit called");
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining("No config file found"),
-      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("No config file found"));
       expect(exitSpy).toHaveBeenCalledWith(1);
 
       exitSpy.mockRestore();
@@ -238,9 +236,7 @@ describe("connectCommand", () => {
         pid: 12345,
       });
 
-      await expect(connectCommand({})).rejects.toThrow(
-        "Daemon did not report socket or HTTP port",
-      );
+      await expect(connectCommand({})).rejects.toThrow("Daemon did not report socket or HTTP port");
     });
   });
 
@@ -255,9 +251,7 @@ describe("connectCommand", () => {
       connectCommand({ verbose: true });
 
       await vi.waitFor(() => {
-        expect(consoleErrorSpy).toHaveBeenCalledWith(
-          expect.stringContaining("[connect]"),
-        );
+        expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("[connect]"));
       });
     });
 
@@ -271,12 +265,8 @@ describe("connectCommand", () => {
       connectCommand({ verbose: true });
 
       await vi.waitFor(() => {
-        expect(consoleErrorSpy).toHaveBeenCalledWith(
-          expect.stringContaining("Project ID"),
-        );
+        expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Project ID"));
       });
     });
   });
 });
-
-export {};

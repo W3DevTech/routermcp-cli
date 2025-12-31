@@ -1,21 +1,21 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type {
-  Tool,
-  Resource,
-  Prompt,
   CallToolResult,
-  ReadResourceResult,
   GetPromptResult,
+  Prompt,
+  ReadResourceResult,
+  Resource,
+  Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
-  ListToolsRequestSchema,
   CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
 export interface MockToolDefinition {
@@ -190,7 +190,7 @@ export function createAddTool(): MockToolDefinition {
   };
 }
 
-export function createDelayTool(delayMs: number = 100): MockToolDefinition {
+export function createDelayTool(delayMs = 100): MockToolDefinition {
   return {
     name: "delay",
     description: `Waits for ${delayMs}ms then returns`,

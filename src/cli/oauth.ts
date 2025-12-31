@@ -1,16 +1,16 @@
 import * as p from "@clack/prompts";
+import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { loadConfig } from "../config/loader.js";
 import type { ServerConfig } from "../config/types.js";
+import { DEFAULT_CLIENT_NAME, RouterMcpOAuthProvider } from "../oauth/provider.js";
 import {
-  loadOAuthStorage,
-  clearOAuthStorage,
   clearAllOAuthStorage,
-  listOAuthServers,
-  isTokenExpired,
+  clearOAuthStorage,
   getServerHostHash,
+  isTokenExpired,
+  listOAuthServers,
+  loadOAuthStorage,
 } from "../oauth/storage.js";
-import { RouterMcpOAuthProvider, DEFAULT_CLIENT_NAME } from "../oauth/provider.js";
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 
 function formatExpiry(expiresAt: number | undefined): string {
   if (!expiresAt) return "-";

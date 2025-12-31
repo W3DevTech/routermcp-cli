@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { telemetryCommand } from "../../../src/cli/telemetry.js";
 
 vi.mock("@clack/prompts", () => ({
@@ -18,9 +18,9 @@ vi.mock("../../../src/telemetry/index.js", () => ({
 
 import * as p from "@clack/prompts";
 import {
+  getConfigPath,
   isTelemetryEnabled,
   setTelemetryEnabled,
-  getConfigPath,
 } from "../../../src/telemetry/index.js";
 
 describe("telemetryCommand", () => {

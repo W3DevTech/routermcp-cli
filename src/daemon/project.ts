@@ -1,5 +1,5 @@
-import { resolve } from "node:path";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 export function getProjectId(cwd: string = process.cwd()): string {
   const normalized = resolve(cwd);

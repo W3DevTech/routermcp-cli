@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RouterMcpError } from "../../../src/utils/errors.js";
 
 const mockIsTelemetryEnabled = vi.fn();
@@ -9,8 +9,8 @@ vi.mock("../../../src/telemetry/config.js", () => ({
 
 import {
   buildTelemetryEvent,
-  sendTelemetryEvent,
   reportError,
+  sendTelemetryEvent,
 } from "../../../src/telemetry/reporter.js";
 
 describe("telemetry/reporter", () => {

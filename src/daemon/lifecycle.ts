@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { DaemonPaths } from "./paths.js";
 import { isWindows } from "./paths.js";
@@ -22,7 +22,7 @@ export async function getDaemonStatus(paths: DaemonPaths): Promise<DaemonStatus>
 
   try {
     const pidStr = readFileSync(paths.pid, "utf-8").trim();
-    const pid = parseInt(pidStr, 10);
+    const pid = Number.parseInt(pidStr, 10);
 
     if (!isProcessRunning(pid)) {
       cleanupDaemonFiles(paths);
@@ -34,7 +34,7 @@ export async function getDaemonStatus(paths: DaemonPaths): Promise<DaemonStatus>
 
     if (existsSync(paths.port)) {
       const portStr = readFileSync(paths.port, "utf-8").trim();
-      port = parseInt(portStr, 10);
+      port = Number.parseInt(portStr, 10);
     }
 
     if (!isWindows() && existsSync(paths.socket)) {
@@ -56,10 +56,7 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
-export async function startDaemon(
-  paths: DaemonPaths,
-  verbose: boolean = false,
-): Promise<DaemonStatus> {
+export async function startDaemon(paths: DaemonPaths, verbose = false): Promise<DaemonStatus> {
   mkdirSync(paths.dir, { recursive: true });
 
   const args = [

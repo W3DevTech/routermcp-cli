@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { parseArgs, main, getCurrentCommand, getCurrentArgs } from "../../../src/cli/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getCurrentArgs, getCurrentCommand, main, parseArgs } from "../../../src/cli/index.js";
 
 describe("parseArgs", () => {
   describe("command detection", () => {
@@ -139,7 +139,11 @@ describe("parseArgs", () => {
 
   describe("proxy options", () => {
     it("parses --stdio with command string for proxy", () => {
-      const { options } = parseArgs(["proxy", "--stdio", "npx -y @modelcontextprotocol/server-everything"]);
+      const { options } = parseArgs([
+        "proxy",
+        "--stdio",
+        "npx -y @modelcontextprotocol/server-everything",
+      ]);
       expect(options.proxyStdio).toBe("npx -y @modelcontextprotocol/server-everything");
     });
 
@@ -149,7 +153,13 @@ describe("parseArgs", () => {
     });
 
     it("parses --outputTransport streamableHttp", () => {
-      const { options } = parseArgs(["proxy", "--stdio", "cmd", "--outputTransport", "streamableHttp"]);
+      const { options } = parseArgs([
+        "proxy",
+        "--stdio",
+        "cmd",
+        "--outputTransport",
+        "streamableHttp",
+      ]);
       expect(options.outputTransport).toBe("streamableHttp");
     });
 

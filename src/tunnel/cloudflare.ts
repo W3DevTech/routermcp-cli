@@ -1,5 +1,5 @@
+import { type CompatSubprocess, spawnProcess } from "../compat/index.js";
 import type { TunnelInfo, TunnelProviderHandler } from "./providers.js";
-import { spawnProcess, type CompatSubprocess } from "../compat/index.js";
 
 /**
  * Cloudflare Tunnel provider using cloudflared.

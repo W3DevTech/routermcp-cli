@@ -25,6 +25,3 @@ main(args).catch(async (err) => {
   console.error("Fatal error:", err);
   process.exit(1);
 });
-
-// Make this file a module for TypeScript
-export {};

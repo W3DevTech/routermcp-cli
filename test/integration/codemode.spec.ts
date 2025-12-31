@@ -1,14 +1,14 @@
-import { describe, it, expect, vi } from "vitest";
-import type { Tool, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import {
-  getCodeModeMetaTools,
-  handleListTools,
-  handleExecuteCode,
-  META_TOOL_LIST_TOOLS,
-  META_TOOL_EXECUTE_CODE,
-} from "../../src/core/codemode/meta-tools.js";
-import type { Aggregator, ToolWithSource } from "../../src/core/aggregator.js";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { describe, expect, it, vi } from "vitest";
 import type { CodeModeConfig } from "../../src/config/types.js";
+import type { Aggregator, ToolWithSource } from "../../src/core/aggregator.js";
+import {
+  META_TOOL_EXECUTE_CODE,
+  META_TOOL_LIST_TOOLS,
+  getCodeModeMetaTools,
+  handleExecuteCode,
+  handleListTools,
+} from "../../src/core/codemode/meta-tools.js";
 
 function createMockToolsMap(): Map<string, ToolWithSource> {
   const map = new Map<string, ToolWithSource>();
@@ -156,9 +156,7 @@ describe("Code Mode meta-tools", () => {
 
       expect(result.isError).toBeFalsy();
 
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.success).toBe(true);
       expect(parsed.result).toBe(2);
     });
@@ -167,12 +165,7 @@ describe("Code Mode meta-tools", () => {
       const aggregator = createMockAggregator();
       const toolsMap = createMockToolsMap();
 
-      const result = await handleExecuteCode(
-        { code: "" },
-        aggregator,
-        toolsMap,
-        defaultConfig,
-      );
+      const result = await handleExecuteCode({ code: "" }, aggregator, toolsMap, defaultConfig);
 
       expect(result.isError).toBe(true);
       expect((result.content[0] as { type: "text"; text: string }).text).toContain(
@@ -184,12 +177,7 @@ describe("Code Mode meta-tools", () => {
       const aggregator = createMockAggregator();
       const toolsMap = createMockToolsMap();
 
-      const result = await handleExecuteCode(
-        { code: "   " },
-        aggregator,
-        toolsMap,
-        defaultConfig,
-      );
+      const result = await handleExecuteCode({ code: "   " }, aggregator, toolsMap, defaultConfig);
 
       expect(result.isError).toBe(true);
     });
@@ -207,9 +195,7 @@ describe("Code Mode meta-tools", () => {
         defaultConfig,
       );
 
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.success).toBe(true);
       expect(parsed.toolCalls).toHaveLength(1);
       expect(parsed.toolCalls[0].tool).toBe("everything.echo");
@@ -226,9 +212,7 @@ describe("Code Mode meta-tools", () => {
         defaultConfig,
       );
 
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.logs).toContain("hello");
     });
 
@@ -243,9 +227,7 @@ describe("Code Mode meta-tools", () => {
         defaultConfig,
       );
 
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.duration).toBeGreaterThanOrEqual(0);
     });
 
@@ -261,9 +243,7 @@ describe("Code Mode meta-tools", () => {
       );
 
       expect(result.isError).toBe(true);
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.success).toBe(false);
       expect(parsed.errors.length).toBeGreaterThan(0);
     });
@@ -280,9 +260,7 @@ describe("Code Mode meta-tools", () => {
       );
 
       expect(result.isError).toBe(true);
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.success).toBe(false);
       expect(parsed.errors.some((e: string) => e.includes("test error"))).toBe(true);
     });
@@ -304,9 +282,7 @@ describe("Code Mode meta-tools", () => {
       );
 
       expect(result.isError).toBe(true);
-      const parsed = JSON.parse(
-        (result.content[0] as { type: "text"; text: string }).text,
-      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
       expect(parsed.success).toBe(false);
     }, 10000);
   });

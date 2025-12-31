@@ -1,20 +1,20 @@
 import type {
-  Tool,
-  Resource,
-  Prompt,
   CallToolResult,
-  ReadResourceResult,
   GetPromptResult,
+  Prompt,
+  ReadResourceResult,
+  Resource,
+  Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { UpstreamManager } from "./upstream.js";
+import { type ItemWithSource, checkAllCollisions } from "../filtering/collision.js";
 import {
-  shouldAllow,
-  getToolFilter,
-  getResourceFilter,
   getPromptFilter,
+  getResourceFilter,
+  getToolFilter,
+  shouldAllow,
 } from "../filtering/filter.js";
-import { checkAllCollisions, type ItemWithSource } from "../filtering/collision.js";
 import { UpstreamError } from "../utils/errors.js";
+import type { UpstreamManager } from "./upstream.js";
 
 export interface ToolWithSource {
   tool: Tool;

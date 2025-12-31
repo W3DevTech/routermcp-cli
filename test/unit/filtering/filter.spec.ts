@@ -1,12 +1,12 @@
-import { describe, it, expect } from "vitest";
-import {
-  shouldAllow,
-  getToolFilter,
-  getResourceFilter,
-  getPromptFilter,
-  filterItems,
-} from "../../../src/filtering/filter.js";
+import { describe, expect, it } from "vitest";
 import type { FilterConfig } from "../../../src/config/types.js";
+import {
+  filterItems,
+  getPromptFilter,
+  getResourceFilter,
+  getToolFilter,
+  shouldAllow,
+} from "../../../src/filtering/filter.js";
 
 describe("shouldAllow", () => {
   describe("deny rules (highest precedence)", () => {

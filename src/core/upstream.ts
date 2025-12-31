@@ -1,11 +1,11 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
-import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
-import { createClientTransport, type ClientConnection } from "../transports/index.js";
-import { UpstreamError } from "../utils/errors.js";
-import { RouterMcpOAuthProvider, DEFAULT_CLIENT_NAME } from "../oauth/provider.js";
-import { loadOAuthStorage } from "../oauth/storage.js";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { RouterMcpConfig, ServerConfig } from "../config/types.js";
+import { DEFAULT_CLIENT_NAME, RouterMcpOAuthProvider } from "../oauth/provider.js";
 import { ensureValidTokens } from "../oauth/refresh.js";
+import { loadOAuthStorage } from "../oauth/storage.js";
+import { type ClientConnection, createClientTransport } from "../transports/index.js";
+import { UpstreamError } from "../utils/errors.js";
 
 export interface ServerCapabilityCache {
   tools: Tool[];
@@ -47,7 +47,7 @@ export class UpstreamManager {
 
   constructor(
     config: RouterMcpConfig,
-    verbose: boolean = false,
+    verbose = false,
     preloadedCapabilities?: Map<string, ServerCapabilityCache>,
   ) {
     this.verbose = verbose;
@@ -78,7 +78,7 @@ export class UpstreamManager {
     }
   }
 
-  async discoverAll(concurrency: number = 5): Promise<void> {
+  async discoverAll(concurrency = 5): Promise<void> {
     const servers = Array.from(this.servers.values()).filter((s) => s.status !== "disabled");
 
     this.log(

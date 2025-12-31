@@ -1,5 +1,5 @@
-import { serve, type ServerHandle } from "../../src/compat/index.js";
 import { createServer } from "node:net";
+import { type ServerHandle, serve } from "../../src/compat/index.js";
 
 export interface MockOAuthServerConfig {
   issuer?: string;

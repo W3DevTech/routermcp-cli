@@ -1,6 +1,6 @@
-import type { TelemetryEvent, ErrorContext } from "./types.js";
-import { isTelemetryEnabled } from "./config.js";
 import { RouterMcpError } from "../utils/errors.js";
+import { isTelemetryEnabled } from "./config.js";
+import type { ErrorContext, TelemetryEvent } from "./types.js";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.routermcp.com/v1/ingest";
 const TELEMETRY_TIMEOUT_MS = 5000;

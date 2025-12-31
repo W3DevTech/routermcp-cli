@@ -1,23 +1,23 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
-  OAuthClientMetadata,
-  OAuthTokens,
   OAuthClientInformation,
   OAuthClientInformationFull,
+  OAuthClientMetadata,
+  OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import {
-  loadOAuthStorage,
-  saveOAuthStorage,
-  isClientSecretExpired,
+  type OAuthCallbackResult,
+  type OAuthCallbackServer,
+  createOAuthCallbackServer,
+} from "./callback-server.js";
+import {
   type OAuthClientInfo,
   type OAuthTokensData,
+  isClientSecretExpired,
+  loadOAuthStorage,
+  saveOAuthStorage,
 } from "./storage.js";
-import {
-  createOAuthCallbackServer,
-  type OAuthCallbackServer,
-  type OAuthCallbackResult,
-} from "./callback-server.js";
 
 export const DEFAULT_CLIENT_NAME = "RouterMCP";
 

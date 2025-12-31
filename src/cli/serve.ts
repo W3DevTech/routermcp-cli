@@ -1,11 +1,11 @@
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
 import { loadConfigFromPath } from "../config/loader.js";
-import { createGateway, type Gateway } from "../core/gateway.js";
+import { type Gateway, createGateway } from "../core/gateway.js";
+import { type DaemonPaths, getDaemonPaths, getProjectId } from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 import { configCommand } from "./config.js";
-import { getProjectId, getDaemonPaths, type DaemonPaths } from "../daemon/index.js";
 
 export interface ServeCommandOptions {
   config?: string;

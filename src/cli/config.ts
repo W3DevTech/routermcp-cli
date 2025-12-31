@@ -1,10 +1,10 @@
 import * as p from "@clack/prompts";
-import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { ServerConfig, RouterMcpConfig } from "../config/types.js";
-import { findConfigFile, loadConfig } from "../config/loader.js";
-import { createClientTransport } from "../transports/index.js";
+import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { file, write } from "../compat/index.js";
+import { findConfigFile, loadConfig } from "../config/loader.js";
+import type { RouterMcpConfig, ServerConfig } from "../config/types.js";
+import { createClientTransport } from "../transports/index.js";
 
 type MigrationClient = "cursor" | "claude-code";
 

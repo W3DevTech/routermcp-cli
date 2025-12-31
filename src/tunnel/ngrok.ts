@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
+import { type CompatSubprocess, spawnProcess } from "../compat/index.js";
+import { getCredentialsPath, getNgrokToken, setNgrokToken } from "../utils/credentials.js";
 import type { TunnelInfo, TunnelProviderHandler } from "./providers.js";
-import { getNgrokToken, setNgrokToken, getCredentialsPath } from "../utils/credentials.js";
-import { spawnProcess, type CompatSubprocess } from "../compat/index.js";
 
 /**
  * ngrok tunnel provider.

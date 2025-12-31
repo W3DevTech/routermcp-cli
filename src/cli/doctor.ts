@@ -1,9 +1,9 @@
 import * as p from "@clack/prompts";
-import { loadConfig } from "../config/loader.js";
-import type { ServerConfig, OAuthConfig } from "../config/types.js";
-import { loadOAuthStorage, isTokenExpired } from "../oauth/storage.js";
-import { RouterMcpOAuthProvider, DEFAULT_CLIENT_NAME } from "../oauth/provider.js";
 import { auth, discoverOAuthMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
+import { loadConfig } from "../config/loader.js";
+import type { OAuthConfig, ServerConfig } from "../config/types.js";
+import { DEFAULT_CLIENT_NAME, RouterMcpOAuthProvider } from "../oauth/provider.js";
+import { isTokenExpired, loadOAuthStorage } from "../oauth/storage.js";
 
 interface ServerOAuthStatus {
   name: string;

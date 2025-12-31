@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { VirtualSessionManager } from "../../src/core/virtual-session.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RouterMcpConfig } from "../../src/config/types.js";
+import { VirtualSessionManager } from "../../src/core/virtual-session.js";
 
 function createTestConfig(): RouterMcpConfig {
   return {
@@ -62,9 +62,7 @@ describe("VirtualSessionManager", () => {
       sessionManager.getOrCreate("session-2");
       sessionManager.getOrCreate("session-3");
 
-      expect(() => sessionManager.getOrCreate("session-4")).toThrow(
-        "Maximum sessions (3) reached",
-      );
+      expect(() => sessionManager.getOrCreate("session-4")).toThrow("Maximum sessions (3) reached");
     });
 
     it("records creation timestamp", () => {

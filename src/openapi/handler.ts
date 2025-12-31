@@ -1,18 +1,18 @@
-import type { Tool, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { OpenApiServerConfig } from "../config/types.js";
-import type { OpenApiTool, OpenApiServerState } from "./types.js";
-import { isCacheValid, loadFromCache, saveToCache, clearAllCache } from "./cache.js";
-import { parseOpenApiSpec, extractBaseUrl } from "./parser.js";
+import { getToolFilter, shouldAllow } from "../filtering/filter.js";
+import { clearAllCache, isCacheValid, loadFromCache, saveToCache } from "./cache.js";
 import { convertSpecToTools } from "./converter.js";
 import { executeHttpRequest } from "./executor.js";
-import { getToolFilter, shouldAllow } from "../filtering/filter.js";
+import { extractBaseUrl, parseOpenApiSpec } from "./parser.js";
+import type { OpenApiServerState, OpenApiTool } from "./types.js";
 
 export class OpenApiHandler {
   private servers: Map<string, OpenApiServerState> = new Map();
   private toolRegistry: Map<string, OpenApiTool> = new Map();
   private verbose: boolean;
 
-  constructor(config: Record<string, OpenApiServerConfig> | undefined, verbose: boolean = false) {
+  constructor(config: Record<string, OpenApiServerConfig> | undefined, verbose = false) {
     this.verbose = verbose;
 
     if (!config) return;
@@ -32,7 +32,7 @@ export class OpenApiHandler {
     }
   }
 
-  async initialize(clearCache: boolean = false): Promise<void> {
+  async initialize(clearCache = false): Promise<void> {
     if (this.servers.size === 0) {
       return;
     }

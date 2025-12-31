@@ -1,5 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { OpenApiServerConfig, OpenApiAuthConfig } from "../config/types.js";
+import type { OpenApiAuthConfig, OpenApiServerConfig } from "../config/types.js";
 
 export type ParameterLocation = "path" | "query" | "header" | "cookie";
 

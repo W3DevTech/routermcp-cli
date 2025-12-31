@@ -1,11 +1,11 @@
-import { describe, it, expect } from "vitest";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { describe, expect, it } from "vitest";
 import {
+  type ToolInfo,
   generateTypeScriptDefinitions,
   groupToolsByServer,
   toolsToToolInfo,
-  type ToolInfo,
 } from "../../../../src/core/codemode/codegen.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 describe("generateTypeScriptDefinitions", () => {
   it("generates declarations for simple tools", () => {

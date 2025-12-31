@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@clack/prompts", () => ({
   confirm: vi.fn(),
@@ -39,10 +39,10 @@ vi.mock("../../../src/cli/config.js", () => ({
   configCommand: vi.fn(),
 }));
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { serveCommand } from "../../../src/cli/serve.js";
 import { loadConfigFromPath } from "../../../src/config/loader.js";
 import { createGateway } from "../../../src/core/gateway.js";
-import { writeFileSync, mkdirSync } from "node:fs";
 import { ConfigError, RouterMcpError } from "../../../src/utils/errors.js";
 
 describe("serveCommand", () => {
@@ -178,10 +178,7 @@ describe("serveCommand", () => {
       });
 
       expect(mkdirSync).toHaveBeenCalledWith("/tmp/daemon", { recursive: true });
-      expect(writeFileSync).toHaveBeenCalledWith(
-        "/tmp/daemon/daemon.pid",
-        expect.any(String),
-      );
+      expect(writeFileSync).toHaveBeenCalledWith("/tmp/daemon/daemon.pid", expect.any(String));
 
       mockGateway.stop();
     });
@@ -190,10 +187,7 @@ describe("serveCommand", () => {
       const startPromise = serveCommand({ daemonMode: true });
 
       await vi.waitFor(() => {
-        expect(writeFileSync).toHaveBeenCalledWith(
-          "/tmp/daemon/daemon.port",
-          "5151",
-        );
+        expect(writeFileSync).toHaveBeenCalledWith("/tmp/daemon/daemon.port", "5151");
       });
 
       mockGateway.stop();
@@ -246,9 +240,7 @@ describe("serveCommand", () => {
 
       await expect(serveCommand({})).rejects.toThrow("process.exit called");
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining("No config file found"),
-      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("No config file found"));
       expect(exitSpy).toHaveBeenCalledWith(1);
 
       exitSpy.mockRestore();
@@ -280,5 +272,3 @@ describe("serveCommand", () => {
     });
   });
 });
-
-export {};

@@ -1,12 +1,12 @@
-import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { loadConfigFromPath, findConfigFile } from "../config/loader.js";
+import { createInterface } from "node:readline";
+import { findConfigFile, loadConfigFromPath } from "../config/loader.js";
 import {
-  getProjectId,
   getDaemonPaths,
   getDaemonStatus,
-  startDaemon,
+  getProjectId,
   isWindows,
+  startDaemon,
 } from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 

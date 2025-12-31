@@ -1,12 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  RouterMcpError,
-  ConfigError,
   CollisionError,
-  UpstreamError,
-  TransportError,
+  ConfigError,
   ProxyChildProcessError,
   ProxySessionError,
+  RouterMcpError,
+  TransportError,
+  UpstreamError,
 } from "../../../src/utils/errors";
 
 describe("utils/errors", () => {

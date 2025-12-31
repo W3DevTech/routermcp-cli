@@ -1,9 +1,9 @@
 import {
+  DEFAULT_PROXY_OPTIONS,
+  type OutputTransport,
+  type ProxyOptions,
   startSseProxy,
   startStreamableHttpProxy,
-  DEFAULT_PROXY_OPTIONS,
-  type ProxyOptions,
-  type OutputTransport,
 } from "../proxy/index.js";
 
 export interface ProxyCommandOptions {

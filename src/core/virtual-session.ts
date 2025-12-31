@@ -1,12 +1,12 @@
 import type { RouterMcpConfig } from "../config/types.js";
-import { UpstreamManager, type ServerCapabilityCache } from "./upstream.js";
 import {
   Aggregator,
-  type ToolWithSource,
-  type ResourceWithSource,
   type PromptWithSource,
+  type ResourceWithSource,
+  type ToolWithSource,
 } from "./aggregator.js";
 import { SessionAccessCounter } from "./session-counter.js";
+import { type ServerCapabilityCache, UpstreamManager } from "./upstream.js";
 
 export interface CachedCapabilities {
   tools: Map<string, ToolWithSource>;

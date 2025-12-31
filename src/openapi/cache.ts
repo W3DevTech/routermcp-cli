@@ -1,7 +1,7 @@
-import { resolve } from "node:path";
-import { homedir } from "node:os";
-import { mkdir, rm, readFile, writeFile, stat } from "node:fs/promises";
 import crypto from "crypto";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type { CacheMetadata, OpenApiTool } from "./types.js";
 
 const CACHE_VERSION = "1.0.0";
@@ -15,7 +15,7 @@ export function getServerCacheDir(serverName: string): string {
   return resolve(getOpenApiCacheDir(), serverName);
 }
 
-export async function clearAllCache(verbose: boolean = false): Promise<void> {
+export async function clearAllCache(verbose = false): Promise<void> {
   const cacheDir = getOpenApiCacheDir();
   try {
     await rm(cacheDir, { recursive: true, force: true });
@@ -83,7 +83,7 @@ export async function saveToCache(
   serverName: string,
   specSource: string | Record<string, unknown>,
   tools: OpenApiTool[],
-  verbose: boolean = false,
+  verbose = false,
 ): Promise<void> {
   const cacheDir = getServerCacheDir(serverName);
 

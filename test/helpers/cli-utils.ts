@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { createInterface, type Interface } from "node:readline";
-import { Readable, Writable } from "node:stream";
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { type Interface, createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
 
 /**
  * Result of running a CLI command
@@ -46,7 +46,10 @@ export function spawnCli(args: string[], options: SpawnCliOptions = {}): ChildPr
  * Runs the CLI and waits for it to complete
  * Returns stdout, stderr, and exit code
  */
-export async function runCli(args: string[], options: SpawnCliOptions = {}): Promise<CommandResult> {
+export async function runCli(
+  args: string[],
+  options: SpawnCliOptions = {},
+): Promise<CommandResult> {
   const { timeout = 30000, input } = options;
 
   return new Promise((resolve) => {

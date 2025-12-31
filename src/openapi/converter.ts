@@ -1,7 +1,7 @@
-import type { OpenAPIV3 } from "openapi-types";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { OpenAPIV3 } from "openapi-types";
 import type { OpenApiAuthConfig } from "../config/types.js";
-import type { OpenApiTool, ToolExecutionMeta, ParameterMeta, ParameterLocation } from "./types.js";
+import type { OpenApiTool, ParameterLocation, ParameterMeta, ToolExecutionMeta } from "./types.js";
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete"] as const;
 type HttpMethod = (typeof HTTP_METHODS)[number];

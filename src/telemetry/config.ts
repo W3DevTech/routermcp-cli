@@ -1,8 +1,8 @@
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
 import { file, write } from "../compat/index.js";
-import type { UserConfig, TelemetryConfig } from "./types.js";
+import type { TelemetryConfig, UserConfig } from "./types.js";
 
 const ROUTERMCP_DIR = join(homedir(), ".routermcp");
 const CONFIG_PATH = join(ROUTERMCP_DIR, "config.json");

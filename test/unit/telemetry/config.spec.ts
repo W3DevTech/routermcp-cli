@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock functions must be hoisted for vi.mock factory to access them
 const { mockFileExists, mockFileText, mockWrite, mockMkdir } = vi.hoisted(() => ({
@@ -20,14 +20,14 @@ vi.mock("node:fs/promises", () => ({
   mkdir: mockMkdir,
 }));
 
+import { file } from "../../../src/compat/index.js";
 import {
+  getConfigPath,
+  isTelemetryEnabled,
   loadUserConfig,
   saveUserConfig,
-  isTelemetryEnabled,
   setTelemetryEnabled,
-  getConfigPath,
 } from "../../../src/telemetry/config.js";
-import { file } from "../../../src/compat/index.js";
 
 describe("telemetry/config", () => {
   beforeEach(() => {

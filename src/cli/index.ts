@@ -1,13 +1,13 @@
-import { serveCommand, type ServeCommandOptions } from "./serve.js";
-import { configCommand } from "./config.js";
-import { tunnelCommand, type TunnelCommandOptions } from "./tunnel.js";
-import { proxyCommand, type ProxyCommandOptions } from "./proxy.js";
-import { connectCommand, type ConnectCommandOptions } from "./connect.js";
-import { doctorCommand } from "./doctor.js";
-import { oauthStatusCommand, oauthLoginCommand, oauthLogoutCommand } from "./oauth.js";
-import { telemetryCommand, type TelemetryAction } from "./telemetry.js";
-import type { TunnelProvider } from "../tunnel/index.js";
 import type { OutputTransport } from "../proxy/types.js";
+import type { TunnelProvider } from "../tunnel/index.js";
+import { configCommand } from "./config.js";
+import { type ConnectCommandOptions, connectCommand } from "./connect.js";
+import { doctorCommand } from "./doctor.js";
+import { oauthLoginCommand, oauthLogoutCommand, oauthStatusCommand } from "./oauth.js";
+import { type ProxyCommandOptions, proxyCommand } from "./proxy.js";
+import { type ServeCommandOptions, serveCommand } from "./serve.js";
+import { type TelemetryAction, telemetryCommand } from "./telemetry.js";
+import { type TunnelCommandOptions, tunnelCommand } from "./tunnel.js";
 
 interface CliOptions extends ServeCommandOptions {
   tunnel?: TunnelProvider;
@@ -32,7 +32,16 @@ interface CliOptions extends ServeCommandOptions {
   telemetryAction?: TelemetryAction;
 }
 
-type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "doctor" | "oauth" | "telemetry" | "help";
+type Command =
+  | "serve"
+  | "config"
+  | "tunnel"
+  | "proxy"
+  | "connect"
+  | "doctor"
+  | "oauth"
+  | "telemetry"
+  | "help";
 
 interface OAuthSubcommand {
   action: "status" | "login" | "logout";
@@ -99,7 +108,11 @@ export function parseArgs(args: string[]): {
       case "telemetry": {
         command = "telemetry";
         const telemetryAction = args[++i];
-        if (telemetryAction === "enable" || telemetryAction === "disable" || telemetryAction === "status") {
+        if (
+          telemetryAction === "enable" ||
+          telemetryAction === "disable" ||
+          telemetryAction === "status"
+        ) {
           options.telemetryAction = telemetryAction;
         } else if (telemetryAction && !telemetryAction.startsWith("-")) {
           console.error(`Unknown telemetry action: ${telemetryAction}`);
@@ -129,7 +142,7 @@ export function parseArgs(args: string[]): {
         break;
 
       case "--http":
-        options.http = parseInt(args[++i], 10);
+        options.http = Number.parseInt(args[++i], 10);
         if (isNaN(options.http)) {
           console.error("Error: --http requires a port number");
           process.exit(1);
@@ -143,7 +156,7 @@ export function parseArgs(args: string[]): {
 
       case "--port":
       case "-p":
-        options.port = parseInt(args[++i], 10);
+        options.port = Number.parseInt(args[++i], 10);
         if (isNaN(options.port)) {
           console.error("Error: --port requires a port number");
           process.exit(1);
@@ -180,7 +193,7 @@ export function parseArgs(args: string[]): {
         break;
 
       case "--sessionTimeout":
-        options.sessionTimeout = parseInt(args[++i], 10);
+        options.sessionTimeout = Number.parseInt(args[++i], 10);
         if (isNaN(options.sessionTimeout)) {
           console.error("Error: --sessionTimeout requires a number (milliseconds)");
           process.exit(1);
@@ -200,7 +213,7 @@ export function parseArgs(args: string[]): {
         break;
 
       case "--maxRestarts":
-        options.maxRestarts = parseInt(args[++i], 10);
+        options.maxRestarts = Number.parseInt(args[++i], 10);
         if (isNaN(options.maxRestarts)) {
           console.error("Error: --maxRestarts requires a number");
           process.exit(1);

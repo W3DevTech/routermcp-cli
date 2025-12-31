@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir, readdir, rm } from "node:fs/promises";
 import { file, write } from "../compat/index.js";
 
 const ROUTERMCP_DIR = join(homedir(), ".routermcp");
@@ -185,10 +185,7 @@ export async function listOAuthServers(): Promise<OAuthServerStatus[]> {
   return results;
 }
 
-export function isTokenExpired(
-  tokens: OAuthTokensData | undefined,
-  thresholdSeconds: number = 0,
-): boolean {
+export function isTokenExpired(tokens: OAuthTokensData | undefined, thresholdSeconds = 0): boolean {
   if (!tokens?.expires_at) {
     return false;
   }

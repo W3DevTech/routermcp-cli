@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getAvailablePort, waitForHealthy } from "../helpers/integration-utils.js";
 
 const CLI_PATH = join(__dirname, "../../src/index.ts");

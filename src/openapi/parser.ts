@@ -1,7 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { OpenAPIV3 } from "openapi-types";
-import { resolve } from "node:path";
-import { readFile } from "node:fs/promises";
 
 export async function parseOpenApiSpec(
   source: string | Record<string, unknown>,

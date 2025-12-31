@@ -1,17 +1,17 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ServerConfig } from "../../../src/config/types.js";
 import {
   Aggregator,
-  type ToolWithSource,
-  type ResourceWithSource,
   type PromptWithSource,
+  type ResourceWithSource,
+  type ToolWithSource,
 } from "../../../src/core/aggregator.js";
 import type {
   UpstreamManager,
   UpstreamServer,
   UpstreamStatus,
 } from "../../../src/core/upstream.js";
-import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
-import type { ServerConfig } from "../../../src/config/types.js";
 
 function createMockServer(
   name: string,
@@ -62,11 +62,9 @@ function createMockUpstreamManager(servers: UpstreamServer[]): UpstreamManager {
         readResource: vi
           .fn()
           .mockResolvedValue({ contents: [{ uri: "test://resource", text: "content" }] }),
-        getPrompt: vi
-          .fn()
-          .mockResolvedValue({
-            messages: [{ role: "user", content: { type: "text", text: "prompt" } }],
-          }),
+        getPrompt: vi.fn().mockResolvedValue({
+          messages: [{ role: "user", content: { type: "text", text: "prompt" } }],
+        }),
       };
     }),
   } as unknown as UpstreamManager;

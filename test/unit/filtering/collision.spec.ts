@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { checkAllCollisions, type ItemWithSource } from "../../../src/filtering/collision.js";
+import { describe, expect, it } from "vitest";
+import { type ItemWithSource, checkAllCollisions } from "../../../src/filtering/collision.js";
 
 describe("checkAllCollisions", () => {
   describe("tool collisions", () => {

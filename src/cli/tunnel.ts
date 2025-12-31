@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { loadConfigFromPath } from "../config/loader.js";
-import { createGateway, type Gateway } from "../core/gateway.js";
-import { getTunnelProvider, type TunnelProvider, type TunnelInfo } from "../tunnel/index.js";
+import { type Gateway, createGateway } from "../core/gateway.js";
+import { type TunnelInfo, type TunnelProvider, getTunnelProvider } from "../tunnel/index.js";
 import { RouterMcpError } from "../utils/errors.js";
 
 /**
@@ -23,7 +23,7 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
   const verbose = options.verbose ?? false;
 
   // If no tunnel provider specified, show interactive wizard
-  let provider: TunnelProvider = options.tunnel ?? (await selectProvider());
+  const provider: TunnelProvider = options.tunnel ?? (await selectProvider());
 
   try {
     // Load configuration

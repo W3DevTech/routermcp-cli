@@ -48,11 +48,7 @@ export async function waitForServer(url: string, timeout = 30000, interval = 500
 /**
  * Waits for a server health endpoint to return 200
  */
-export async function waitForHealthy(
-  url: string,
-  timeout = 30000,
-  interval = 500,
-): Promise<void> {
+export async function waitForHealthy(url: string, timeout = 30000, interval = 500): Promise<void> {
   const start = Date.now();
 
   while (Date.now() - start < timeout) {
@@ -192,7 +188,9 @@ export async function listPrompts(
   sessionId?: string,
 ): Promise<Array<{ name: string; description?: string }>> {
   const response = await sendMcpRequest(url, "prompts/list", {}, sessionId);
-  return (response.result as { prompts: Array<{ name: string; description?: string }> })?.prompts || [];
+  return (
+    (response.result as { prompts: Array<{ name: string; description?: string }> })?.prompts || []
+  );
 }
 
 /**

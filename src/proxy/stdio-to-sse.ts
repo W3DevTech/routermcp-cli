@@ -1,10 +1,10 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import { createInterface } from "node:readline";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { ChildProcessManager } from "./child-process-manager.js";
-import type { ProxyOptions, HealthResponse, ManagedChildProcess } from "./types.js";
+import type { HealthResponse, ManagedChildProcess, ProxyOptions } from "./types.js";
 
 interface SseSession {
   id: string;

@@ -1,15 +1,15 @@
+import { randomUUID } from "crypto";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
   Transport,
   TransportSendOptions,
 } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { type ServerHandle, serve } from "../compat/index.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
-import { randomUUID } from "crypto";
-import { serve, type ServerHandle } from "../compat/index.js";
 
 export interface HttpClientTransportOptions {
   authProvider?: OAuthClientProvider;
@@ -163,10 +163,7 @@ class BunHttpServerTransport implements SessionAwareTransport {
   }
 }
 
-export function createHttpServerTransport(
-  port: number,
-  host: string = "127.0.0.1",
-): HttpServerHandle {
+export function createHttpServerTransport(port: number, host = "127.0.0.1"): HttpServerHandle {
   const transport = new BunHttpServerTransport();
   let server: ServerHandle | null = null;
 
