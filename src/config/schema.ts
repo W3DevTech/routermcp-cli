@@ -89,7 +89,7 @@ const OpenApiAuthSchema = z
       if (auth.type === "basic") return !!auth.username && !!auth.password;
       return true;
     },
-    { message: "Missing required auth fields for the specified auth type" }
+    { message: "Missing required auth fields for the specified auth type" },
   );
 
 const OpenApiToolFilterSchema = z.object({
@@ -123,10 +123,11 @@ export const RouterMcpConfigSchema = z
   .refine(
     (config) => {
       const hasMcpServers = config.mcpServers && Object.keys(config.mcpServers).length > 0;
-      const hasOpenApiServers = config.openApiServers && Object.keys(config.openApiServers).length > 0;
+      const hasOpenApiServers =
+        config.openApiServers && Object.keys(config.openApiServers).length > 0;
       return hasMcpServers || hasOpenApiServers;
     },
-    { message: "At least one mcpServer or openApiServer must be configured" }
+    { message: "At least one mcpServer or openApiServer must be configured" },
   );
 
 export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>;

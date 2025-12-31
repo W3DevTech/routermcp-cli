@@ -2,10 +2,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
-import {
-  createStdioClientTransport,
-  createStdioServerTransport,
-} from "./stdio.js";
+import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 import {
   createHttpClientTransport,
   createHttpServerTransport,
@@ -28,7 +25,7 @@ export interface ClientConnection {
 export async function createClientTransport(
   serverName: string,
   config: ServerConfig,
-  options?: HttpClientTransportOptions
+  options?: HttpClientTransportOptions,
 ): Promise<ClientConnection> {
   switch (config.transport) {
     case "stdio":
@@ -38,7 +35,7 @@ export async function createClientTransport(
     default:
       throw new TransportError(
         (config as ServerConfig).transport,
-        `Unknown transport type: ${(config as ServerConfig).transport}`
+        `Unknown transport type: ${(config as ServerConfig).transport}`,
       );
   }
 }
@@ -56,7 +53,7 @@ export interface ServerTransportHandle {
 export function createServerTransport(
   mode: "stdio" | "http-streamable",
   httpPort?: number,
-  httpHost?: string
+  httpHost?: string,
 ): ServerTransportHandle {
   if (mode === "stdio") {
     const transport = createStdioServerTransport();
@@ -73,10 +70,7 @@ export function createServerTransport(
 
   if (mode === "http-streamable") {
     if (!httpPort) {
-      throw new TransportError(
-        "http-streamable",
-        "Port is required for http-streamable transport"
-      );
+      throw new TransportError("http-streamable", "Port is required for http-streamable transport");
     }
     const handle = createHttpServerTransport(httpPort, httpHost);
     return {

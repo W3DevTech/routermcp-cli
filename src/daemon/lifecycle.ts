@@ -58,7 +58,7 @@ export function isProcessRunning(pid: number): boolean {
 
 export async function startDaemon(
   paths: DaemonPaths,
-  verbose: boolean = false
+  verbose: boolean = false,
 ): Promise<DaemonStatus> {
   mkdirSync(paths.dir, { recursive: true });
 

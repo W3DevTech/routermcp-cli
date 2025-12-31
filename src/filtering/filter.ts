@@ -103,9 +103,6 @@ export function getPromptFilter(serverConfig: {
 /**
  * Filter an array of items based on filter configuration.
  */
-export function filterItems<T extends { name: string }>(
-  items: T[],
-  filter: FilterConfig
-): T[] {
+export function filterItems<T extends { name: string }>(items: T[], filter: FilterConfig): T[] {
   return items.filter((item) => shouldAllow(item.name, filter));
 }

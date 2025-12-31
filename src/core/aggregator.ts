@@ -52,12 +52,10 @@ export class Aggregator {
     const allPrompts: ItemWithSource[] = [];
 
     for (const server of this.upstreamManager.getDiscoveredOrConnected()) {
-      const tools =
-        server.cachedTools.length > 0 ? server.cachedTools : server.tools;
+      const tools = server.cachedTools.length > 0 ? server.cachedTools : server.tools;
       const resources =
         server.cachedResources.length > 0 ? server.cachedResources : server.resources;
-      const prompts =
-        server.cachedPrompts.length > 0 ? server.cachedPrompts : server.prompts;
+      const prompts = server.cachedPrompts.length > 0 ? server.cachedPrompts : server.prompts;
 
       const toolFilter = getToolFilter(server.config);
       for (const tool of tools) {
@@ -135,10 +133,7 @@ export class Aggregator {
       const client = await this.upstreamManager.ensureConnected(entry.serverName);
       return client.readResource({ uri });
     } catch (err) {
-      throw new UpstreamError(
-        entry.serverName,
-        err instanceof Error ? err.message : String(err)
-      );
+      throw new UpstreamError(entry.serverName, err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -152,10 +147,7 @@ export class Aggregator {
       const client = await this.upstreamManager.ensureConnected(entry.serverName);
       return client.getPrompt({ name, arguments: args });
     } catch (err) {
-      throw new UpstreamError(
-        entry.serverName,
-        err instanceof Error ? err.message : String(err)
-      );
+      throw new UpstreamError(entry.serverName, err instanceof Error ? err.message : String(err));
     }
   }
 

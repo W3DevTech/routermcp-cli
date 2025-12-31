@@ -49,7 +49,7 @@ export function getCodeModeMetaTools(): Tool[] {
 
 export async function handleListTools(
   args: Record<string, unknown>,
-  toolsMap: Map<string, ToolWithSource>
+  toolsMap: Map<string, ToolWithSource>,
 ): Promise<CallToolResult> {
   const filter = typeof args.filter === "string" ? args.filter.toLowerCase().trim() : "";
 
@@ -80,7 +80,7 @@ export async function handleExecuteCode(
   args: Record<string, unknown>,
   aggregator: Aggregator,
   toolsMap: Map<string, ToolWithSource>,
-  config: CodeModeConfig
+  config: CodeModeConfig,
 ): Promise<CallToolResult> {
   const code = typeof args.code === "string" ? args.code : "";
 

@@ -13,7 +13,11 @@ import {
   type OAuthClientInfo,
   type OAuthTokensData,
 } from "./storage.js";
-import { createOAuthCallbackServer, type OAuthCallbackServer, type OAuthCallbackResult } from "./callback-server.js";
+import {
+  createOAuthCallbackServer,
+  type OAuthCallbackServer,
+  type OAuthCallbackResult,
+} from "./callback-server.js";
 
 export const DEFAULT_CLIENT_NAME = "RouterMCP";
 
@@ -41,7 +45,7 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
     private serverName: string,
     private serverUrl: string,
     private config: OAuthProviderConfig,
-    private callbacks: OAuthProviderCallbacks
+    private callbacks: OAuthProviderCallbacks,
   ) {}
 
   get redirectUrl(): string {
@@ -131,9 +135,7 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
       access_token: tokens.access_token,
       token_type: tokens.token_type,
       refresh_token: tokens.refresh_token,
-      expires_at: tokens.expires_in
-        ? Math.floor(Date.now() / 1000) + tokens.expires_in
-        : undefined,
+      expires_at: tokens.expires_in ? Math.floor(Date.now() / 1000) + tokens.expires_in : undefined,
       scope: tokens.scope,
     };
 
@@ -218,7 +220,7 @@ export function createOAuthProvider(
   serverName: string,
   serverUrl: string,
   config: OAuthProviderConfig,
-  callbacks: OAuthProviderCallbacks
+  callbacks: OAuthProviderCallbacks,
 ): RouterMcpOAuthProvider {
   return new RouterMcpOAuthProvider(serverName, serverUrl, config, callbacks);
 }

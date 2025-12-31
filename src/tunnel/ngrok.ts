@@ -23,7 +23,7 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
       throw new Error(
         "ngrok not found. Install with:\n" +
           "  macOS: brew install ngrok\n" +
-          "  Linux: See https://ngrok.com/download"
+          "  Linux: See https://ngrok.com/download",
       );
     }
 
@@ -63,7 +63,7 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
     // Start ngrok tunnel with JSON logging
     this.process = spawnProcess(
       ["ngrok", "http", String(port), "--log", "stdout", "--log-format", "json"],
-      { stdout: "pipe", stderr: "pipe" }
+      { stdout: "pipe", stderr: "pipe" },
     );
 
     const url = await this.parseNgrokOutput();
@@ -115,7 +115,7 @@ export class NgrokTunnelProvider implements TunnelProviderHandler {
     }
 
     throw new Error(
-      "Could not parse tunnel URL from ngrok output. Make sure your auth token is valid."
+      "Could not parse tunnel URL from ngrok output. Make sure your auth token is valid.",
     );
   }
 

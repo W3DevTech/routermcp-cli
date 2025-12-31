@@ -1,10 +1,8 @@
-import { refreshAuthorization, discoverOAuthMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
-  loadOAuthStorage,
-  saveTokens,
-  isTokenExpired,
-  type OAuthTokensData,
-} from "./storage.js";
+  refreshAuthorization,
+  discoverOAuthMetadata,
+} from "@modelcontextprotocol/sdk/client/auth.js";
+import { loadOAuthStorage, saveTokens, isTokenExpired, type OAuthTokensData } from "./storage.js";
 import type { OAuthConfig } from "../config/types.js";
 
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
@@ -19,7 +17,7 @@ export interface RefreshResult {
 
 export async function ensureValidTokens(
   serverUrl: string,
-  _config?: OAuthConfig
+  _config?: OAuthConfig,
 ): Promise<RefreshResult> {
   try {
     const stored = await loadOAuthStorage(serverUrl);
@@ -91,7 +89,7 @@ export async function ensureValidTokens(
 }
 
 export async function refreshAllTokens(
-  servers: Map<string, { url?: string; oauth?: OAuthConfig }>
+  servers: Map<string, { url?: string; oauth?: OAuthConfig }>,
 ): Promise<RefreshResult[]> {
   const results: RefreshResult[] = [];
 

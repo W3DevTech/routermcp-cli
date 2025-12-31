@@ -129,7 +129,7 @@ export function generateTypeScriptDefinitions(tools: ToolInfo[]): string {
   lines.push("// Built-in functions:");
   lines.push("declare function fetch(url: string, init?: RequestInit): Promise<Response>;");
   lines.push(
-    "declare const console: { log: (...args: any[]) => void; error: (...args: any[]) => void; warn: (...args: any[]) => void };"
+    "declare const console: { log: (...args: any[]) => void; error: (...args: any[]) => void; warn: (...args: any[]) => void };",
   );
 
   return lines.join("\n");
@@ -146,7 +146,7 @@ export function groupToolsByServer(tools: ToolInfo[]): Map<string, string[]> {
 }
 
 export function toolsToToolInfo(
-  toolsMap: Map<string, { tool: Tool; serverName: string }>
+  toolsMap: Map<string, { tool: Tool; serverName: string }>,
 ): ToolInfo[] {
   const result: ToolInfo[] = [];
   for (const [, { tool, serverName }] of toolsMap) {

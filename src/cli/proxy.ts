@@ -26,7 +26,9 @@ export interface ProxyCommandOptions {
 export async function proxyCommand(options: ProxyCommandOptions): Promise<void> {
   if (!options.stdio) {
     console.error("Error: --stdio is required for proxy command");
-    console.error("Example: routermcp proxy --stdio 'npx -y @modelcontextprotocol/server-filesystem .'");
+    console.error(
+      "Example: routermcp proxy --stdio 'npx -y @modelcontextprotocol/server-filesystem .'",
+    );
     process.exit(1);
   }
 

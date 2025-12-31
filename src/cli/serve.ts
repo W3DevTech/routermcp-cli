@@ -84,10 +84,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
   } catch (err) {
     // Handle missing config file with interactive prompt
-    if (
-      err instanceof ConfigError &&
-      err.message.includes("No config file found")
-    ) {
+    if (err instanceof ConfigError && err.message.includes("No config file found")) {
       console.error(`Error: ${err.message}`);
 
       // Only offer interactive prompt if running in a TTY
@@ -164,7 +161,7 @@ function cleanupDaemonFiles(paths: DaemonPaths | null): void {
 function startIdleShutdownMonitor(
   gateway: Gateway,
   daemonPaths: DaemonPaths,
-  verbose: boolean
+  verbose: boolean,
 ): void {
   let idleStart: number | null = null;
 
@@ -190,7 +187,9 @@ function startIdleShutdownMonitor(
       }
     } else {
       if (idleStart !== null && verbose) {
-        console.error(`[daemon] Activity detected (${activeSessions} sessions), resetting idle timer`);
+        console.error(
+          `[daemon] Activity detected (${activeSessions} sessions), resetting idle timer`,
+        );
       }
       idleStart = null;
     }

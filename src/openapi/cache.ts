@@ -38,7 +38,7 @@ export async function clearServerCache(serverName: string): Promise<void> {
 
 export async function isCacheValid(
   serverName: string,
-  specSource: string | Record<string, unknown>
+  specSource: string | Record<string, unknown>,
 ): Promise<boolean> {
   const cacheDir = getServerCacheDir(serverName);
   const metadataPath = resolve(cacheDir, "metadata.json");
@@ -83,7 +83,7 @@ export async function saveToCache(
   serverName: string,
   specSource: string | Record<string, unknown>,
   tools: OpenApiTool[],
-  verbose: boolean = false
+  verbose: boolean = false,
 ): Promise<void> {
   const cacheDir = getServerCacheDir(serverName);
 
@@ -94,9 +94,7 @@ export async function saveToCache(
 
   const now = new Date();
   const sourceUrl =
-    typeof specSource === "string" && specSource.startsWith("http")
-      ? specSource
-      : undefined;
+    typeof specSource === "string" && specSource.startsWith("http") ? specSource : undefined;
 
   const metadata: CacheMetadata = {
     sourceHash: hashSpec(specSource),

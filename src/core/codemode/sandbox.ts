@@ -29,9 +29,7 @@ interface QuickJsSandboxResult {
   error?: { message: string };
 }
 
-type QuickJsLoader = Awaited<
-  ReturnType<typeof import("@sebastianwessel/quickjs").loadQuickJs>
->;
+type QuickJsLoader = Awaited<ReturnType<typeof import("@sebastianwessel/quickjs").loadQuickJs>>;
 
 let quickJsLoader: QuickJsLoader | null = null;
 
@@ -61,7 +59,7 @@ export async function executeCodeMode(
   code: string,
   aggregator: Aggregator,
   toolsByServer: Map<string, string[]>,
-  config: SandboxConfig = {}
+  config: SandboxConfig = {},
 ): Promise<CodeModeResult> {
   const { timeout = 30000, allowFetch = true } = config;
   const logs: string[] = [];
@@ -79,7 +77,10 @@ export async function executeCodeMode(
       toolNamespaces[serverName][toolName] = async (args: unknown) => {
         const start = Date.now();
         try {
-          const result = await aggregator.callTool(toolName, (args ?? {}) as Record<string, unknown>);
+          const result = await aggregator.callTool(
+            toolName,
+            (args ?? {}) as Record<string, unknown>,
+          );
           toolCalls.push({
             tool: `${serverName}.${toolName}`,
             args,
@@ -128,8 +129,9 @@ export default await __main();
 
   try {
     const result = (await runSandboxed(
-      async ({ evalCode }: { evalCode: (code: string) => Promise<unknown> }) => evalCode(wrappedCode),
-      options
+      async ({ evalCode }: { evalCode: (code: string) => Promise<unknown> }) =>
+        evalCode(wrappedCode),
+      options,
     )) as QuickJsSandboxResult;
 
     if (result.ok) {

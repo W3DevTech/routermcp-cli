@@ -298,7 +298,10 @@ async function manualAllowedToolsEntry(config: ServerConfig): Promise<void> {
   });
 
   if (!p.isCancel(tools) && tools) {
-    const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
+    const patterns = (tools as string)
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
     const exact = patterns.filter((pat) => !pat.includes("*"));
     const globs = patterns.filter((pat) => pat.includes("*"));
 
@@ -369,7 +372,10 @@ async function manualDeniedToolsEntry(config: ServerConfig): Promise<void> {
   });
 
   if (!p.isCancel(tools) && tools) {
-    const patterns = (tools as string).split(",").map((t) => t.trim()).filter(Boolean);
+    const patterns = (tools as string)
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
     const exact = patterns.filter((pat) => !pat.includes("*"));
     const globs = patterns.filter((pat) => pat.includes("*"));
 
@@ -450,16 +456,18 @@ function listServers(config: RouterMcpConfig): void {
   p.log.info("Configured servers:");
   for (const [name, server] of servers) {
     const details =
-      server.transport === "stdio"
-        ? `command: ${server.command}`
-        : `url: ${server.url}`;
+      server.transport === "stdio" ? `command: ${server.command}` : `url: ${server.url}`;
     p.log.message(`  ${name} (${server.transport}) - ${details}`);
 
     if (server.allowedTools?.length || server.allowedToolsGlob?.length) {
-      p.log.message(`    Allowed tools: ${[...(server.allowedTools || []), ...(server.allowedToolsGlob || [])].join(", ")}`);
+      p.log.message(
+        `    Allowed tools: ${[...(server.allowedTools || []), ...(server.allowedToolsGlob || [])].join(", ")}`,
+      );
     }
     if (server.denyTools?.length || server.denyToolsGlob?.length) {
-      p.log.message(`    Denied tools: ${[...(server.denyTools || []), ...(server.denyToolsGlob || [])].join(", ")}`);
+      p.log.message(
+        `    Denied tools: ${[...(server.denyTools || []), ...(server.denyToolsGlob || [])].join(", ")}`,
+      );
     }
   }
 }
@@ -491,7 +499,7 @@ async function saveConfig(config: RouterMcpConfig): Promise<void> {
  */
 async function validateServer(
   serverName: string,
-  serverConfig: ServerConfig
+  serverConfig: ServerConfig,
 ): Promise<{ success: boolean; toolCount?: number; error?: string }> {
   try {
     const { client, cleanup } = await createClientTransport(serverName, serverConfig);
@@ -623,7 +631,7 @@ async function readClientConfig(path: string): Promise<RouterMcpConfig | null> {
  */
 async function mergeServerConfigs(
   target: RouterMcpConfig,
-  source: RouterMcpConfig
+  source: RouterMcpConfig,
 ): Promise<number> {
   let mergedCount = 0;
 
@@ -683,9 +691,9 @@ async function replaceClientConfig(client: MigrationClient): Promise<void> {
     mcpServers: {
       routermcp: {
         command: "bunx",
-        args: ["-y", "routermcp"]
-      }
-    }
+        args: ["-y", "routermcp"],
+      },
+    },
   };
 
   try {

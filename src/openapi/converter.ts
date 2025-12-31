@@ -10,7 +10,7 @@ export function convertSpecToTools(
   spec: OpenAPIV3.Document,
   serverName: string,
   baseUrl: string,
-  auth?: OpenApiAuthConfig
+  auth?: OpenApiAuthConfig,
 ): OpenApiTool[] {
   const tools: OpenApiTool[] = [];
   const usedNames = new Set<string>();
@@ -134,7 +134,7 @@ function buildInputSchema(operation: OpenAPIV3.OperationObject): {
 
 function convertSchema(
   schema: OpenAPIV3.SchemaObject,
-  description?: string
+  description?: string,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
@@ -163,7 +163,7 @@ function convertSchema(
     result.properties = {};
     for (const [key, value] of Object.entries(schema.properties)) {
       (result.properties as Record<string, unknown>)[key] = convertSchema(
-        value as OpenAPIV3.SchemaObject
+        value as OpenAPIV3.SchemaObject,
       );
     }
   }

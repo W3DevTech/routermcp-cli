@@ -21,15 +21,15 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
       throw new Error(
         "cloudflared not found. Install with:\n" +
           "  macOS: brew install cloudflared\n" +
-          "  Linux: See https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
+          "  Linux: See https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/",
       );
     }
 
     // Start cloudflared tunnel
-    this.process = spawnProcess(
-      ["cloudflared", "tunnel", "--url", `http://localhost:${port}`],
-      { stdout: "pipe", stderr: "pipe" }
-    );
+    this.process = spawnProcess(["cloudflared", "tunnel", "--url", `http://localhost:${port}`], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
     // Parse output to find tunnel URL
     const url = await this.parseCloudflaredOutput();
@@ -68,7 +68,7 @@ export class CloudflareTunnelProvider implements TunnelProviderHandler {
     }
 
     throw new Error(
-      "Could not parse tunnel URL from cloudflared output. Make sure cloudflared is working correctly."
+      "Could not parse tunnel URL from cloudflared output. Make sure cloudflared is working correctly.",
     );
   }
 

@@ -12,10 +12,7 @@ export class OpenApiHandler {
   private toolRegistry: Map<string, OpenApiTool> = new Map();
   private verbose: boolean;
 
-  constructor(
-    config: Record<string, OpenApiServerConfig> | undefined,
-    verbose: boolean = false
-  ) {
+  constructor(config: Record<string, OpenApiServerConfig> | undefined, verbose: boolean = false) {
     this.verbose = verbose;
 
     if (!config) return;
@@ -47,7 +44,7 @@ export class OpenApiHandler {
     }
 
     const results = await Promise.allSettled(
-      Array.from(this.servers.values()).map((server) => this.initializeServer(server))
+      Array.from(this.servers.values()).map((server) => this.initializeServer(server)),
     );
 
     this.buildToolRegistry();
@@ -93,7 +90,7 @@ export class OpenApiHandler {
       server.error = err instanceof Error ? err : new Error(String(err));
 
       console.error(
-        `[openapi] Warning: Failed to initialize ${server.name}: ${server.error.message}`
+        `[openapi] Warning: Failed to initialize ${server.name}: ${server.error.message}`,
       );
     }
   }

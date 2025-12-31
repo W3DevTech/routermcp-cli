@@ -40,7 +40,7 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
   } catch (err) {
     throw new ConfigError(
       `Failed to read config file: ${path}`,
-      err instanceof Error ? err : undefined
+      err instanceof Error ? err : undefined,
     );
   }
 
@@ -56,17 +56,15 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
   } catch (err) {
     throw new ConfigError(
       `Failed to parse config file: ${path}`,
-      err instanceof Error ? err : undefined
+      err instanceof Error ? err : undefined,
     );
   }
 
   if (errors.length > 0) {
     const errorMessages = errors.map(
-      (e) => `Parse error at offset ${e.offset}: error code ${e.error}`
+      (e) => `Parse error at offset ${e.offset}: error code ${e.error}`,
     );
-    throw new ConfigError(
-      `Invalid JSON in config file ${path}:\n${errorMessages.join("\n")}`
-    );
+    throw new ConfigError(`Invalid JSON in config file ${path}:\n${errorMessages.join("\n")}`);
   }
 
   // Normalize config for backwards compatibility
@@ -106,9 +104,7 @@ function normalizeConfig(parsed: unknown): unknown {
 
   if (!mcpServers || typeof mcpServers !== "object") return parsed;
 
-  for (const serverConfig of Object.values(
-    mcpServers as Record<string, unknown>
-  )) {
+  for (const serverConfig of Object.values(mcpServers as Record<string, unknown>)) {
     if (!serverConfig || typeof serverConfig !== "object") continue;
 
     const server = serverConfig as Record<string, unknown>;
@@ -176,11 +172,7 @@ function parseEnvReference(content: string): EnvReference | null {
   return null;
 }
 
-function expandEnvReference(
-  match: string,
-  content: string,
-  options: EnvExpansionOptions
-): string {
+function expandEnvReference(match: string, content: string, options: EnvExpansionOptions): string {
   const parsed = parseEnvReference(content);
 
   if (!parsed) {
@@ -208,7 +200,7 @@ function expandEnvReference(
 
   // Legacy syntax: emit deprecation warning and return empty string
   console.error(
-    `[config] Deprecation: \${${varName}} syntax is deprecated. Use \${env:${varName}} instead.`
+    `[config] Deprecation: \${${varName}} syntax is deprecated. Use \${env:${varName}} instead.`,
   );
   return "";
 }
@@ -239,7 +231,7 @@ function expandEnvVars(value: unknown, options: EnvExpansionOptions): unknown {
  * Load config from default location or specified path.
  */
 export async function loadConfigFromPath(
-  configPath?: string
+  configPath?: string,
 ): Promise<{ config: RouterMcpConfig; path: string }> {
   let path: string;
 
@@ -249,7 +241,7 @@ export async function loadConfigFromPath(
     const found = await findConfigFile(process.cwd());
     if (!found) {
       throw new ConfigError(
-        `No config file found. Create routermcp.jsonc or specify --config path.`
+        `No config file found. Create routermcp.jsonc or specify --config path.`,
       );
     }
     path = found;

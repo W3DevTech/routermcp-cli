@@ -1,11 +1,7 @@
 import * as p from "@clack/prompts";
 import { loadConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
-import {
-  getTunnelProvider,
-  type TunnelProvider,
-  type TunnelInfo,
-} from "../tunnel/index.js";
+import { getTunnelProvider, type TunnelProvider, type TunnelInfo } from "../tunnel/index.js";
 import { RouterMcpError } from "../utils/errors.js";
 
 /**
@@ -92,8 +88,8 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
             },
           },
           null,
-          2
-        )
+          2,
+        ),
       );
       console.log();
       console.error("Use --tunnel=cloudflare or --tunnel=ngrok to expose publicly.");
@@ -131,8 +127,8 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
             },
           },
           null,
-          2
-        )
+          2,
+        ),
       );
       console.log();
       console.error("Press Ctrl+C to stop the tunnel.");
@@ -197,10 +193,7 @@ async function selectProvider(): Promise<TunnelProvider> {
 /**
  * Setup signal handlers for graceful shutdown.
  */
-function setupSignalHandlers(
-  gateway: Gateway,
-  additionalCleanup: () => Promise<void>
-): void {
+function setupSignalHandlers(gateway: Gateway, additionalCleanup: () => Promise<void>): void {
   const shutdown = async (signal: string) => {
     console.error(`\nReceived ${signal}, shutting down...`);
     try {

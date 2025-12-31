@@ -17,11 +17,7 @@ import {
   type CachedCapabilities,
   type VirtualSession,
 } from "./virtual-session.js";
-import {
-  getCodeModeMetaTools,
-  handleListTools,
-  handleExecuteCode,
-} from "./codemode/index.js";
+import { getCodeModeMetaTools, handleListTools, handleExecuteCode } from "./codemode/index.js";
 import { OpenApiHandler } from "../openapi/index.js";
 
 export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
@@ -55,7 +51,7 @@ export class Gateway {
 
     this.server = new Server(
       { name: "routermcp-gateway", version: "1.0.0" },
-      { capabilities: { tools: {}, resources: {}, prompts: {} } }
+      { capabilities: { tools: {}, resources: {}, prompts: {} } },
     );
 
     this.discoveryManager = new UpstreamManager(options.config, options.verbose);
@@ -98,9 +94,7 @@ export class Gateway {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       if (this.cachedCapabilities) {
         return {
-          resources: Array.from(this.cachedCapabilities.resources.values()).map(
-            (r) => r.resource
-          ),
+          resources: Array.from(this.cachedCapabilities.resources.values()).map((r) => r.resource),
         };
       }
       return { resources: [] };
@@ -180,13 +174,13 @@ export class Gateway {
       if (this.options.config.openApiServers) {
         this.openApiHandler = new OpenApiHandler(
           this.options.config.openApiServers,
-          this.options.verbose
+          this.options.verbose,
         );
         await this.openApiHandler.initialize(this.options.clearOpenApiCache);
 
         const openApiStats = this.openApiHandler.getStats();
         this.log(
-          `OpenAPI: ${openApiStats.readyServers}/${openApiStats.totalServers} servers, ${openApiStats.totalTools} tools`
+          `OpenAPI: ${openApiStats.readyServers}/${openApiStats.totalServers} servers, ${openApiStats.totalTools} tools`,
         );
       }
 
@@ -197,7 +191,9 @@ export class Gateway {
         resources: this.cachedCapabilities.resources.size,
         prompts: this.cachedCapabilities.prompts.size,
       };
-      this.log(`Aggregated: ${stats.tools} tools, ${stats.resources} resources, ${stats.prompts} prompts`);
+      this.log(
+        `Aggregated: ${stats.tools} tools, ${stats.resources} resources, ${stats.prompts} prompts`,
+      );
 
       await this.discoveryManager.disconnectAll();
 
@@ -228,7 +224,7 @@ export class Gateway {
       this.serverTransport = createServerTransport(
         this.options.mode,
         this.options.httpPort,
-        this.options.httpHost
+        this.options.httpHost,
       );
 
       await this.server.connect(this.serverTransport.transport);
@@ -264,7 +260,9 @@ export class Gateway {
     if (this.openApiHandler) {
       for (const [name, entry] of this.openApiHandler.getToolsMap()) {
         if (toolsMap.has(name)) {
-          console.error(`[gateway] Warning: OpenAPI tool "${name}" collides with MCP tool, skipping`);
+          console.error(
+            `[gateway] Warning: OpenAPI tool "${name}" collides with MCP tool, skipping`,
+          );
           continue;
         }
         toolsMap.set(name, entry);
@@ -320,7 +318,7 @@ export class Gateway {
   private async handleMetaTool(
     name: string,
     args: Record<string, unknown>,
-    extra: unknown
+    extra: unknown,
   ): Promise<CallToolResult> {
     if (!this.cachedCapabilities) {
       return {
@@ -337,12 +335,7 @@ export class Gateway {
 
       case "routermcp.executeCode": {
         const session = this.getSessionForRequest(extra);
-        return handleExecuteCode(
-          args,
-          session.aggregator,
-          this.cachedCapabilities.tools,
-          codeMode
-        );
+        return handleExecuteCode(args, session.aggregator, this.cachedCapabilities.tools, codeMode);
       }
 
       default:

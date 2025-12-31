@@ -21,5 +21,3 @@ if (existsSync(targetReadmePath)) {
 
 writeFileSync(targetReadmePath, readFileSync(readmePath, "utf-8"));
 console.log(`Copied ${npmReadme} to README.md for npm publishing`);
-
-

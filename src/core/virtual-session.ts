@@ -43,14 +43,11 @@ export class VirtualSessionManager {
     this.maxSessions = options.maxSessions;
     this.verbose = options.verbose ?? false;
 
-    this.sessionCounter = new SessionAccessCounter(
-      options.sessionTimeout * 1000,
-      (sessionId) => {
-        this.log(`Session ${sessionId} timed out`);
-        this.cleanup(sessionId);
-        options.onSessionCleanup?.(sessionId);
-      }
-    );
+    this.sessionCounter = new SessionAccessCounter(options.sessionTimeout * 1000, (sessionId) => {
+      this.log(`Session ${sessionId} timed out`);
+      this.cleanup(sessionId);
+      options.onSessionCleanup?.(sessionId);
+    });
   }
 
   setCapabilityCache(capabilities: CachedCapabilities): void {
@@ -65,9 +62,7 @@ export class VirtualSessionManager {
     }
 
     if (this.sessions.size >= this.maxSessions) {
-      throw new Error(
-        `Maximum sessions (${this.maxSessions}) reached. Try again later.`
-      );
+      throw new Error(`Maximum sessions (${this.maxSessions}) reached. Try again later.`);
     }
 
     this.log(`Creating new session: ${sessionId}`);
@@ -75,7 +70,7 @@ export class VirtualSessionManager {
     const upstreamManager = new UpstreamManager(
       this.config,
       this.verbose,
-      this.cachedCapabilities?.serverCapabilities
+      this.cachedCapabilities?.serverCapabilities,
     );
 
     const aggregator = new Aggregator(upstreamManager);

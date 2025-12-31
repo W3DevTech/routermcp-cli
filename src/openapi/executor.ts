@@ -3,7 +3,7 @@ import type { ToolExecutionMeta } from "./types.js";
 
 export async function executeHttpRequest(
   execution: ToolExecutionMeta,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   let url = `${execution.baseUrl}${execution.pathTemplate}`;
 
@@ -55,7 +55,7 @@ export async function executeHttpRequest(
       case "basic":
         if (execution.auth.username && execution.auth.password) {
           const credentials = Buffer.from(
-            `${execution.auth.username}:${execution.auth.password}`
+            `${execution.auth.username}:${execution.auth.password}`,
           ).toString("base64");
           headers["Authorization"] = `Basic ${credentials}`;
         }

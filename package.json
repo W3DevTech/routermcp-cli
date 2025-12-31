@@ -23,14 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "debug:opencode": "OPENCODE_CONFIG_DIR=./debug/opencode opencode"
   },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "gateway",
-    "cli",
-    "router",
-    "aggregator"
-  ],
+  "keywords": ["mcp", "model-context-protocol", "gateway", "cli", "router", "aggregator"],
   "author": "Ashutosh Kumar",
   "license": "MIT",
   "repository": {

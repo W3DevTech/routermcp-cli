@@ -9,13 +9,10 @@ import { TransportError } from "../utils/errors.js";
  */
 export async function createStdioClientTransport(
   serverName: string,
-  config: ServerConfig
+  config: ServerConfig,
 ): Promise<{ client: Client; cleanup: () => Promise<void> }> {
   if (config.transport !== "stdio") {
-    throw new TransportError(
-      "stdio",
-      `Expected stdio transport, got ${config.transport}`
-    );
+    throw new TransportError("stdio", `Expected stdio transport, got ${config.transport}`);
   }
 
   if (!config.command) {
@@ -47,7 +44,7 @@ export async function createStdioClientTransport(
     },
     {
       capabilities: {},
-    }
+    },
   );
 
   await client.connect(transport);

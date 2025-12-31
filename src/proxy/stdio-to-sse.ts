@@ -179,7 +179,7 @@ export async function startSseProxy(options: ProxyOptions): Promise<void> {
 function setupChildStdoutBroadcast(
   child: ManagedChildProcess,
   sessions: Map<string, SseSession>,
-  log: (msg: string) => void
+  log: (msg: string) => void,
 ): void {
   const rl = createInterface({ input: child.stdout });
 

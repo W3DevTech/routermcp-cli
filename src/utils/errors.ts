@@ -5,7 +5,7 @@ export class RouterMcpError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly cause?: Error
+    public readonly cause?: Error,
   ) {
     super(message);
     this.name = "RouterMcpError";
@@ -31,7 +31,7 @@ export class CollisionError extends RouterMcpError {
       name: string;
       type: "tool" | "resource" | "prompt";
       servers: string[];
-    }>
+    }>,
   ) {
     const msg = collisions
       .map((c) => `${c.type} "${c.name}" in [${c.servers.join(", ")}]`)
@@ -48,7 +48,7 @@ export class UpstreamError extends RouterMcpError {
   constructor(
     public readonly serverName: string,
     message: string,
-    cause?: Error
+    cause?: Error,
   ) {
     super(`[${serverName}] ${message}`, "UPSTREAM_ERROR", cause);
     this.name = "UpstreamError";
@@ -62,7 +62,7 @@ export class TransportError extends RouterMcpError {
   constructor(
     public readonly transportType: string,
     message: string,
-    cause?: Error
+    cause?: Error,
   ) {
     super(`[${transportType}] ${message}`, "TRANSPORT_ERROR", cause);
     this.name = "TransportError";
@@ -77,12 +77,12 @@ export class ProxyChildProcessError extends RouterMcpError {
     public readonly command: string,
     public readonly restartCount: number,
     message: string,
-    cause?: Error
+    cause?: Error,
   ) {
     super(
       `Child process failed after ${restartCount} restart(s): ${message}`,
       "PROXY_CHILD_PROCESS_ERROR",
-      cause
+      cause,
     );
     this.name = "ProxyChildProcessError";
   }
@@ -95,7 +95,7 @@ export class ProxySessionError extends RouterMcpError {
   constructor(
     public readonly sessionId: string | undefined,
     message: string,
-    cause?: Error
+    cause?: Error,
   ) {
     const sessionInfo = sessionId ? `[session: ${sessionId}]` : "[no session]";
     super(`${sessionInfo} ${message}`, "PROXY_SESSION_ERROR", cause);

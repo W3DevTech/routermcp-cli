@@ -47,7 +47,7 @@ export async function oauthStatusCommand(configPath: string): Promise<void> {
 
   console.log("\n" + "─".repeat(85));
   console.log(
-    `${"Server".padEnd(18)} ${"URL".padEnd(35)} ${"Status".padEnd(12)} ${"Expires".padEnd(15)}`
+    `${"Server".padEnd(18)} ${"URL".padEnd(35)} ${"Status".padEnd(12)} ${"Expires".padEnd(15)}`,
   );
   console.log("─".repeat(85));
 
@@ -77,9 +77,7 @@ export async function oauthStatusCommand(configPath: string): Promise<void> {
       }
     }
 
-    console.log(
-      `${name.padEnd(18)} ${url.padEnd(35)} ${status.padEnd(12)} ${expires.padEnd(15)}`
-    );
+    console.log(`${name.padEnd(18)} ${url.padEnd(35)} ${status.padEnd(12)} ${expires.padEnd(15)}`);
   }
 
   console.log("─".repeat(85));
@@ -87,10 +85,7 @@ export async function oauthStatusCommand(configPath: string): Promise<void> {
   p.outro("");
 }
 
-export async function oauthLoginCommand(
-  configPath: string,
-  serverName: string
-): Promise<void> {
+export async function oauthLoginCommand(configPath: string, serverName: string): Promise<void> {
   if (!serverName) {
     p.log.error("Server name is required");
     console.log("Usage: routermcp oauth login <server-name>");
@@ -148,7 +143,7 @@ export async function oauthLoginCommand(
       onError: (err) => {
         p.log.error(`Authorization error: ${err.message}`);
       },
-    }
+    },
   );
 
   try {
@@ -198,10 +193,7 @@ export async function oauthLoginCommand(
   p.outro("Login complete");
 }
 
-export async function oauthLogoutCommand(
-  serverName: string | null,
-  all: boolean
-): Promise<void> {
+export async function oauthLogoutCommand(serverName: string | null, all: boolean): Promise<void> {
   if (all) {
     p.intro("OAuth Logout - Clear All");
 

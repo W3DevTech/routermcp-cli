@@ -10,7 +10,7 @@ export class RoutermcpCloudProvider implements TunnelProviderHandler {
   async start(_port: number): Promise<TunnelInfo> {
     throw new Error(
       "RouterMCP Cloud is coming soon!\n" +
-        "For now, please use --tunnel=cloudflare or --tunnel=ngrok"
+        "For now, please use --tunnel=cloudflare or --tunnel=ngrok",
     );
   }
 

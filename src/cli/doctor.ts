@@ -1,10 +1,7 @@
 import * as p from "@clack/prompts";
 import { loadConfig } from "../config/loader.js";
 import type { ServerConfig, OAuthConfig } from "../config/types.js";
-import {
-  loadOAuthStorage,
-  isTokenExpired,
-} from "../oauth/storage.js";
+import { loadOAuthStorage, isTokenExpired } from "../oauth/storage.js";
 import { RouterMcpOAuthProvider, DEFAULT_CLIENT_NAME } from "../oauth/provider.js";
 import { auth, discoverOAuthMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
 
@@ -49,7 +46,7 @@ async function probeServerForOAuth(url: string): Promise<boolean> {
 
 async function getServerOAuthStatus(
   name: string,
-  config: ServerConfig
+  config: ServerConfig,
 ): Promise<ServerOAuthStatus> {
   if (config.transport !== "http-streamable" || !config.url) {
     return {
@@ -133,7 +130,7 @@ async function getServerOAuthStatus(
 async function authenticateServer(
   name: string,
   url: string,
-  oauthConfig?: OAuthConfig
+  oauthConfig?: OAuthConfig,
 ): Promise<boolean> {
   const provider = new RouterMcpOAuthProvider(
     name,
@@ -155,7 +152,7 @@ async function authenticateServer(
       onError: (err) => {
         p.log.error(`Authorization error: ${err.message}`);
       },
-    }
+    },
   );
 
   try {
@@ -232,9 +229,7 @@ export async function doctorCommand(configPath: string): Promise<void> {
 
   console.log("\nOAuth Status:");
   console.log("─".repeat(80));
-  console.log(
-    `${"Server".padEnd(20)} ${"URL".padEnd(40)} ${"Status".padEnd(15)}`
-  );
+  console.log(`${"Server".padEnd(20)} ${"URL".padEnd(40)} ${"Status".padEnd(15)}`);
   console.log("─".repeat(80));
 
   for (const status of statuses) {
@@ -263,15 +258,11 @@ export async function doctorCommand(configPath: string): Promise<void> {
         break;
     }
 
-    console.log(
-      `${status.name.padEnd(20)} ${urlText.padEnd(40)} ${statusText.padEnd(15)}`
-    );
+    console.log(`${status.name.padEnd(20)} ${urlText.padEnd(40)} ${statusText.padEnd(15)}`);
   }
   console.log("─".repeat(80));
 
-  const needsAuth = statuses.filter(
-    (s) => s.status === "needs-auth" || s.status === "expired"
-  );
+  const needsAuth = statuses.filter((s) => s.status === "needs-auth" || s.status === "expired");
 
   if (needsAuth.length === 0) {
     p.log.success("\nAll servers are ready!");
@@ -312,7 +303,7 @@ export async function doctorCommand(configPath: string): Promise<void> {
   }
 
   const stillNeedsAuth = newStatuses.filter(
-    (s) => s.status === "needs-auth" || s.status === "expired"
+    (s) => s.status === "needs-auth" || s.status === "expired",
   );
 
   if (stillNeedsAuth.length === 0) {

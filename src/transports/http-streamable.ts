@@ -1,7 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type {
+  Transport,
+  TransportSendOptions,
+} from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
@@ -15,20 +18,17 @@ export interface HttpClientTransportOptions {
 export async function createHttpClientTransport(
   serverName: string,
   config: ServerConfig,
-  options?: HttpClientTransportOptions
+  options?: HttpClientTransportOptions,
 ): Promise<{ client: Client; cleanup: () => Promise<void> }> {
   if (config.transport !== "http-streamable") {
     throw new TransportError(
       "http-streamable",
-      `Expected http-streamable transport, got ${config.transport}`
+      `Expected http-streamable transport, got ${config.transport}`,
     );
   }
 
   if (!config.url) {
-    throw new TransportError(
-      "http-streamable",
-      "URL is required for http-streamable transport"
-    );
+    throw new TransportError("http-streamable", "URL is required for http-streamable transport");
   }
 
   const transport = new StreamableHTTPClientTransport(new URL(config.url), {
@@ -45,7 +45,7 @@ export async function createHttpClientTransport(
     },
     {
       capabilities: {},
-    }
+    },
   );
 
   await client.connect(transport);
@@ -68,7 +68,10 @@ export interface HttpServerHandle {
 
 export interface SessionAwareTransport extends Transport {
   getCurrentSessionId(): string | null;
-  handleRequestWithSession(message: JSONRPCMessage, sessionId: string): Promise<JSONRPCMessage | null>;
+  handleRequestWithSession(
+    message: JSONRPCMessage,
+    sessionId: string,
+  ): Promise<JSONRPCMessage | null>;
 }
 
 interface PendingRequest {
@@ -123,7 +126,7 @@ class BunHttpServerTransport implements SessionAwareTransport {
 
   handleRequestWithSession(
     message: JSONRPCMessage,
-    sessionId: string
+    sessionId: string,
   ): Promise<JSONRPCMessage | null> {
     if (!this.started) {
       return Promise.reject(new Error("Transport not started"));
@@ -162,7 +165,7 @@ class BunHttpServerTransport implements SessionAwareTransport {
 
 export function createHttpServerTransport(
   port: number,
-  host: string = "127.0.0.1"
+  host: string = "127.0.0.1",
 ): HttpServerHandle {
   const transport = new BunHttpServerTransport();
   let server: ServerHandle | null = null;
@@ -194,8 +197,7 @@ export function createHttpServerTransport(
 
           if (request.method === "POST") {
             try {
-              const sessionId =
-                request.headers.get("mcp-session-id") || randomUUID();
+              const sessionId = request.headers.get("mcp-session-id") || randomUUID();
               const body = (await request.json()) as JSONRPCMessage;
 
               const response = await transport.handleRequestWithSession(body, sessionId);
@@ -232,7 +234,7 @@ export function createHttpServerTransport(
                     "Content-Type": "application/json",
                     ...corsHeaders,
                   },
-                }
+                },
               );
             }
           }

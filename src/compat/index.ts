@@ -89,7 +89,7 @@ export interface CompatSubprocess {
  */
 export function spawnProcess(
   command: string[],
-  options: CompatSpawnOptions = {}
+  options: CompatSpawnOptions = {},
 ): CompatSubprocess {
   if (isBun) {
     return (globalThis.Bun as any).spawn(command, options);
@@ -97,11 +97,7 @@ export function spawnProcess(
 
   const [cmd, ...args] = command;
   const nodeOptions: SpawnOptions = {
-    stdio: [
-      options.stdin ?? "ignore",
-      options.stdout ?? "pipe",
-      options.stderr ?? "pipe",
-    ],
+    stdio: [options.stdin ?? "ignore", options.stdout ?? "pipe", options.stderr ?? "pipe"],
     env: options.env ? { ...process.env, ...options.env } : process.env,
     cwd: options.cwd,
   };
@@ -110,15 +106,13 @@ export function spawnProcess(
 
   // Convert Node.js streams to async iterables
   function streamToAsyncIterable(
-    stream: NodeJS.ReadableStream | null
+    stream: NodeJS.ReadableStream | null,
   ): AsyncIterable<Uint8Array> | null {
     if (!stream) return null;
 
     return {
       [Symbol.asyncIterator]() {
-        const reader = stream[Symbol.asyncIterator]
-          ? stream[Symbol.asyncIterator]()
-          : null;
+        const reader = stream[Symbol.asyncIterator] ? stream[Symbol.asyncIterator]() : null;
 
         if (reader) return reader as AsyncIterator<Uint8Array>;
 

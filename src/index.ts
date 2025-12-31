@@ -11,12 +11,17 @@ import { ensureWebCrypto } from "./oauth/crypto-polyfill.js";
 ensureWebCrypto();
 
 // Dynamic import to ensure TERM is set before @clack/prompts loads
-const { main } = await import("./cli/index.js");
+const { main, getCurrentCommand, getCurrentArgs } = await import("./cli/index.js");
+const { reportError } = await import("./telemetry/index.js");
 
 // Remove "bun" and script path from args
 const args = process.argv.slice(2);
 
-main(args).catch((err) => {
+main(args).catch(async (err) => {
+  const command = getCurrentCommand();
+  const cliArgs = getCurrentArgs();
+  await reportError(err, { command, args: cliArgs });
+
   console.error("Fatal error:", err);
   process.exit(1);
 });

@@ -3,11 +3,7 @@ import { homedir } from "node:os";
 
 export function getProjectId(cwd: string = process.cwd()): string {
   const normalized = resolve(cwd);
-  return normalized
-    .replace(/^\//, "")
-    .replace(/\\/g, "-")
-    .replace(/\//g, "-")
-    .replace(/:/g, "");
+  return normalized.replace(/^\//, "").replace(/\\/g, "-").replace(/\//g, "-").replace(/:/g, "");
 }
 
 export function getRouterMcpDir(): string {

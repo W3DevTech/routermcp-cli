@@ -1,13 +1,13 @@
 {
-	"mcpServers": {
-		"filtered": {
-			"transport": "stdio",
-			"command": "echo",
-			"args": ["test"],
-			"allowedTools": ["read_file", "list_files"],
-			"denyTools": ["delete_file"],
-			"allowedToolsGlob": ["get_*", "list_*"],
-			"denyToolsGlob": ["*_admin", "*_secret"]
-		}
-	}
+  "mcpServers": {
+    "filtered": {
+      "transport": "stdio",
+      "command": "echo",
+      "args": ["test"],
+      "allowedTools": ["read_file", "list_files"],
+      "denyTools": ["delete_file"],
+      "allowedToolsGlob": ["get_*", "list_*"],
+      "denyToolsGlob": ["*_admin", "*_secret"]
+    }
+  }
 }

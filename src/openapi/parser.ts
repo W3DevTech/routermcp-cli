@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 
 export async function parseOpenApiSpec(
-  source: string | Record<string, unknown>
+  source: string | Record<string, unknown>,
 ): Promise<OpenAPIV3.Document> {
   let spec: unknown;
 
@@ -15,9 +15,10 @@ export async function parseOpenApiSpec(
   } else {
     const absolutePath = resolve(process.cwd(), source);
     const content = await readFile(absolutePath, "utf-8");
-    spec = source.endsWith(".yaml") || source.endsWith(".yml")
-      ? await import("yaml").then((yaml) => yaml.parse(content))
-      : JSON.parse(content);
+    spec =
+      source.endsWith(".yaml") || source.endsWith(".yml")
+        ? await import("yaml").then((yaml) => yaml.parse(content))
+        : JSON.parse(content);
   }
 
   const dereferenced = await SwaggerParser.dereference(spec as OpenAPIV3.Document);

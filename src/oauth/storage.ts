@@ -79,7 +79,7 @@ export async function loadOAuthStorage(serverUrl: string): Promise<OAuthStorageD
 
     if (data.serverUrl !== serverUrl) {
       console.error(
-        `[oauth] Warning: Hash collision detected for ${serverUrl}, clearing stale data`
+        `[oauth] Warning: Hash collision detected for ${serverUrl}, clearing stale data`,
       );
       await clearOAuthStorage(serverUrl);
       return null;
@@ -94,7 +94,7 @@ export async function loadOAuthStorage(serverUrl: string): Promise<OAuthStorageD
 
 export async function saveOAuthStorage(
   serverUrl: string,
-  updates: Partial<Omit<OAuthStorageData, "serverUrl" | "lastUpdated">>
+  updates: Partial<Omit<OAuthStorageData, "serverUrl" | "lastUpdated">>,
 ): Promise<void> {
   await ensureOAuthDir(serverUrl);
 
@@ -113,22 +113,16 @@ export async function saveOAuthStorage(
 
 export async function saveClientInfo(
   serverUrl: string,
-  clientInfo: OAuthClientInfo
+  clientInfo: OAuthClientInfo,
 ): Promise<void> {
   await saveOAuthStorage(serverUrl, { clientInfo });
 }
 
-export async function saveTokens(
-  serverUrl: string,
-  tokens: OAuthTokensData
-): Promise<void> {
+export async function saveTokens(serverUrl: string, tokens: OAuthTokensData): Promise<void> {
   await saveOAuthStorage(serverUrl, { tokens });
 }
 
-export async function saveCodeVerifier(
-  serverUrl: string,
-  codeVerifier: string
-): Promise<void> {
+export async function saveCodeVerifier(serverUrl: string, codeVerifier: string): Promise<void> {
   await saveOAuthStorage(serverUrl, { codeVerifier });
 }
 
@@ -193,7 +187,7 @@ export async function listOAuthServers(): Promise<OAuthServerStatus[]> {
 
 export function isTokenExpired(
   tokens: OAuthTokensData | undefined,
-  thresholdSeconds: number = 0
+  thresholdSeconds: number = 0,
 ): boolean {
   if (!tokens?.expires_at) {
     return false;

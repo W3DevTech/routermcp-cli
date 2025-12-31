@@ -23,7 +23,7 @@ export interface Collision {
  */
 export function detectCollisions(
   items: ItemWithSource[],
-  type: "tool" | "resource" | "prompt"
+  type: "tool" | "resource" | "prompt",
 ): CollisionError | null {
   const nameToServers = new Map<string, string[]>();
 

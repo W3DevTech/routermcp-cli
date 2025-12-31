@@ -105,7 +105,7 @@ export class ChildProcessManager {
       throw new ProxyChildProcessError(
         this.command,
         this._restartCount,
-        `Maximum restart attempts (${this.maxRestarts}) exceeded`
+        `Maximum restart attempts (${this.maxRestarts}) exceeded`,
       );
     }
 
@@ -145,7 +145,7 @@ export class ChildProcessManager {
       throw new ProxyChildProcessError(
         this.command,
         this._restartCount,
-        "Child process streams not available"
+        "Child process streams not available",
       );
     }
 

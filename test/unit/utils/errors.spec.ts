@@ -54,13 +54,9 @@ describe("utils/errors", () => {
 
   describe("CollisionError", () => {
     it("creates collision error with single collision", () => {
-      const collisions = [
-        { name: "read_file", type: "tool" as const, servers: ["fs1", "fs2"] },
-      ];
+      const collisions = [{ name: "read_file", type: "tool" as const, servers: ["fs1", "fs2"] }];
       const error = new CollisionError(collisions);
-      expect(error.message).toBe(
-        'Name collisions detected: tool "read_file" in [fs1, fs2]'
-      );
+      expect(error.message).toBe('Name collisions detected: tool "read_file" in [fs1, fs2]');
       expect(error.code).toBe("COLLISION_ERROR");
       expect(error.name).toBe("CollisionError");
       expect(error.collisions).toBe(collisions);
@@ -74,7 +70,7 @@ describe("utils/errors", () => {
       ];
       const error = new CollisionError(collisions);
       expect(error.message).toBe(
-        'Name collisions detected: tool "read_file" in [fs1, fs2]; resource "config://db" in [db1, db2, db3]; prompt "help" in [a, b]'
+        'Name collisions detected: tool "read_file" in [fs1, fs2]; resource "config://db" in [db1, db2, db3]; prompt "help" in [a, b]',
       );
       expect(error.collisions).toHaveLength(3);
     });
@@ -135,13 +131,9 @@ describe("utils/errors", () => {
 
   describe("ProxyChildProcessError", () => {
     it("creates error with command and restart count", () => {
-      const error = new ProxyChildProcessError(
-        "npx mcp-server",
-        3,
-        "process exited with code 1"
-      );
+      const error = new ProxyChildProcessError("npx mcp-server", 3, "process exited with code 1");
       expect(error.message).toBe(
-        "Child process failed after 3 restart(s): process exited with code 1"
+        "Child process failed after 3 restart(s): process exited with code 1",
       );
       expect(error.code).toBe("PROXY_CHILD_PROCESS_ERROR");
       expect(error.name).toBe("ProxyChildProcessError");
@@ -150,25 +142,14 @@ describe("utils/errors", () => {
     });
 
     it("handles zero restart count", () => {
-      const error = new ProxyChildProcessError(
-        "node server.js",
-        0,
-        "failed to spawn"
-      );
-      expect(error.message).toBe(
-        "Child process failed after 0 restart(s): failed to spawn"
-      );
+      const error = new ProxyChildProcessError("node server.js", 0, "failed to spawn");
+      expect(error.message).toBe("Child process failed after 0 restart(s): failed to spawn");
       expect(error.restartCount).toBe(0);
     });
 
     it("preserves cause", () => {
       const cause = new Error("ENOENT");
-      const error = new ProxyChildProcessError(
-        "missing-binary",
-        1,
-        "command not found",
-        cause
-      );
+      const error = new ProxyChildProcessError("missing-binary", 1, "command not found", cause);
       expect(error.cause).toBe(cause);
     });
 

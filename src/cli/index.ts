@@ -5,6 +5,7 @@ import { proxyCommand, type ProxyCommandOptions } from "./proxy.js";
 import { connectCommand, type ConnectCommandOptions } from "./connect.js";
 import { doctorCommand } from "./doctor.js";
 import { oauthStatusCommand, oauthLoginCommand, oauthLogoutCommand } from "./oauth.js";
+import { telemetryCommand, type TelemetryAction } from "./telemetry.js";
 import type { TunnelProvider } from "../tunnel/index.js";
 import type { OutputTransport } from "../proxy/types.js";
 
@@ -28,9 +29,10 @@ interface CliOptions extends ServeCommandOptions {
   socket?: string;
   oauthSubcommand?: OAuthSubcommand;
   clearCache?: boolean;
+  telemetryAction?: TelemetryAction;
 }
 
-type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "doctor" | "oauth" | "help";
+type Command = "serve" | "config" | "tunnel" | "proxy" | "connect" | "doctor" | "oauth" | "telemetry" | "help";
 
 interface OAuthSubcommand {
   action: "status" | "login" | "logout";
@@ -89,6 +91,19 @@ function parseArgs(args: string[]): {
           }
         } else {
           console.error("Usage: routermcp oauth <status|login|logout>");
+          process.exit(1);
+        }
+        break;
+      }
+
+      case "telemetry": {
+        command = "telemetry";
+        const telemetryAction = args[++i];
+        if (telemetryAction === "enable" || telemetryAction === "disable" || telemetryAction === "status") {
+          options.telemetryAction = telemetryAction;
+        } else if (telemetryAction && !telemetryAction.startsWith("-")) {
+          console.error(`Unknown telemetry action: ${telemetryAction}`);
+          console.error("Usage: routermcp telemetry <enable|disable|status>");
           process.exit(1);
         }
         break;
@@ -244,6 +259,7 @@ COMMANDS:
   config    Interactive configuration wizard
   doctor    Check configuration and authenticate OAuth servers
   oauth     Manage OAuth authentication
+  telemetry Manage anonymous error reporting
   help      Show this help message
 
 SERVE OPTIONS:
@@ -313,11 +329,29 @@ EXAMPLES:
   routermcp oauth login <server>      Authenticate with a specific server
   routermcp oauth logout <server>     Clear tokens for a specific server
   routermcp oauth logout --all        Clear all OAuth tokens
+
+  # Telemetry
+  routermcp telemetry                 Show telemetry status
+  routermcp telemetry enable          Enable anonymous error reporting (default)
+  routermcp telemetry disable         Disable anonymous error reporting
 `);
 }
 
+let currentCommand: Command = "serve";
+let currentArgs: string[] = [];
+
+export function getCurrentCommand(): string {
+  return currentCommand;
+}
+
+export function getCurrentArgs(): string[] {
+  return currentArgs;
+}
+
 export async function main(args: string[]): Promise<void> {
+  currentArgs = args;
   const { command, options } = parseArgs(args);
+  currentCommand = command;
 
   switch (command) {
     case "serve":
@@ -399,6 +433,10 @@ export async function main(args: string[]): Promise<void> {
 
     case "help":
       printHelp();
+      break;
+
+    case "telemetry":
+      await telemetryCommand(options.telemetryAction);
       break;
   }
 }

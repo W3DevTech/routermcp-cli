@@ -48,7 +48,7 @@ export class UpstreamManager {
   constructor(
     config: RouterMcpConfig,
     verbose: boolean = false,
-    preloadedCapabilities?: Map<string, ServerCapabilityCache>
+    preloadedCapabilities?: Map<string, ServerCapabilityCache>,
   ) {
     this.verbose = verbose;
     this.subprocessTimeout = config.subprocess_timeout ?? 180;
@@ -79,12 +79,10 @@ export class UpstreamManager {
   }
 
   async discoverAll(concurrency: number = 5): Promise<void> {
-    const servers = Array.from(this.servers.values()).filter(
-      (s) => s.status !== "disabled"
-    );
+    const servers = Array.from(this.servers.values()).filter((s) => s.status !== "disabled");
 
     this.log(
-      `Discovering capabilities from ${servers.length} servers (concurrency: ${concurrency})`
+      `Discovering capabilities from ${servers.length} servers (concurrency: ${concurrency})`,
     );
 
     for (let i = 0; i < servers.length; i += concurrency) {
@@ -93,7 +91,7 @@ export class UpstreamManager {
       const totalBatches = Math.ceil(servers.length / concurrency);
 
       this.log(
-        `Processing batch ${batchNum}/${totalBatches}: ${batch.map((s) => s.name).join(", ")}`
+        `Processing batch ${batchNum}/${totalBatches}: ${batch.map((s) => s.name).join(", ")}`,
       );
 
       await Promise.allSettled(batch.map((server) => this.discoverOne(server.name)));
@@ -124,7 +122,7 @@ export class UpstreamManager {
 
       this.log(
         `Discovered ${name}: ${server.cachedTools.length} tools, ` +
-          `${server.cachedResources.length} resources, ${server.cachedPrompts.length} prompts`
+          `${server.cachedResources.length} resources, ${server.cachedPrompts.length} prompts`,
       );
 
       await this.disconnectOne(name);
@@ -188,7 +186,9 @@ export class UpstreamManager {
     }
   }
 
-  private async createOAuthProvider(server: UpstreamServer): Promise<RouterMcpOAuthProvider | undefined> {
+  private async createOAuthProvider(
+    server: UpstreamServer,
+  ): Promise<RouterMcpOAuthProvider | undefined> {
     if (server.config.transport !== "http-streamable") return undefined;
     if (!server.config.url) return undefined;
     if (server.config.oauth?.enabled === false) return undefined;
@@ -219,7 +219,7 @@ export class UpstreamManager {
         onError: (err) => {
           console.error(`[oauth] Error for ${server.name}: ${err.message}`);
         },
-      }
+      },
     );
   }
 
@@ -285,7 +285,7 @@ export class UpstreamManager {
     if (this.subprocessTimeout > 0) {
       server.idleTimer = setTimeout(async () => {
         this.log(
-          `Idle timeout (${this.subprocessTimeout}s) reached for ${server.name}, disconnecting...`
+          `Idle timeout (${this.subprocessTimeout}s) reached for ${server.name}, disconnecting...`,
         );
         await this.disconnectOne(server.name);
         server.status = "discovered";
@@ -358,7 +358,7 @@ export class UpstreamManager {
         cleanupPromises.push(
           server.cleanup().catch((err) => {
             console.error(`Error disconnecting from ${server.name}: ${err}`);
-          })
+          }),
         );
       }
     }
@@ -383,9 +383,7 @@ export class UpstreamManager {
   }
 
   getDiscoveredOrConnected(): UpstreamServer[] {
-    return this.getAll().filter(
-      (s) => s.status === "connected" || s.status === "discovered"
-    );
+    return this.getAll().filter((s) => s.status === "connected" || s.status === "discovered");
   }
 
   get(name: string): UpstreamServer | undefined {

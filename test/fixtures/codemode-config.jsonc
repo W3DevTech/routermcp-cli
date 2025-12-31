@@ -1,14 +1,14 @@
 {
-	"codeMode": {
-		"enabled": true,
-		"timeout": 30000,
-		"allowFetch": true
-	},
-	"mcpServers": {
-		"tools": {
-			"transport": "stdio",
-			"command": "echo",
-			"args": ["test"]
-		}
-	}
+  "codeMode": {
+    "enabled": true,
+    "timeout": 30000,
+    "allowFetch": true
+  },
+  "mcpServers": {
+    "tools": {
+      "transport": "stdio",
+      "command": "echo",
+      "args": ["test"]
+    }
+  }
 }

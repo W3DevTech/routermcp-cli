@@ -59,7 +59,7 @@ async function startStatelessMode(
   mcpPath: string,
   healthPath: string,
   startTime: number,
-  log: (msg: string) => void
+  log: (msg: string) => void,
 ): Promise<void> {
   let requestCount = 0;
 
@@ -167,7 +167,7 @@ async function startStatefulMode(
   mcpPath: string,
   healthPath: string,
   startTime: number,
-  log: (msg: string) => void
+  log: (msg: string) => void,
 ): Promise<void> {
   const sessions = new Map<string, StatefulSession>();
 
@@ -322,7 +322,7 @@ function setupChildStdoutHandler(
   child: ManagedChildProcess,
   transport: WebStandardStreamableHTTPServerTransport,
   log: (msg: string) => void,
-  logPrefix: string
+  logPrefix: string,
 ): void {
   const rl = createInterface({ input: child.stdout });
 

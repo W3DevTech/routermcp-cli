@@ -12,7 +12,7 @@ MCP Gateway CLI that aggregates multiple upstream MCP servers into single unifie
 ```
 packages/cli/
 ├── src/
-│   ├── cli/           # CLI commands (serve, connect, config, tunnel, proxy)
+│   ├── cli/           # CLI commands (serve, connect, config, tunnel, proxy, telemetry)
 │   ├── core/          # Gateway orchestration, upstream management, aggregation, sessions
 │   │   └── codemode/  # Code Mode: sandbox, codegen, meta-tools
 │   ├── daemon/        # Daemon lifecycle, project isolation, connection tracking
@@ -22,6 +22,7 @@ packages/cli/
 │   ├── config/        # JSONC loading, Zod validation, env var expansion
 │   ├── compat/        # Bun/Node compatibility layer
 │   ├── proxy/         # Stdio-to-HTTP proxy (SSE, Streamable HTTP)
+│   ├── telemetry/     # Error reporting to Axiom (enabled by default)
 │   └── utils/         # Custom error classes
 ├── scripts/           # npm readme preparation
 └── dist/              # Built output (ESM, minified)
@@ -44,6 +45,9 @@ packages/cli/
 | Code Mode sandbox | `src/core/codemode/sandbox.ts` | QuickJS WASM execution environment |
 | Code Mode codegen | `src/core/codemode/codegen.ts` | TypeScript definition generator |
 | Code Mode meta-tools | `src/core/codemode/meta-tools.ts` | listTools and executeCode handlers |
+| Telemetry config | `src/telemetry/config.ts` | Load/save telemetry prefs from ~/.routermcp/config.json |
+| Telemetry reporting | `src/telemetry/reporter.ts` | Build and send error events to Axiom |
+| Telemetry CLI | `src/cli/telemetry.ts` | enable/disable/status commands |
 
 ## CODE MAP
 
@@ -64,6 +68,9 @@ packages/cli/
 | `generateTypeScriptDefinitions` | Function | `core/codemode/codegen.ts` | Convert tool schemas to TS declarations |
 | `handleListTools` | Function | `core/codemode/meta-tools.ts` | Handler for routermcp.listTools |
 | `handleExecuteCode` | Function | `core/codemode/meta-tools.ts` | Handler for routermcp.executeCode |
+| `reportError` | Function | `telemetry/reporter.ts` | Send CLI errors to Axiom telemetry |
+| `isTelemetryEnabled` | Function | `telemetry/config.ts` | Check if telemetry is enabled |
+| `setTelemetryEnabled` | Function | `telemetry/config.ts` | Enable/disable telemetry |
 
 ### Module Flow
 
