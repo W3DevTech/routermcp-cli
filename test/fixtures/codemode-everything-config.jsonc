@@ -1,0 +1,15 @@
+{
+  // Configuration for testing Code Mode with server-everything
+  "codeMode": {
+    "enabled": true,
+    "timeout": 30000,
+    "allowFetch": true
+  },
+  "mcpServers": {
+    "everything": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    }
+  }
+}

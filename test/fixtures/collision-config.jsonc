@@ -1,0 +1,20 @@
+{
+  // Configuration that intentionally causes a tool name collision
+  // Used to test collision detection and error handling
+  "mcpServers": {
+    "server1": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      // Only expose echo tool
+      "allowedTools": ["echo"]
+    },
+    "server2": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      // Also expose echo tool - this creates a collision!
+      "allowedTools": ["echo"]
+    }
+  }
+}

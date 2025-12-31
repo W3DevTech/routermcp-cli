@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "everything1": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "allowedTools": ["echo", "get-sum"],
+      "allowedPrompts": ["simple-prompt"],
+      "allowedResourcesGlob": ["test://static/resource/1", "test://static/resource/2"]
+    },
+    "everything2": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "allowedTools": ["get-tiny-image", "trigger-long-running-operation"],
+      "allowedPrompts": ["args-prompt"],
+      "denyTools": ["echo", "get-sum"],
+      "allowedResourcesGlob": ["test://static/resource/3", "test://static/resource/4"]
+    }
+  }
+}

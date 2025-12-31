@@ -1,0 +1,11 @@
+{
+  // Configuration for testing with @modelcontextprotocol/server-everything
+  // This server exposes all MCP protocol features for comprehensive testing
+  "mcpServers": {
+    "everything": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    }
+  }
+}

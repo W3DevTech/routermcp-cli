@@ -20,6 +20,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:e2e": "vitest run test/e2e",
     "test:coverage": "vitest run --coverage",
     "debug:opencode": "OPENCODE_CONFIG_DIR=./debug/opencode opencode"
   },
@@ -46,6 +48,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server-everything": "latest",
     "@types/bun": "latest",
     "@types/micromatch": "^4.0.9",
     "@vitest/coverage-v8": "^2.1.8",

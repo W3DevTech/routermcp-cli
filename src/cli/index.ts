@@ -40,7 +40,7 @@ interface OAuthSubcommand {
   all?: boolean;
 }
 
-function parseArgs(args: string[]): {
+export function parseArgs(args: string[]): {
   command: Command;
   options: CliOptions;
 } {
