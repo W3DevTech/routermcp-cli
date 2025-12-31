@@ -118,6 +118,7 @@ export const RouterMcpConfigSchema = z
     subprocess_timeout: z.number().int().min(0).optional().default(180),
     discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
     connection_timeout: z.number().int().min(1).max(300).optional().default(30),
+    strictEnvVars: z.boolean().optional().default(false),
   })
   .refine(
     (config) => {

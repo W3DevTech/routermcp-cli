@@ -124,7 +124,7 @@ For Claude Code compatibility, `"type"` and `"http"` are also accepted.
   "args": ["-y", "package-name"],      // Arguments array
   "env": {                             // Environment variables (optional)
     "KEY": "value",
-    "ANOTHER_KEY": "${ENV_VAR}"        // Supports env var substitution
+    "ANOTHER_KEY": "${env:ENV_VAR}"    // Supports env var substitution
   },
   "cwd": "/working/directory"          // Working directory (optional)
 }
@@ -136,7 +136,7 @@ For Claude Code compatibility, `"type"` and `"http"` are also accepted.
 {
   "url": "http://localhost:3000/mcp",  // MCP server URL (auto-detects http)
   "headers": {                          // HTTP headers (optional)
-    "Authorization": "Bearer ${TOKEN}",
+    "Authorization": "Bearer ${env:TOKEN}",
     "X-Custom-Header": "value"
   }
 }
@@ -212,31 +212,45 @@ Control which prompts are exposed:
 
 ### Environment Variable Substitution
 
-Use `${VAR_NAME}` syntax anywhere in configuration values:
+Use `${env:VAR_NAME}` syntax anywhere in configuration values:
 
 ```jsonc
 {
+  "strictEnvVars": true,  // Fail if any ${env:...} cannot be resolved (default: false)
   "mcpServers": {
     "api": {
       "transport": "http-streamable",
-      "url": "${API_URL}",
+      "url": "${env:API_URL}",
       "headers": {
-        "Authorization": "Bearer ${API_TOKEN}",
-        "X-Environment": "${ENV}"
+        "Authorization": "Bearer ${env:API_TOKEN}",
+        "X-Environment": "${env:ENV:-production}"
       }
     },
     "local": {
       "transport": "stdio",
-      "command": "${NODE_PATH}",
-      "args": ["-y", "${MCP_PACKAGE}"],
+      "command": "node",
+      "args": ["server.js"],
       "env": {
-        "API_KEY": "${SECRET_API_KEY}",
-        "PORT": "${PORT:-3000}"  // Default value syntax (if supported)
+        "API_KEY": "${env:SECRET_API_KEY}",
+        "PORT": "${env:PORT:-3000}"
       }
     }
   }
 }
 ```
+
+#### Syntax Reference
+
+| Syntax | Description | If Variable Missing |
+|--------|-------------|---------------------|
+| `${env:VAR}` | Environment variable | Leaves unexpanded (error if `strictEnvVars: true`) |
+| `${env:VAR:-default}` | With default value | Uses default value |
+| `${VAR}` | Legacy syntax (deprecated) | Replaces with empty string |
+
+**Examples:**
+- `${env:API_KEY}` → Value of `API_KEY` or leaves as `${env:API_KEY}` if missing
+- `${env:PORT:-8080}` → Value of `PORT` or `8080` if missing
+- `${env:OPTIONAL:-}` → Value of `OPTIONAL` or empty string if missing (explicit empty default)
 
 ## CLI Commands
 
@@ -401,7 +415,7 @@ routermcp -h
       "transport": "http-streamable",
       "url": "https://api.example.com/mcp",
       "headers": {
-        "Authorization": "Bearer ${API_TOKEN}",
+        "Authorization": "Bearer ${env:API_TOKEN}",
         "X-API-Version": "v1"
       },
       "denyToolsGlob": ["admin_*", "*_delete", "*_destroy"],
@@ -431,9 +445,9 @@ routermcp -h
     },
     "database": {
       "transport": "http-streamable",
-      "url": "${DB_MCP_URL}",
+      "url": "${env:DB_MCP_URL}",
       "headers": {
-        "Authorization": "Bearer ${DB_TOKEN}"
+        "Authorization": "Bearer ${env:DB_TOKEN}"
       },
       "allowedTools": ["query", "read_table"],
       "denyToolsGlob": ["*_delete", "*_drop", "*_truncate"]
@@ -856,7 +870,7 @@ If an upstream server fails to connect:
 - **Auto-Restart**: Automatic child process restart on failure (configurable attempts)
 - **Interactive Config**: CLI wizard for creating configuration files
 - **Tunnel Support**: Expose gateway via Cloudflare Tunnel or ngrok
-- **Environment Variables**: Use `${VAR}` syntax for configuration values
+- **Environment Variables**: Use `${env:VAR}` syntax with default value support
 
 ## License
 

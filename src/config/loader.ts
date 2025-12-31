@@ -72,8 +72,12 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
   // Normalize config for backwards compatibility
   const normalized = normalizeConfig(parsed);
 
+  // Extract strictEnvVars before expansion (it's not subject to expansion itself)
+  const normalizedObj = normalized as Record<string, unknown> | null;
+  const strictEnvVars = normalizedObj?.strictEnvVars === true;
+
   // Expand environment variables in the config
-  const expanded = expandEnvVars(normalized);
+  const expanded = expandEnvVars(normalized, { strict: strictEnvVars });
 
   // Validate with Zod schema
   const result = RouterMcpConfigSchema.safeParse(expanded);
@@ -133,25 +137,97 @@ function normalizeConfig(parsed: unknown): unknown {
   return parsed;
 }
 
-/**
- * Recursively expand environment variables in strings.
- * Supports ${VAR_NAME} syntax.
- */
-function expandEnvVars(value: unknown): unknown {
+interface EnvExpansionOptions {
+  strict: boolean;
+}
+
+interface EnvReference {
+  varName: string;
+  defaultValue: string | undefined;
+  isNewSyntax: boolean;
+}
+
+// Pattern: env:VAR_NAME or env:VAR_NAME:-default
+const NEW_SYNTAX_PATTERN = /^env:([A-Za-z_][A-Za-z0-9_]*)(?::-([\s\S]*))?$/;
+// Pattern: VAR_NAME (legacy)
+const LEGACY_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)$/;
+
+function parseEnvReference(content: string): EnvReference | null {
+  const trimmed = content.trim();
+
+  const newMatch = trimmed.match(NEW_SYNTAX_PATTERN);
+  if (newMatch) {
+    return {
+      varName: newMatch[1],
+      defaultValue: newMatch[2],
+      isNewSyntax: true,
+    };
+  }
+
+  const legacyMatch = trimmed.match(LEGACY_PATTERN);
+  if (legacyMatch) {
+    return {
+      varName: legacyMatch[1],
+      defaultValue: undefined,
+      isNewSyntax: false,
+    };
+  }
+
+  return null;
+}
+
+function expandEnvReference(
+  match: string,
+  content: string,
+  options: EnvExpansionOptions
+): string {
+  const parsed = parseEnvReference(content);
+
+  if (!parsed) {
+    return match;
+  }
+
+  const { varName, defaultValue, isNewSyntax } = parsed;
+  const envValue = process.env[varName];
+
+  if (envValue !== undefined) {
+    return envValue;
+  }
+
+  if (defaultValue !== undefined) {
+    return defaultValue;
+  }
+
+  if (isNewSyntax) {
+    if (options.strict) {
+      throw new ConfigError(`Environment variable not found: ${varName}`);
+    }
+    console.error(`[config] Environment variable not found: ${varName}`);
+    return match;
+  }
+
+  // Legacy syntax: emit deprecation warning and return empty string
+  console.error(
+    `[config] Deprecation: \${${varName}} syntax is deprecated. Use \${env:${varName}} instead.`
+  );
+  return "";
+}
+
+function expandEnvVars(value: unknown, options: EnvExpansionOptions): unknown {
   if (typeof value === "string") {
-    return value.replace(/\$\{([^}]+)\}/g, (_, varName) => {
-      return process.env[varName] ?? "";
+    return value.replace(/\$\{([^}]+)\}/g, (match, content) => {
+      return expandEnvReference(match, content, options);
     });
   }
 
   if (Array.isArray(value)) {
-    return value.map(expandEnvVars);
+    return value.map((item) => expandEnvVars(item, options));
   }
 
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      result[key] = expandEnvVars(val);
+      result[key] = expandEnvVars(val, options);
     }
     return result;
   }

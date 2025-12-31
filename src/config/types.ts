@@ -92,6 +92,13 @@ export interface RouterMcpConfig {
   subprocess_timeout?: number;
   discovery_concurrency?: number;
   connection_timeout?: number;
+
+  /**
+   * Strict environment variable mode.
+   * When true, throws an error if any ${env:VAR} reference cannot be resolved.
+   * When false (default), unresolved ${env:VAR} references are left unexpanded with a warning.
+   */
+  strictEnvVars?: boolean;
 }
 
 /**

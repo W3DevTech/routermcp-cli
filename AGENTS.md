@@ -137,7 +137,7 @@ getDaemonStatus(paths)
 ## UNIQUE STYLES
 
 - **JSONC config**: Supports comments and trailing commas (jsonc-parser)
-- **Env substitution**: `${VAR_NAME}` syntax in config values
+- **Env substitution**: `${env:VAR_NAME}` syntax with `:-default` support. Legacy `${VAR_NAME}` still works but deprecated.
 - **Claude Code compat**: Accepts `type` field as alias for `transport`
 - **Graceful degradation**: Failed upstream connections don't block gateway start
 

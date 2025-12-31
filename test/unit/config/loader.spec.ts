@@ -334,7 +334,7 @@ describe("loadConfig", () => {
 			expect(config.mcpServers.test.env?.INTERNAL_KEY).toBe("external-value");
 		});
 
-		it("replaces undefined env vars with empty string", async () => {
+		it("replaces undefined env vars with empty string (legacy)", async () => {
 			delete process.env.UNDEFINED_VAR;
 
 			const configPath = join(tempDir, "routermcp.jsonc");
@@ -353,6 +353,299 @@ describe("loadConfig", () => {
 
 			const config = await loadConfig(configPath);
 			expect(config.mcpServers.test.args).toEqual(["test"]);
+		});
+	});
+
+	describe("environment variable expansion - new ${env:...} syntax", () => {
+		const originalEnv = process.env;
+
+		beforeEach(() => {
+			process.env = { ...originalEnv };
+		});
+
+		afterEach(() => {
+			process.env = originalEnv;
+		});
+
+		it("expands ${env:VAR} when variable is defined", async () => {
+			process.env.MY_TOKEN = "secret123";
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "http-streamable",
+							url: "http://localhost:3000/mcp",
+							headers: { Authorization: "Bearer ${env:MY_TOKEN}" },
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.headers?.Authorization).toBe("Bearer secret123");
+		});
+
+		it("uses default value ${env:VAR:-default} when variable is missing", async () => {
+			delete process.env.MISSING_PORT;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "http-streamable",
+							url: "http://localhost:${env:MISSING_PORT:-5151}/mcp",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.url).toBe("http://localhost:5151/mcp");
+		});
+
+		it("leaves ${env:VAR} unexpanded when missing without default", async () => {
+			delete process.env.UNDEFINED_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["prefix${env:UNDEFINED_VAR}suffix"],
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.args).toEqual(["prefix${env:UNDEFINED_VAR}suffix"]);
+		});
+
+		it("allows empty string as explicit default ${env:VAR:-}", async () => {
+			delete process.env.OPTIONAL_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["prefix${env:OPTIONAL_VAR:-}suffix"],
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.args).toEqual(["prefixsuffix"]);
+		});
+
+		it("handles multiple env vars in one string", async () => {
+			process.env.HOST = "localhost";
+			process.env.PORT = "8080";
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "http-streamable",
+							url: "http://${env:HOST}:${env:PORT:-3000}/mcp",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.url).toBe("http://localhost:8080/mcp");
+		});
+
+		it("prefers env value over default when variable exists", async () => {
+			process.env.MY_PORT = "9999";
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "http-streamable",
+							url: "http://localhost:${env:MY_PORT:-3000}/mcp",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.url).toBe("http://localhost:9999/mcp");
+		});
+
+		it("trims whitespace in variable names", async () => {
+			process.env.SPACED_VAR = "trimmed";
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "${ env:SPACED_VAR }",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.command).toBe("trimmed");
+		});
+
+		it("ignores invalid variable names and leaves them unexpanded", async () => {
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["${env:123invalid}"],
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.args).toEqual(["${env:123invalid}"]);
+		});
+
+		it("supports default value with special characters", async () => {
+			delete process.env.MISSING_URL;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					mcpServers: {
+						test: {
+							transport: "http-streamable",
+							url: "${env:MISSING_URL:-http://localhost:3000/path}",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.url).toBe("http://localhost:3000/path");
+		});
+	});
+
+	describe("strict mode (strictEnvVars)", () => {
+		const originalEnv = process.env;
+
+		beforeEach(() => {
+			process.env = { ...originalEnv };
+		});
+
+		afterEach(() => {
+			process.env = originalEnv;
+		});
+
+		it("throws ConfigError when strictEnvVars=true and ${env:VAR} is missing", async () => {
+			delete process.env.REQUIRED_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					strictEnvVars: true,
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["${env:REQUIRED_VAR}"],
+						},
+					},
+				})
+			);
+
+			await expect(loadConfig(configPath)).rejects.toThrow("Environment variable not found: REQUIRED_VAR");
+		});
+
+		it("does not throw for ${env:VAR:-default} even in strict mode", async () => {
+			delete process.env.OPTIONAL_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					strictEnvVars: true,
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "${env:OPTIONAL_VAR:-fallback}",
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.command).toBe("fallback");
+		});
+
+		it("does not throw for legacy ${VAR} in strict mode (backward compat)", async () => {
+			delete process.env.LEGACY_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					strictEnvVars: true,
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["${LEGACY_VAR}test"],
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.args).toEqual(["test"]);
+		});
+
+		it("works normally when strictEnvVars=false (default)", async () => {
+			delete process.env.MISSING_VAR;
+
+			const configPath = join(tempDir, "routermcp.jsonc");
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					strictEnvVars: false,
+					mcpServers: {
+						test: {
+							transport: "stdio",
+							command: "echo",
+							args: ["${env:MISSING_VAR}"],
+						},
+					},
+				})
+			);
+
+			const config = await loadConfig(configPath);
+			expect(config.mcpServers.test.args).toEqual(["${env:MISSING_VAR}"]);
 		});
 	});
 
