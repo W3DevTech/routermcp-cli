@@ -1,6 +1,6 @@
-import { homedir } from "os";
-import { join } from "path";
-import { mkdir } from "fs/promises";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { file, write } from "../compat/index.js";
 
 const ROUTERMCP_DIR = join(homedir(), ".routermcp");

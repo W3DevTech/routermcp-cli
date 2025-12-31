@@ -101,10 +101,10 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
     }
 
     // Start the tunnel
-    console.error(`Starting ${tunnelProviderInstance!.displayName} tunnel...`);
+    console.error(`Starting ${tunnelProviderInstance?.displayName} tunnel...`);
 
     try {
-      tunnelInfo = await tunnelProviderInstance!.start(port);
+      tunnelInfo = await tunnelProviderInstance?.start(port);
 
       // Display success message
       console.log();

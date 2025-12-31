@@ -33,7 +33,7 @@ describe("telemetry/reporter", () => {
     if (originalBun !== undefined) {
       (globalThis as any).Bun = originalBun;
     } else {
-      delete (globalThis as any).Bun;
+      (globalThis as any).Bun = undefined;
     }
   });
 
@@ -120,7 +120,7 @@ describe("telemetry/reporter", () => {
     });
 
     it("detects Node runtime when Bun is not available", () => {
-      delete (globalThis as any).Bun;
+      (globalThis as any).Bun = undefined;
 
       const error = new Error("Test");
       const context = { command: "serve", args: [] };

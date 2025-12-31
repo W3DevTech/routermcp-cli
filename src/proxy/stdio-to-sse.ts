@@ -95,7 +95,7 @@ export async function startSseProxy(options: ProxyOptions): Promise<void> {
 
       transport.onmessage = async (message: JSONRPCMessage) => {
         log(`[${sessionId}] Client -> Server: ${JSON.stringify(message)}`);
-        const messageStr = JSON.stringify(message) + "\n";
+        const messageStr = `${JSON.stringify(message)}\n`;
         child.stdin.write(messageStr);
         childManager.resetRestartCount();
       };

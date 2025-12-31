@@ -103,7 +103,7 @@ async function startStatelessMode(
 
     transport.onmessage = async (message: JSONRPCMessage) => {
       log(`[req ${reqId}] Client -> Server: ${JSON.stringify(message)}`);
-      const messageStr = JSON.stringify(message) + "\n";
+      const messageStr = `${JSON.stringify(message)}\n`;
       child.stdin.write(messageStr);
       childManager.resetRestartCount();
     };
@@ -134,7 +134,7 @@ async function startStatelessMode(
             clientInfo: { name: "routermcp-proxy", version: "1.0.0" },
           },
         };
-        child.stdin.write(JSON.stringify(initMessage) + "\n");
+        child.stdin.write(`${JSON.stringify(initMessage)}\n`);
       }
 
       const request = new Request(c.req.url, {
@@ -215,7 +215,7 @@ async function startStatefulMode(
 
       transport.onmessage = async (message: JSONRPCMessage) => {
         log(`[${sessionId}] Client -> Server: ${JSON.stringify(message)}`);
-        const messageStr = JSON.stringify(message) + "\n";
+        const messageStr = `${JSON.stringify(message)}\n`;
         child.stdin.write(messageStr);
         childManager.resetRestartCount();
       };

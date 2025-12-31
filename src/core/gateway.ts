@@ -83,7 +83,7 @@ export class Gateway {
         return this.handleMetaTool(name, args || {}, extra);
       }
 
-      if (this.openApiHandler && this.openApiHandler.hasTool(name)) {
+      if (this.openApiHandler?.hasTool(name)) {
         return this.openApiHandler.callTool(name, args || {});
       }
 

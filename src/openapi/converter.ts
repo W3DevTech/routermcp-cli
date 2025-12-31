@@ -111,7 +111,7 @@ function buildInputSchema(operation: OpenAPIV3.OperationObject): {
 
     if (jsonContent?.schema) {
       const bodySchema = jsonContent.schema as OpenAPIV3.SchemaObject;
-      properties["requestBody"] = convertSchema(bodySchema, "Request body");
+      properties.requestBody = convertSchema(bodySchema, "Request body");
       requestBodyContentType = "application/json";
 
       if (reqBody.required) {

@@ -143,7 +143,7 @@ async function authenticateServer(
     },
     {
       onAuthorizationUrl: (authUrl) => {
-        p.log.info(`\nPlease visit this URL to authorize RouterMCP:\n`);
+        p.log.info("\nPlease visit this URL to authorize RouterMCP:\n");
         console.log(`  ${authUrl.toString()}\n`);
         p.log.info("Waiting for authorization... (timeout: 5 minutes)");
         p.log.info("[Press Ctrl+C to cancel]\n");
@@ -237,7 +237,7 @@ export async function doctorCommand(configPath: string): Promise<void> {
     let urlText = status.url || `(${status.transport})`;
 
     if (urlText.length > 38) {
-      urlText = urlText.substring(0, 35) + "...";
+      urlText = `${urlText.substring(0, 35)}...`;
     }
 
     switch (status.status) {

@@ -335,7 +335,7 @@ describe("loadConfig", () => {
     });
 
     it("replaces undefined env vars with empty string (legacy)", async () => {
-      delete process.env.UNDEFINED_VAR;
+      process.env.UNDEFINED_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -389,7 +389,7 @@ describe("loadConfig", () => {
     });
 
     it("uses default value ${env:VAR:-default} when variable is missing", async () => {
-      delete process.env.MISSING_PORT;
+      process.env.MISSING_PORT = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -409,7 +409,7 @@ describe("loadConfig", () => {
     });
 
     it("leaves ${env:VAR} unexpanded when missing without default", async () => {
-      delete process.env.UNDEFINED_VAR;
+      process.env.UNDEFINED_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -430,7 +430,7 @@ describe("loadConfig", () => {
     });
 
     it("allows empty string as explicit default ${env:VAR:-}", async () => {
-      delete process.env.OPTIONAL_VAR;
+      process.env.OPTIONAL_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -531,7 +531,7 @@ describe("loadConfig", () => {
     });
 
     it("supports default value with special characters", async () => {
-      delete process.env.MISSING_URL;
+      process.env.MISSING_URL = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -563,7 +563,7 @@ describe("loadConfig", () => {
     });
 
     it("throws ConfigError when strictEnvVars=true and ${env:VAR} is missing", async () => {
-      delete process.env.REQUIRED_VAR;
+      process.env.REQUIRED_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -586,7 +586,7 @@ describe("loadConfig", () => {
     });
 
     it("does not throw for ${env:VAR:-default} even in strict mode", async () => {
-      delete process.env.OPTIONAL_VAR;
+      process.env.OPTIONAL_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -607,7 +607,7 @@ describe("loadConfig", () => {
     });
 
     it("does not throw for legacy ${VAR} in strict mode (backward compat)", async () => {
-      delete process.env.LEGACY_VAR;
+      process.env.LEGACY_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(
@@ -629,7 +629,7 @@ describe("loadConfig", () => {
     });
 
     it("works normally when strictEnvVars=false (default)", async () => {
-      delete process.env.MISSING_VAR;
+      process.env.MISSING_VAR = undefined;
 
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(

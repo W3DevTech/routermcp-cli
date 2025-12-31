@@ -92,7 +92,7 @@ export async function runCli(
       resolve({
         exitCode: null,
         stdout,
-        stderr: stderr + "\n" + err.message,
+        stderr: `${stderr}\n${err.message}`,
         killed: false,
       });
     });
@@ -131,7 +131,7 @@ export async function readJsonLine(stream: Readable): Promise<unknown> {
  * Writes a JSON-RPC message to a stream
  */
 export function writeJsonLine(stream: Writable, data: unknown): void {
-  stream.write(JSON.stringify(data) + "\n");
+  stream.write(`${JSON.stringify(data)}\n`);
 }
 
 /**

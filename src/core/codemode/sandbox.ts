@@ -121,8 +121,8 @@ export default await __main();
     console: {
       log: (...args: unknown[]) => logs.push(args.map(formatValue).join(" ")),
       error: (...args: unknown[]) => errors.push(args.map(formatValue).join(" ")),
-      warn: (...args: unknown[]) => logs.push("[WARN] " + args.map(formatValue).join(" ")),
-      info: (...args: unknown[]) => logs.push("[INFO] " + args.map(formatValue).join(" ")),
+      warn: (...args: unknown[]) => logs.push(`[WARN] ${args.map(formatValue).join(" ")}`),
+      info: (...args: unknown[]) => logs.push(`[INFO] ${args.map(formatValue).join(" ")}`),
     },
     executionTimeout: timeout,
   };
@@ -143,16 +143,15 @@ export default await __main();
         toolCalls,
         duration: Date.now() - startTime,
       };
-    } else {
-      return {
-        success: false,
-        result: null,
-        logs,
-        errors: [...errors, result.error?.message || "Unknown error"],
-        toolCalls,
-        duration: Date.now() - startTime,
-      };
     }
+    return {
+      success: false,
+      result: null,
+      logs,
+      errors: [...errors, result.error?.message || "Unknown error"],
+      toolCalls,
+      duration: Date.now() - startTime,
+    };
   } catch (err) {
     return {
       success: false,

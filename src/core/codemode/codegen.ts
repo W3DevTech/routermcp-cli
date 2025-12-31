@@ -122,7 +122,7 @@ export function generateTypeScriptDefinitions(tools: ToolInfo[]): string {
       }
       lines.push(`  ${propName}: (args: ${argsType}) => Promise<any>;`);
     }
-    lines.push(`};`);
+    lines.push("};");
     lines.push("");
   }
 

@@ -75,7 +75,7 @@ async function proxyStdioToSocket(socketPath: string, log: (msg: string) => void
   rl.on("line", (line) => {
     if (!line.trim()) return;
     log(`stdin -> daemon: ${line.substring(0, 100)}...`);
-    socket.write(line + "\n");
+    socket.write(`${line}\n`);
   });
 
   socket.on("data", (data) => {
@@ -136,7 +136,7 @@ async function proxyStdioToHttp(url: string, log: (msg: string) => void): Promis
       const responseText = await response.text();
       if (responseText) {
         log(`daemon -> stdout: ${responseText.substring(0, 100)}...`);
-        process.stdout.write(responseText + "\n");
+        process.stdout.write(`${responseText}\n`);
       }
     } catch (err) {
       console.error(`Error processing message: ${err}`);

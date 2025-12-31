@@ -44,7 +44,7 @@ export async function executeHttpRequest(
     switch (execution.auth.type) {
       case "bearer":
         if (execution.auth.token) {
-          headers["Authorization"] = `Bearer ${execution.auth.token}`;
+          headers.Authorization = `Bearer ${execution.auth.token}`;
         }
         break;
       case "api-key":
@@ -57,7 +57,7 @@ export async function executeHttpRequest(
           const credentials = Buffer.from(
             `${execution.auth.username}:${execution.auth.password}`,
           ).toString("base64");
-          headers["Authorization"] = `Basic ${credentials}`;
+          headers.Authorization = `Basic ${credentials}`;
         }
         break;
     }

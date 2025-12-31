@@ -389,7 +389,7 @@ async function manualDeniedToolsEntry(config: ServerConfig): Promise<void> {
  */
 function truncate(str: string, maxLen: number): string {
   if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 3) + "...";
+  return `${str.slice(0, maxLen - 3)}...`;
 }
 
 /**
@@ -729,7 +729,7 @@ async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
   const clientConfig = await readClientConfig(configPath);
 
   if (!clientConfig) {
-    spinner.stop(`Config not found or invalid`);
+    spinner.stop("Config not found or invalid");
     p.log.error(`Could not find or parse ${clientLabel} config at: ${configPath}`);
     return;
   }

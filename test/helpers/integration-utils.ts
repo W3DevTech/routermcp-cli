@@ -286,7 +286,7 @@ export class StdioMcpTestClient {
         params: params || {},
       });
 
-      this.child.stdin?.write(message + "\n");
+      this.child.stdin?.write(`${message}\n`);
     });
   }
 

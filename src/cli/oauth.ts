@@ -45,7 +45,7 @@ export async function oauthStatusCommand(configPath: string): Promise<void> {
     process.exit(1);
   }
 
-  console.log("\n" + "─".repeat(85));
+  console.log(`\n${"─".repeat(85)}`);
   console.log(
     `${"Server".padEnd(18)} ${"URL".padEnd(35)} ${"Status".padEnd(12)} ${"Expires".padEnd(15)}`,
   );
@@ -59,7 +59,7 @@ export async function oauthStatusCommand(configPath: string): Promise<void> {
     if (serverConfig.transport === "http-streamable" && serverConfig.url) {
       url = serverConfig.url;
       if (url.length > 33) {
-        url = url.substring(0, 30) + "...";
+        url = `${url.substring(0, 30)}...`;
       }
 
       if (serverConfig.oauth?.enabled !== false && serverConfig.oauth) {
@@ -134,7 +134,7 @@ export async function oauthLoginCommand(configPath: string, serverName: string):
     },
     {
       onAuthorizationUrl: (url) => {
-        p.log.info(`\nPlease visit this URL to authorize RouterMCP:\n`);
+        p.log.info("\nPlease visit this URL to authorize RouterMCP:\n");
         console.log(`  ${url.toString()}\n`);
         p.log.info("Waiting for authorization... (timeout: 5 minutes)");
         p.log.info("[Press Ctrl+C to cancel]\n");

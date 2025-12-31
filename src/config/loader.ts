@@ -112,7 +112,7 @@ function normalizeConfig(parsed: unknown): unknown {
     // Map "type" to "transport" (Claude Code uses "type")
     if ("type" in server && !("transport" in server)) {
       server.transport = server.type;
-      delete server.type;
+      server.type = undefined;
     }
 
     // Map "http" to "http-streamable"
@@ -241,7 +241,7 @@ export async function loadConfigFromPath(
     const found = await findConfigFile(process.cwd());
     if (!found) {
       throw new ConfigError(
-        `No config file found. Create routermcp.jsonc or specify --config path.`,
+        "No config file found. Create routermcp.jsonc or specify --config path.",
       );
     }
     path = found;

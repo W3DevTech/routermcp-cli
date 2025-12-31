@@ -143,7 +143,7 @@ export function parseArgs(args: string[]): {
 
       case "--http":
         options.http = Number.parseInt(args[++i], 10);
-        if (isNaN(options.http)) {
+        if (Number.isNaN(options.http)) {
           console.error("Error: --http requires a port number");
           process.exit(1);
         }
@@ -157,13 +157,13 @@ export function parseArgs(args: string[]): {
       case "--port":
       case "-p":
         options.port = Number.parseInt(args[++i], 10);
-        if (isNaN(options.port)) {
+        if (Number.isNaN(options.port)) {
           console.error("Error: --port requires a port number");
           process.exit(1);
         }
         break;
 
-      case "--outputTransport":
+      case "--outputTransport": {
         const transport = args[++i];
         if (transport !== "sse" && transport !== "streamableHttp") {
           console.error("Error: --outputTransport must be 'sse' or 'streamableHttp'");
@@ -171,6 +171,7 @@ export function parseArgs(args: string[]): {
         }
         options.outputTransport = transport;
         break;
+      }
 
       case "--basePath":
         options.basePath = args[++i];
@@ -194,7 +195,7 @@ export function parseArgs(args: string[]): {
 
       case "--sessionTimeout":
         options.sessionTimeout = Number.parseInt(args[++i], 10);
-        if (isNaN(options.sessionTimeout)) {
+        if (Number.isNaN(options.sessionTimeout)) {
           console.error("Error: --sessionTimeout requires a number (milliseconds)");
           process.exit(1);
         }
@@ -214,7 +215,7 @@ export function parseArgs(args: string[]): {
 
       case "--maxRestarts":
         options.maxRestarts = Number.parseInt(args[++i], 10);
-        if (isNaN(options.maxRestarts)) {
+        if (Number.isNaN(options.maxRestarts)) {
           console.error("Error: --maxRestarts requires a number");
           process.exit(1);
         }

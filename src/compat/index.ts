@@ -161,14 +161,14 @@ export function spawnProcess(
       ? new WritableStream({
           write(chunk) {
             return new Promise((resolve, reject) => {
-              proc.stdin!.write(chunk, (err) => {
+              proc.stdin?.write(chunk, (err) => {
                 if (err) reject(err);
                 else resolve();
               });
             });
           },
           close() {
-            proc.stdin!.end();
+            proc.stdin?.end();
           },
         })
       : null,

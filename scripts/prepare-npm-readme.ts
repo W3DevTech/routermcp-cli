@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const packageJsonPath = join(process.cwd(), "package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
@@ -16,7 +16,7 @@ if (!existsSync(readmePath)) {
 const backupPath = join(process.cwd(), "README.md.backup");
 if (existsSync(targetReadmePath)) {
   writeFileSync(backupPath, readFileSync(targetReadmePath, "utf-8"));
-  console.log(`Backed up README.md to README.md.backup`);
+  console.log("Backed up README.md to README.md.backup");
 }
 
 writeFileSync(targetReadmePath, readFileSync(readmePath, "utf-8"));
