@@ -1,4 +1,12 @@
 {
-  "enabledMcpjsonServers": ["routermcp"],
-  "enableAllProjectMcpServers": true
+  "permissions": {
+    "allow": [
+      "mcp__deepwiki__read_wiki_contents",
+      "Bash(npm test:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "routermcp"
+  ]
 }
