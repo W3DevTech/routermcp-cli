@@ -17,10 +17,10 @@ import type {
 import { createOAuthCallbackServer } from "../../../src/oauth/callback-server.js";
 import {
   DEFAULT_CLIENT_NAME,
-  RouterMcpOAuthProvider,
-  createOAuthProvider,
   type OAuthProviderCallbacks,
   type OAuthProviderConfig,
+  RouterMcpOAuthProvider,
+  createOAuthProvider,
 } from "../../../src/oauth/provider.js";
 import {
   type OAuthStorageData,

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Package Overview
 
-RouterMCP CLI is a Bun-based MCP (Model Context Protocol) Gateway that aggregates multiple upstream MCP servers into a single unified interface. It provides comprehensive tool/resource/prompt filtering, session multiplexing, daemon mode for process sharing, and Code Mode for secure JavaScript execution.
+RouterMCP CLI is a Bun-based MCP (Model Context Protocol) Gateway that aggregates multiple upstream MCP servers into a single unified interface. It provides comprehensive tool/resource/prompt filtering, session multiplexing, daemon mode for process sharing, Code Mode for secure JavaScript execution, and Tool Search Mode for intelligent tool discovery with semantic search.
 
 This package is part of the RouterMCP monorepo but can be developed independently. It's published to npm as `routermcp`.
 

@@ -12,6 +12,7 @@ RouterMCP is a powerful CLI MCP Gateway that aggregates multiple upstream MCP se
 - **Aggregate Multiple Servers**: Combine tools from multiple MCP servers into one endpoint
 - **Security & Filtering**: Control which tools/resources/prompts are exposed
 - **Code Mode**: Execute JavaScript workflows across all your tools
+- **Tool Search Mode**: Intelligent tool discovery with semantic search
 - **Daemon Mode**: Share a single gateway across multiple MCP clients
 - **Tunnel Support**: Expose your gateway publicly via Cloudflare or ngrok
 
@@ -63,6 +64,7 @@ Everything about configuring RouterMCP.
 Deep dives into advanced features.
 
 - [Code Mode](advanced/code-mode.md) - JavaScript execution sandbox
+- [Tool Search Mode](advanced/tool-search.md) - Intelligent tool discovery
 - [Daemon Mode](advanced/daemon-mode.md) - Background process sharing
 - [Multiple Servers](advanced/multiple-servers.md) - Aggregation strategies
 - [Security](advanced/security.md) - Security best practices
@@ -88,6 +90,7 @@ Copy-paste configuration examples.
 - [Multi-Server Gateway](examples/multi-server-gateway.md)
 - [Remote HTTP Server](examples/remote-http-server.md)
 - [Code Mode Workflows](examples/code-mode-workflows.md)
+- [Tool Search Workflows](examples/tool-search-workflows.md)
 
 ## Need Help?
 

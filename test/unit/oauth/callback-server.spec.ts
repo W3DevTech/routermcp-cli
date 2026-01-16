@@ -22,11 +22,11 @@ vi.mock("../../../src/compat/index.js", () => ({
 }));
 
 import { createServer } from "node:net";
-import type { FetchHandler, ServerHandle, ServeOptions } from "../../../src/compat/index.js";
+import type { FetchHandler, ServeOptions, ServerHandle } from "../../../src/compat/index.js";
 import { serve } from "../../../src/compat/index.js";
 import {
-  createOAuthCallbackServer,
   type OAuthCallbackServer,
+  createOAuthCallbackServer,
 } from "../../../src/oauth/callback-server.js";
 
 describe("createOAuthCallbackServer", () => {

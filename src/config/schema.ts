@@ -73,6 +73,13 @@ const CodeModeConfigSchema = z.object({
   allowFetch: z.boolean().optional().default(true),
 });
 
+const McpToolSearchConfigSchema = z.object({
+  enabled: z.boolean().optional().default(false),
+  description: z.string().optional(),
+  maxResults: z.number().int().min(1).max(50).optional().default(5),
+  minScore: z.number().min(0).max(1).optional().default(0),
+});
+
 const OpenApiAuthSchema = z
   .object({
     type: z.enum(["bearer", "api-key", "basic"]),
@@ -115,6 +122,7 @@ export const RouterMcpConfigSchema = z
     httpServer: HttpServerConfigSchema.optional(),
     session: SessionConfigSchema.optional(),
     codeMode: CodeModeConfigSchema.optional(),
+    mcpToolSearch: McpToolSearchConfigSchema.optional(),
     subprocess_timeout: z.number().int().min(0).optional().default(180),
     discovery_concurrency: z.number().int().min(1).max(50).optional().default(5),
     connection_timeout: z.number().int().min(1).max(300).optional().default(30),
@@ -128,6 +136,17 @@ export const RouterMcpConfigSchema = z
       return hasMcpServers || hasOpenApiServers;
     },
     { message: "At least one mcpServer or openApiServer must be configured" },
+  )
+  .refine(
+    (config) => {
+      const codeModeEnabled = config.codeMode?.enabled === true;
+      const toolSearchEnabled = config.mcpToolSearch?.enabled === true;
+      return !(codeModeEnabled && toolSearchEnabled);
+    },
+    {
+      message: "codeMode and mcpToolSearch cannot both be enabled. Choose one mode only.",
+      path: ["codeMode", "mcpToolSearch"],
+    },
   );
 
 export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>;

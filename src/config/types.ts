@@ -82,12 +82,29 @@ export interface CodeModeConfig {
   allowFetch?: boolean;
 }
 
+/**
+ * MCP Tool Search configuration.
+ * When enabled, exposes meta-tools (searchMcpForTask, callTool) for intelligent tool discovery.
+ * Mutually exclusive with Code Mode.
+ */
+export interface McpToolSearchConfig {
+  /** Enable Tool Search mode (default: false) */
+  enabled?: boolean;
+  /** Custom description for the searchMcpForTask tool */
+  description?: string;
+  /** Maximum number of search results to return (default: 5, max: 50) */
+  maxResults?: number;
+  /** Minimum relevance score threshold (default: 0, range: 0-1) */
+  minScore?: number;
+}
+
 export interface RouterMcpConfig {
   mcpServers: Record<string, ServerConfig>;
   openApiServers?: Record<string, OpenApiServerConfig>;
   httpServer?: HttpServerConfig;
   session?: SessionConfig;
   codeMode?: CodeModeConfig;
+  mcpToolSearch?: McpToolSearchConfig;
 
   subprocess_timeout?: number;
   discovery_concurrency?: number;

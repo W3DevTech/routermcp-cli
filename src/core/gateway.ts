@@ -13,6 +13,11 @@ import { OpenApiHandler } from "../openapi/index.js";
 import { type ServerTransportHandle, createServerTransport } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
+import {
+  getToolSearchMetaTools,
+  handleCallTool,
+  handleSearchMcpForTask,
+} from "./toolsearch/index.js";
 import { type ServerCapabilityCache, UpstreamManager } from "./upstream.js";
 import {
   type CachedCapabilities,
@@ -63,10 +68,18 @@ export class Gateway {
     return this.options.config.codeMode?.enabled === true;
   }
 
+  private isToolSearchEnabled(): boolean {
+    return this.options.config.mcpToolSearch?.enabled === true;
+  }
+
   private registerHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       if (this.isCodeModeEnabled()) {
         return { tools: getCodeModeMetaTools() };
+      }
+      if (this.isToolSearchEnabled()) {
+        const metaTools = getToolSearchMetaTools(this.options.config.mcpToolSearch);
+        return { tools: metaTools };
       }
       if (this.cachedCapabilities) {
         return {
@@ -81,6 +94,11 @@ export class Gateway {
 
       if (this.isCodeModeEnabled() && name.startsWith("routermcp.")) {
         return this.handleMetaTool(name, args || {}, extra);
+      }
+
+      if (this.isToolSearchEnabled() && name.startsWith("routermcp.")) {
+        const session = this.getSessionForRequest(extra);
+        return this.handleToolSearchMetaTool(name, args || {}, session.aggregator);
       }
 
       if (this.openApiHandler?.hasTool(name)) {
@@ -221,6 +239,14 @@ export class Gateway {
         this.log("Code Mode enabled - exposing meta-tools instead of raw tools");
       }
 
+      if (this.isToolSearchEnabled()) {
+        const config = this.options.config.mcpToolSearch;
+        this.log(
+          `Tool Search enabled - exposing routermcp.searchMcpForTask + routermcp.callTool ` +
+            `(maxResults: ${config?.maxResults ?? 5}, minScore: ${config?.minScore ?? 0})`,
+        );
+      }
+
       this.serverTransport = createServerTransport(
         this.options.mode,
         this.options.httpPort,
@@ -341,6 +367,35 @@ export class Gateway {
       default:
         return {
           content: [{ type: "text", text: `Unknown meta-tool: ${name}` }],
+          isError: true,
+        };
+    }
+  }
+
+  private async handleToolSearchMetaTool(
+    name: string,
+    args: Record<string, unknown>,
+    aggregator: Aggregator,
+  ): Promise<CallToolResult> {
+    if (!this.cachedCapabilities) {
+      return {
+        content: [{ type: "text", text: "Gateway not initialized" }],
+        isError: true,
+      };
+    }
+
+    const config = this.options.config.mcpToolSearch ?? { enabled: false };
+
+    switch (name) {
+      case "routermcp.searchMcpForTask":
+        return handleSearchMcpForTask(args, this.cachedCapabilities.tools, config);
+
+      case "routermcp.callTool":
+        return handleCallTool(args, aggregator, this.cachedCapabilities.tools);
+
+      default:
+        return {
+          content: [{ type: "text", text: `Unknown tool search meta-tool: ${name}` }],
           isError: true,
         };
     }

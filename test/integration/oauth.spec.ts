@@ -6,10 +6,10 @@ vi.mock("../../src/oauth/storage.js", () => ({
   isTokenExpired: vi.fn(),
 }));
 
+import { ensureValidTokens, refreshAllTokens } from "../../src/oauth/refresh.js";
 import type { OAuthStorageData } from "../../src/oauth/storage.js";
 import { isTokenExpired, loadOAuthStorage, saveTokens } from "../../src/oauth/storage.js";
-import { ensureValidTokens, refreshAllTokens } from "../../src/oauth/refresh.js";
-import { createMockOAuthServer, type MockOAuthServer } from "../helpers/mock-oauth-server.js";
+import { type MockOAuthServer, createMockOAuthServer } from "../helpers/mock-oauth-server.js";
 
 describe("OAuth Refresh Integration", () => {
   let mockServer: MockOAuthServer;
