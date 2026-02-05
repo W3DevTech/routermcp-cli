@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import * as p from "@clack/prompts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
+import { parse as parseJsonc, modify, applyEdits } from "jsonc-parser/lib/esm/main.js";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { file, write } from "../compat/index.js";
 import {
@@ -23,6 +23,25 @@ interface MigrationSource {
   level: MigrationLevel;
   path: string;
   label: string;
+}
+
+/**
+ * Result of parsing an MCP client config file.
+ * Distinguishes between parse errors, missing MCP section, and empty MCP section.
+ */
+type ParseConfigResult =
+  | { success: true; config: RouterMcpConfig }
+  | { success: false; reason: "invalid-format" | "no-mcp-section" | "empty-mcp" };
+
+/**
+ * Information about a detected MCP client.
+ */
+interface DetectedClient {
+  client: MigrationClient;
+  level: MigrationLevel;
+  path: string;
+  exists: boolean;
+  hasRoutermcp: boolean;
 }
 
 /**
@@ -116,6 +135,15 @@ export async function configCommand(): Promise<void> {
 
     options.push(
       { value: "list", label: "List all servers" },
+      { value: "advanced", label: "Advanced settings" },
+    );
+
+    // Show "Config MCP Clients" option for user-global and project-local scopes
+    if (scope === "user-global" || scope === "project-local") {
+      options.push({ value: "config-clients", label: "Config MCP Clients" });
+    }
+
+    options.push(
       { value: "validate-save", label: "Validate, Save and exit" },
       { value: "save", label: "Save and exit" },
       { value: "exit", label: "Exit without saving" },
@@ -149,6 +177,12 @@ export async function configCommand(): Promise<void> {
         break;
       case "list":
         listServers(config);
+        break;
+      case "advanced":
+        await configureAdvancedSettings(config);
+        break;
+      case "config-clients":
+        await configMcpClients(scope);
         break;
       case "validate-save":
         if (await validateAndSaveConfig(config, scope)) {
@@ -611,6 +645,65 @@ function truncate(str: string, maxLen: number): string {
 }
 
 /**
+ * Format seconds to human-readable duration.
+ * Examples: 30 → "30s", 60 → "1m", 90 → "1m 30s", 180 → "3m"
+ */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (remainingSeconds === 0) {
+    return `${minutes}m`;
+  }
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+/**
+ * Parse human-readable duration to seconds.
+ * Accepts: "30s", "2m", "1m30s", "1m 30s", "180" (assumes seconds if no unit)
+ * Returns null if invalid.
+ */
+function parseDuration(input: string): number | null {
+  const trimmed = input.trim().toLowerCase();
+
+  // Pure number - assume seconds
+  if (/^\d+$/.test(trimmed)) {
+    return Number.parseInt(trimmed, 10);
+  }
+
+  // Pattern: optional minutes + optional seconds (e.g., "2m", "30s", "1m30s", "1m 30s")
+  const match = trimmed.match(/^(?:(\d+)m)?\s*(?:(\d+)s)?$/);
+  if (!match) {
+    return null;
+  }
+
+  const minutes = match[1] ? Number.parseInt(match[1], 10) : 0;
+  const seconds = match[2] ? Number.parseInt(match[2], 10) : 0;
+
+  if (minutes === 0 && seconds === 0) {
+    return null;
+  }
+
+  return minutes * 60 + seconds;
+}
+
+/**
+ * Get current execution mode label.
+ * Returns "Code Mode", "MCP Tool Search", or "Standard"
+ */
+function getExecutionModeLabel(config: RouterMcpConfig): string {
+  if (config.codeMode?.enabled) {
+    return "Code Mode";
+  }
+  if (config.mcpToolSearch?.enabled) {
+    return "MCP Tool Search";
+  }
+  return "Standard";
+}
+
+/**
  * Edit an existing server.
  */
 async function editServer(config: RouterMcpConfig): Promise<void> {
@@ -1031,6 +1124,728 @@ function listServers(config: RouterMcpConfig): void {
       );
     }
   }
+
+  // Show advanced settings if any non-default values are set
+  const hasAdvancedSettings =
+    config.codeMode?.enabled ||
+    config.mcpToolSearch?.enabled ||
+    config.subprocess_timeout !== undefined ||
+    config.discovery_concurrency !== undefined ||
+    config.connection_timeout !== undefined ||
+    config.strictEnvVars !== undefined;
+
+  if (hasAdvancedSettings) {
+    p.log.info("\nAdvanced Settings:");
+
+    // Execution mode
+    const mode = getExecutionModeLabel(config);
+    p.log.message(`  Execution mode: ${mode}`);
+    if (config.codeMode?.enabled) {
+      p.log.message(`    Timeout: ${formatDuration(config.codeMode.timeout ?? 30)}`);
+      p.log.message(`    Allow fetch: ${config.codeMode.allowFetch !== false ? "Yes" : "No"}`);
+    }
+    if (config.mcpToolSearch?.enabled) {
+      p.log.message(`    Max results: ${config.mcpToolSearch.maxResults ?? 5}`);
+      p.log.message(`    Min score: ${config.mcpToolSearch.minScore ?? 0}`);
+      if (config.mcpToolSearch.description) {
+        p.log.message(`    Description: ${truncate(config.mcpToolSearch.description, 40)}`);
+      }
+    }
+
+    // Other settings (only if non-default)
+    if (config.subprocess_timeout !== undefined) {
+      p.log.message(`  Subprocess timeout: ${formatDuration(config.subprocess_timeout)}`);
+    }
+    if (config.discovery_concurrency !== undefined) {
+      p.log.message(`  Discovery concurrency: ${config.discovery_concurrency}`);
+    }
+    if (config.connection_timeout !== undefined) {
+      p.log.message(`  Connection timeout: ${formatDuration(config.connection_timeout)}`);
+    }
+    if (config.strictEnvVars !== undefined) {
+      p.log.message(`  Strict env vars: ${config.strictEnvVars ? "Yes" : "No"}`);
+    }
+  }
+}
+
+/**
+ * Configure advanced settings submenu.
+ */
+async function configureAdvancedSettings(config: RouterMcpConfig): Promise<void> {
+  let done = false;
+
+  while (!done) {
+    const currentMode = getExecutionModeLabel(config);
+    const subprocessTimeout = config.subprocess_timeout ?? 180;
+    const discoveryConcurrency = config.discovery_concurrency ?? 5;
+    const connectionTimeout = config.connection_timeout ?? 30;
+    const strictEnvVars = config.strictEnvVars ?? false;
+
+    const action = await p.select({
+      message: "Advanced Settings",
+      options: [
+        {
+          value: "execution-mode",
+          label: "Configure execution mode",
+          hint: currentMode,
+        },
+        {
+          value: "subprocess-timeout",
+          label: "Subprocess timeout",
+          hint: formatDuration(subprocessTimeout),
+        },
+        {
+          value: "discovery-concurrency",
+          label: "Discovery concurrency",
+          hint: String(discoveryConcurrency),
+        },
+        {
+          value: "connection-timeout",
+          label: "Connection timeout",
+          hint: formatDuration(connectionTimeout),
+        },
+        {
+          value: "strict-env-vars",
+          label: "Strict environment variables",
+          hint: strictEnvVars ? "Yes" : "No",
+        },
+        {
+          value: "back",
+          label: "Back to main menu",
+        },
+      ],
+    });
+
+    if (p.isCancel(action) || action === "back") {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "execution-mode":
+        await configureExecutionMode(config);
+        break;
+      case "subprocess-timeout":
+        await configureSubprocessTimeout(config);
+        break;
+      case "discovery-concurrency":
+        await configureDiscoveryConcurrency(config);
+        break;
+      case "connection-timeout":
+        await configureConnectionTimeout(config);
+        break;
+      case "strict-env-vars":
+        await configureStrictEnvVars(config);
+        break;
+    }
+  }
+}
+
+/**
+ * Configure execution mode (Standard / Code Mode / Tool Search).
+ */
+async function configureExecutionMode(config: RouterMcpConfig): Promise<void> {
+  const explanation = `
+Execution Mode Configuration
+
+RouterMCP supports three execution modes:
+
+• Standard Mode (default)
+  All upstream tools are exposed directly to clients. Best for simple
+  setups where you want direct access to all tools.
+
+• Code Mode
+  Exposes two meta-tools: listTools and executeCode. Allows clients to
+  write JavaScript code that orchestrates multiple tool calls in a secure
+  QuickJS sandbox. Best for complex workflows requiring programmatic tool
+  coordination.
+
+• MCP Tool Search
+  Exposes two meta-tools: searchMcpForTask and callTool. Provides
+  intelligent tool discovery based on natural language task descriptions.
+  Best for setups with many tools where automatic tool selection is preferred.
+
+Note: Code Mode and Tool Search are mutually exclusive.
+`;
+
+  p.log.message(explanation);
+
+  const currentMode = getExecutionModeLabel(config);
+  p.log.info(`Current mode: ${currentMode}`);
+
+  const mode = await p.select({
+    message: "Select execution mode:",
+    options: [
+      {
+        value: "standard",
+        label: "Standard",
+        hint: "Direct tool access",
+      },
+      {
+        value: "code-mode",
+        label: "Code Mode",
+        hint: "JavaScript sandbox execution",
+      },
+      {
+        value: "tool-search",
+        label: "MCP Tool Search",
+        hint: "Intelligent tool discovery",
+      },
+    ],
+  });
+
+  if (p.isCancel(mode)) return;
+
+  const isCodeModeEnabled = config.codeMode?.enabled === true;
+  const isToolSearchEnabled = config.mcpToolSearch?.enabled === true;
+
+  switch (mode) {
+    case "standard": {
+      if (isCodeModeEnabled || isToolSearchEnabled) {
+        const currentModeName = isCodeModeEnabled ? "Code Mode" : "Tool Search";
+        const confirm = await p.confirm({
+          message: `Disable ${currentModeName} and switch to Standard mode?`,
+          initialValue: true,
+        });
+        if (p.isCancel(confirm) || !confirm) return;
+
+        // Disable but preserve settings
+        if (isCodeModeEnabled && config.codeMode) {
+          config.codeMode.enabled = false;
+        }
+        if (isToolSearchEnabled && config.mcpToolSearch) {
+          config.mcpToolSearch.enabled = false;
+        }
+        p.log.success("Switched to Standard mode");
+      } else {
+        p.log.info("Already in Standard mode");
+      }
+      break;
+    }
+    case "code-mode": {
+      if (isToolSearchEnabled) {
+        const confirm = await p.confirm({
+          message: "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
+          initialValue: true,
+        });
+        if (p.isCancel(confirm) || !confirm) return;
+
+        // Disable Tool Search (preserve settings)
+        if (config.mcpToolSearch) {
+          config.mcpToolSearch.enabled = false;
+        }
+      }
+
+      // Enable Code Mode
+      if (!config.codeMode) {
+        config.codeMode = { enabled: true };
+      } else {
+        config.codeMode.enabled = true;
+      }
+      p.log.success("Code Mode enabled");
+
+      // Enter Code Mode settings
+      await configureCodeMode(config);
+      break;
+    }
+    case "tool-search": {
+      if (isCodeModeEnabled) {
+        const confirm = await p.confirm({
+          message: "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
+          initialValue: true,
+        });
+        if (p.isCancel(confirm) || !confirm) return;
+
+        // Disable Code Mode (preserve settings)
+        if (config.codeMode) {
+          config.codeMode.enabled = false;
+        }
+      }
+
+      // Enable Tool Search
+      if (!config.mcpToolSearch) {
+        config.mcpToolSearch = { enabled: true };
+      } else {
+        config.mcpToolSearch.enabled = true;
+      }
+      p.log.success("MCP Tool Search enabled");
+
+      // Enter Tool Search settings
+      await configureToolSearch(config);
+      break;
+    }
+  }
+}
+
+/**
+ * Configure Code Mode settings.
+ */
+async function configureCodeMode(config: RouterMcpConfig): Promise<void> {
+  const explanation = `
+Code Mode Settings
+
+Code Mode enables JavaScript code execution in a secure QuickJS WASM sandbox.
+Clients can write code that orchestrates multiple tool calls programmatically.
+
+Meta-tools exposed:
+• routermcp.listTools - Lists all available tools with their schemas
+• routermcp.executeCode - Executes JavaScript code in the sandbox
+`;
+
+  p.log.message(explanation);
+
+  let done = false;
+  while (!done) {
+    // Ensure codeMode exists
+    if (!config.codeMode) {
+      config.codeMode = { enabled: false };
+    }
+
+    const isEnabled = config.codeMode.enabled ?? false;
+    const timeout = config.codeMode.timeout ?? 30000;
+    const allowFetch = config.codeMode.allowFetch ?? true;
+
+    // Show current settings
+    p.log.info("Current settings:");
+    p.log.message(`  Enabled: ${isEnabled ? "Yes" : "No"}`);
+    p.log.message(`  Timeout: ${formatDuration(timeout / 1000)}`);
+    p.log.message(`  Allow fetch: ${allowFetch ? "Yes" : "No"}`);
+
+    const options: Array<{ value: string; label: string; hint?: string }> = [];
+
+    if (isEnabled) {
+      options.push({ value: "disable", label: "Disable Code Mode" });
+    } else {
+      options.push({ value: "enable", label: "Enable Code Mode" });
+    }
+
+    options.push(
+      {
+        value: "timeout",
+        label: "Execution timeout",
+        hint: formatDuration(timeout / 1000),
+      },
+      {
+        value: "allow-fetch",
+        label: "Allow fetch() in sandbox",
+        hint: allowFetch ? "Yes" : "No",
+      },
+      { value: "reset", label: "Reset all to defaults" },
+      { value: "back", label: "Back" },
+    );
+
+    const action = await p.select({
+      message: "Code Mode Settings",
+      options,
+    });
+
+    if (p.isCancel(action) || action === "back") {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "enable": {
+        // Check for Tool Search conflict
+        if (config.mcpToolSearch?.enabled) {
+          const confirm = await p.confirm({
+            message: "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
+            initialValue: true,
+          });
+          if (p.isCancel(confirm) || !confirm) break;
+          config.mcpToolSearch.enabled = false;
+        }
+        config.codeMode.enabled = true;
+        p.log.success("Code Mode enabled");
+        break;
+      }
+      case "disable": {
+        const confirm = await p.confirm({
+          message: "Disable Code Mode?",
+          initialValue: true,
+        });
+        if (!p.isCancel(confirm) && confirm) {
+          config.codeMode.enabled = false;
+          p.log.success("Code Mode disabled");
+        }
+        break;
+      }
+      case "timeout": {
+        const input = await p.text({
+          message: "Execution timeout (e.g., '30s', '2m'):",
+          initialValue: formatDuration(timeout / 1000),
+          validate: (value) => {
+            const seconds = parseDuration(value);
+            if (seconds === null) return "Invalid duration format. Use e.g., '30s', '2m', '1m30s'";
+            const ms = seconds * 1000;
+            if (ms < 1000) return "Timeout must be at least 1 second";
+            if (ms > 120000) return "Timeout must be at most 2 minutes (120s)";
+            return undefined;
+          },
+        });
+        if (!p.isCancel(input)) {
+          const seconds = parseDuration(input as string);
+          if (seconds !== null) {
+            config.codeMode.timeout = seconds * 1000;
+            p.log.success(`Timeout set to ${formatDuration(seconds)}`);
+          }
+        }
+        break;
+      }
+      case "allow-fetch": {
+        const newValue = await p.confirm({
+          message: "Allow fetch() in sandbox?",
+          initialValue: allowFetch,
+        });
+        if (!p.isCancel(newValue)) {
+          config.codeMode.allowFetch = newValue;
+          p.log.success(`Allow fetch set to ${newValue ? "Yes" : "No"}`);
+        }
+        break;
+      }
+      case "reset": {
+        const confirm = await p.confirm({
+          message: "Reset Code Mode to defaults? This will disable Code Mode and clear all settings.",
+          initialValue: false,
+        });
+        if (!p.isCancel(confirm) && confirm) {
+          delete config.codeMode;
+          p.log.success("Code Mode reset to defaults");
+          done = true;
+        }
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Configure Tool Search settings.
+ */
+async function configureToolSearch(config: RouterMcpConfig): Promise<void> {
+  const explanation = `
+MCP Tool Search Settings
+
+Tool Search provides intelligent tool discovery based on task descriptions.
+Instead of exposing all tools directly, it allows clients to search for
+relevant tools using natural language.
+
+Meta-tools exposed:
+• routermcp.searchMcpForTask - Search tools by task description
+• routermcp.callTool - Call a discovered tool by name
+`;
+
+  p.log.message(explanation);
+
+  let done = false;
+  while (!done) {
+    // Ensure mcpToolSearch exists
+    if (!config.mcpToolSearch) {
+      config.mcpToolSearch = { enabled: false };
+    }
+
+    const isEnabled = config.mcpToolSearch.enabled ?? false;
+    const description = config.mcpToolSearch.description;
+    const maxResults = config.mcpToolSearch.maxResults ?? 5;
+    const minScore = config.mcpToolSearch.minScore ?? 0;
+
+    // Show current settings
+    p.log.info("Current settings:");
+    p.log.message(`  Enabled: ${isEnabled ? "Yes" : "No"}`);
+    p.log.message(`  Description: ${description ? truncate(description, 40) : "(default)"}`);
+    p.log.message(`  Max results: ${maxResults}`);
+    p.log.message(`  Min score: ${minScore}`);
+
+    const options: Array<{ value: string; label: string; hint?: string }> = [];
+
+    if (isEnabled) {
+      options.push({ value: "disable", label: "Disable Tool Search" });
+    } else {
+      options.push({ value: "enable", label: "Enable Tool Search" });
+    }
+
+    options.push(
+      {
+        value: "description",
+        label: "Custom description",
+        hint: description ? truncate(description, 30) : "(default)",
+      },
+      {
+        value: "max-results",
+        label: "Max results",
+        hint: String(maxResults),
+      },
+      {
+        value: "min-score",
+        label: "Min score threshold",
+        hint: String(minScore),
+      },
+      { value: "reset", label: "Reset all to defaults" },
+      { value: "back", label: "Back" },
+    );
+
+    const action = await p.select({
+      message: "Tool Search Settings",
+      options,
+    });
+
+    if (p.isCancel(action) || action === "back") {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "enable": {
+        // Check for Code Mode conflict
+        if (config.codeMode?.enabled) {
+          const confirm = await p.confirm({
+            message: "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
+            initialValue: true,
+          });
+          if (p.isCancel(confirm) || !confirm) break;
+          config.codeMode.enabled = false;
+        }
+        config.mcpToolSearch.enabled = true;
+        p.log.success("Tool Search enabled");
+        break;
+      }
+      case "disable": {
+        const confirm = await p.confirm({
+          message: "Disable Tool Search?",
+          initialValue: true,
+        });
+        if (!p.isCancel(confirm) && confirm) {
+          config.mcpToolSearch.enabled = false;
+          p.log.success("Tool Search disabled");
+        }
+        break;
+      }
+      case "description": {
+        const descAction = await p.select({
+          message: "Description:",
+          options: [
+            { value: "edit", label: "Set custom description" },
+            { value: "reset", label: "Reset to default" },
+            { value: "cancel", label: "Cancel" },
+          ],
+        });
+
+        if (p.isCancel(descAction) || descAction === "cancel") break;
+
+        if (descAction === "reset") {
+          delete config.mcpToolSearch.description;
+          p.log.success("Description reset to default");
+        } else {
+          const input = await p.text({
+            message: "Custom description for searchMcpForTask tool:",
+            initialValue: description || "",
+            placeholder: "Search for MCP tools matching a task description",
+          });
+          if (!p.isCancel(input) && input) {
+            config.mcpToolSearch.description = input;
+            p.log.success("Description updated");
+          }
+        }
+        break;
+      }
+      case "max-results": {
+        const input = await p.text({
+          message: "Maximum number of search results (1-50):",
+          initialValue: String(maxResults),
+          validate: (value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num)) return "Must be a number";
+            if (num < 1) return "Must be at least 1";
+            if (num > 50) return "Must be at most 50";
+            return undefined;
+          },
+        });
+        if (!p.isCancel(input)) {
+          config.mcpToolSearch.maxResults = Number.parseInt(input as string, 10);
+          p.log.success(`Max results set to ${input}`);
+        }
+        break;
+      }
+      case "min-score": {
+        const input = await p.text({
+          message: "Minimum relevance score threshold (0-1):",
+          initialValue: String(minScore),
+          validate: (value) => {
+            const num = Number.parseFloat(value);
+            if (Number.isNaN(num)) return "Must be a number";
+            if (num < 0) return "Must be at least 0";
+            if (num > 1) return "Must be at most 1";
+            return undefined;
+          },
+        });
+        if (!p.isCancel(input)) {
+          config.mcpToolSearch.minScore = Number.parseFloat(input as string);
+          p.log.success(`Min score set to ${input}`);
+        }
+        break;
+      }
+      case "reset": {
+        const confirm = await p.confirm({
+          message: "Reset Tool Search to defaults? This will disable Tool Search and clear all settings.",
+          initialValue: false,
+        });
+        if (!p.isCancel(confirm) && confirm) {
+          delete config.mcpToolSearch;
+          p.log.success("Tool Search reset to defaults");
+          done = true;
+        }
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Configure subprocess timeout.
+ */
+async function configureSubprocessTimeout(config: RouterMcpConfig): Promise<void> {
+  const currentValue = config.subprocess_timeout ?? 180;
+
+  p.log.message(`
+Subprocess Timeout
+
+Maximum time to wait for subprocess operations (tool calls, etc.).
+`);
+
+  const input = await p.text({
+    message: "Enter timeout (e.g., '30s', '3m', '180'):",
+    initialValue: formatDuration(currentValue),
+    validate: (value) => {
+      const seconds = parseDuration(value);
+      if (seconds === null) return "Invalid duration format. Use e.g., '30s', '3m', '1m30s'";
+      if (seconds < 0) return "Timeout must be non-negative";
+      return undefined;
+    },
+  });
+
+  if (!p.isCancel(input)) {
+    const seconds = parseDuration(input as string);
+    if (seconds !== null) {
+      if (seconds === 180) {
+        // Default value - remove from config to keep it clean
+        delete config.subprocess_timeout;
+        p.log.success("Subprocess timeout reset to default (3m)");
+      } else {
+        config.subprocess_timeout = seconds;
+        p.log.success(`Subprocess timeout set to ${formatDuration(seconds)}`);
+      }
+    }
+  }
+}
+
+/**
+ * Configure discovery concurrency.
+ */
+async function configureDiscoveryConcurrency(config: RouterMcpConfig): Promise<void> {
+  const currentValue = config.discovery_concurrency ?? 5;
+
+  p.log.message(`
+Discovery Concurrency
+
+Number of upstream servers to discover simultaneously during startup.
+Higher values speed up startup but use more resources.
+`);
+
+  const input = await p.text({
+    message: "Enter concurrency (1-50):",
+    initialValue: String(currentValue),
+    validate: (value) => {
+      const num = Number.parseInt(value, 10);
+      if (Number.isNaN(num)) return "Must be a number";
+      if (num < 1) return "Must be at least 1";
+      if (num > 50) return "Must be at most 50";
+      return undefined;
+    },
+  });
+
+  if (!p.isCancel(input)) {
+    const value = Number.parseInt(input as string, 10);
+    if (value === 5) {
+      // Default value - remove from config to keep it clean
+      delete config.discovery_concurrency;
+      p.log.success("Discovery concurrency reset to default (5)");
+    } else {
+      config.discovery_concurrency = value;
+      p.log.success(`Discovery concurrency set to ${value}`);
+    }
+  }
+}
+
+/**
+ * Configure connection timeout.
+ */
+async function configureConnectionTimeout(config: RouterMcpConfig): Promise<void> {
+  const currentValue = config.connection_timeout ?? 30;
+
+  p.log.message(`
+Connection Timeout
+
+Maximum time to wait when connecting to an upstream server.
+`);
+
+  const input = await p.text({
+    message: "Enter timeout (e.g., '10s', '1m', '30'):",
+    initialValue: formatDuration(currentValue),
+    validate: (value) => {
+      const seconds = parseDuration(value);
+      if (seconds === null) return "Invalid duration format. Use e.g., '10s', '1m', '30'";
+      if (seconds < 1) return "Timeout must be at least 1 second";
+      if (seconds > 300) return "Timeout must be at most 5 minutes (300s)";
+      return undefined;
+    },
+  });
+
+  if (!p.isCancel(input)) {
+    const seconds = parseDuration(input as string);
+    if (seconds !== null) {
+      if (seconds === 30) {
+        // Default value - remove from config to keep it clean
+        delete config.connection_timeout;
+        p.log.success("Connection timeout reset to default (30s)");
+      } else {
+        config.connection_timeout = seconds;
+        p.log.success(`Connection timeout set to ${formatDuration(seconds)}`);
+      }
+    }
+  }
+}
+
+/**
+ * Configure strict environment variables mode.
+ */
+async function configureStrictEnvVars(config: RouterMcpConfig): Promise<void> {
+  const currentValue = config.strictEnvVars ?? false;
+
+  p.log.message(`
+Strict Environment Variables
+
+When enabled, RouterMCP will fail with an error if any \${env:VAR} reference
+cannot be resolved. When disabled, unresolved references are left unexpanded
+with a warning.
+`);
+
+  p.log.info(`Currently: ${currentValue ? "Yes" : "No"}`);
+
+  const newValue = await p.confirm({
+    message: "Enable strict environment variable mode?",
+    initialValue: currentValue,
+  });
+
+  if (!p.isCancel(newValue)) {
+    if (newValue === false) {
+      // Default value - remove from config to keep it clean
+      delete config.strictEnvVars;
+      p.log.success("Strict env vars disabled (default)");
+    } else {
+      config.strictEnvVars = newValue;
+      p.log.success("Strict env vars enabled");
+    }
+  }
 }
 
 /**
@@ -1202,6 +2017,62 @@ function getClientLabel(client: MigrationClient): string {
 }
 
 /**
+ * Check if a client's config has routermcp already configured.
+ */
+async function checkHasRoutermcp(configPath: string, client: MigrationClient): Promise<boolean> {
+  try {
+    const f = file(configPath);
+    if (!(await f.exists())) return false;
+
+    const content = await f.text();
+
+    if (client === "codex") {
+      const parsed = parseToml(content) as Record<string, unknown>;
+      const mcpServers = parsed.mcp_servers as Record<string, unknown> | undefined;
+      return !!mcpServers?.routermcp;
+    } else {
+      const parsed = parseJsonc(content) as Record<string, unknown>;
+      if (client === "opencode") {
+        const mcp = parsed.mcp as Record<string, unknown> | undefined;
+        return !!mcp?.routermcp;
+      } else {
+        const mcpServers = parsed.mcpServers as Record<string, unknown> | undefined;
+        return !!mcpServers?.routermcp;
+      }
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect all MCP clients at a given level (global or project).
+ */
+async function detectMcpClients(level: MigrationLevel): Promise<DetectedClient[]> {
+  const clients: MigrationClient[] = ["cursor", "claude-code", "opencode", "codex"];
+  const results: DetectedClient[] = [];
+
+  for (const clientType of clients) {
+    const configPath = getMcpClientConfigPath(clientType, level);
+    if (!configPath) continue;
+
+    const f = file(configPath);
+    const exists = await f.exists();
+    const hasRoutermcp = exists ? await checkHasRoutermcp(configPath, clientType) : false;
+
+    results.push({
+      client: clientType,
+      level,
+      path: configPath,
+      exists,
+      hasRoutermcp,
+    });
+  }
+
+  return results;
+}
+
+/**
  * Get available migration sources based on the target scope.
  * - user-project scope: no migration sources (use import-global instead)
  * - project-local scope: check project-level configs for all 4 clients
@@ -1305,17 +2176,17 @@ function convertOpenCodeEnvInObject<T>(obj: T): T {
  *   }
  * }
  */
-function parseOpenCodeConfig(content: string): RouterMcpConfig | null {
+function parseOpenCodeConfig(content: string): ParseConfigResult {
   try {
     const parsed = parseJsonc(content);
     if (!parsed || typeof parsed !== "object") {
-      return null;
+      return { success: false, reason: "invalid-format" };
     }
 
     // OpenCode uses "mcp" key instead of "mcpServers"
     const mcpSection = parsed.mcp;
     if (!mcpSection || typeof mcpSection !== "object") {
-      return null;
+      return { success: false, reason: "no-mcp-section" };
     }
 
     const mcpServers: Record<string, ServerConfig> = {};
@@ -1372,12 +2243,12 @@ function parseOpenCodeConfig(content: string): RouterMcpConfig | null {
     }
 
     if (Object.keys(mcpServers).length === 0) {
-      return null;
+      return { success: false, reason: "empty-mcp" };
     }
 
-    return { mcpServers };
+    return { success: true, config: { mcpServers } };
   } catch {
-    return null;
+    return { success: false, reason: "invalid-format" };
   }
 }
 
@@ -1395,17 +2266,17 @@ function parseOpenCodeConfig(content: string): RouterMcpConfig | null {
  * enabled_tools = ["tool1", "tool2"]
  * disabled_tools = ["tool3"]
  */
-function parseCodexConfig(content: string): RouterMcpConfig | null {
+function parseCodexConfig(content: string): ParseConfigResult {
   try {
     const parsed = parseToml(content);
     if (!parsed || typeof parsed !== "object") {
-      return null;
+      return { success: false, reason: "invalid-format" };
     }
 
     // Codex uses "mcp_servers" section
     const mcpServersSection = parsed.mcp_servers;
     if (!mcpServersSection || typeof mcpServersSection !== "object") {
-      return null;
+      return { success: false, reason: "no-mcp-section" };
     }
 
     const mcpServers: Record<string, ServerConfig> = {};
@@ -1474,40 +2345,50 @@ function parseCodexConfig(content: string): RouterMcpConfig | null {
     }
 
     if (Object.keys(mcpServers).length === 0) {
-      return null;
+      return { success: false, reason: "empty-mcp" };
     }
 
-    return { mcpServers };
+    return { success: true, config: { mcpServers } };
   } catch {
-    return null;
+    return { success: false, reason: "invalid-format" };
   }
 }
 
 /**
  * Parse standard MCP config format (Cursor, Claude Code).
  */
-function parseStandardMcpConfig(content: string): RouterMcpConfig | null {
+function parseStandardMcpConfig(content: string): ParseConfigResult {
   try {
     const parsed = parseJsonc(content);
 
     // Validate structure
-    if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
-      return null;
+    if (!parsed || typeof parsed !== "object") {
+      return { success: false, reason: "invalid-format" };
     }
 
-    return parsed as RouterMcpConfig;
+    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") {
+      return { success: false, reason: "no-mcp-section" };
+    }
+
+    if (Object.keys(parsed.mcpServers).length === 0) {
+      return { success: false, reason: "empty-mcp" };
+    }
+
+    return { success: true, config: parsed as RouterMcpConfig };
   } catch {
-    return null;
+    return { success: false, reason: "invalid-format" };
   }
 }
 
 /**
  * Read and parse a client's MCP config file.
+ * Returns null if the file doesn't exist.
+ * Returns ParseConfigResult for all other cases (success or specific failure reasons).
  */
 async function readClientConfig(
   path: string,
   client: MigrationClient,
-): Promise<RouterMcpConfig | null> {
+): Promise<ParseConfigResult | null> {
   try {
     const f = file(path);
     if (!(await f.exists())) {
@@ -1527,7 +2408,7 @@ async function readClientConfig(
         return parseStandardMcpConfig(content);
     }
   } catch {
-    return null;
+    return { success: false, reason: "invalid-format" };
   }
 }
 
@@ -1646,8 +2527,28 @@ async function replaceClientConfig(client: MigrationClient, level: MigrationLeve
 }
 
 /**
+ * Modify a JSON/JSONC file while preserving comments.
+ * Uses jsonc-parser's modify and applyEdits for comment-preserving edits.
+ */
+async function modifyJsoncFile(
+  filePath: string,
+  jsonPath: (string | number)[],
+  value: unknown,
+): Promise<void> {
+  const f = file(filePath);
+  let content = (await f.exists()) ? await f.text() : "{}";
+
+  const edits = modify(content, jsonPath, value, {
+    formattingOptions: { tabSize: 2, insertSpaces: true },
+  });
+  const result = applyEdits(content, edits);
+
+  await write(filePath, result);
+}
+
+/**
  * Add routermcp entry to a client's global config.
- * This preserves existing servers and just adds routermcp.
+ * This preserves existing servers (and comments for JSON files) and just adds routermcp.
  */
 async function addRoutermcpToClientConfig(
   client: MigrationClient,
@@ -1660,12 +2561,12 @@ async function addRoutermcpToClientConfig(
   }
 
   try {
-    const f = file(configPath);
-    const exists = await f.exists();
-    let content = exists ? await f.text() : "";
-
     if (client === "codex") {
-      // Codex uses TOML format
+      // Codex uses TOML format - no comment preservation needed for current usage
+      const f = file(configPath);
+      const exists = await f.exists();
+      const content = exists ? await f.text() : "";
+
       let tomlConfig: Record<string, unknown> = {};
       if (content) {
         try {
@@ -1689,52 +2590,18 @@ async function addRoutermcpToClientConfig(
       await write(configPath, stringifyToml(tomlConfig));
       p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
     } else if (client === "opencode") {
-      // OpenCode uses JSON format with "mcp" key
-      let jsonConfig: Record<string, unknown> = {};
-      if (content) {
-        try {
-          jsonConfig = parseJsonc(content) as Record<string, unknown>;
-        } catch {
-          // If parsing fails, start fresh
-        }
-      }
-
-      // Ensure mcp section exists
-      if (!jsonConfig.mcp || typeof jsonConfig.mcp !== "object") {
-        jsonConfig.mcp = {};
-      }
-
-      // Add routermcp entry
-      (jsonConfig.mcp as Record<string, unknown>).routermcp = {
+      // OpenCode uses JSON format with "mcp" key - preserve comments
+      await modifyJsoncFile(configPath, ["mcp", "routermcp"], {
         type: "local",
         command: ["bunx", "-y", "routermcp"],
-      };
-
-      await write(configPath, JSON.stringify(jsonConfig, null, 2));
+      });
       p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
     } else if (client === "cursor" || client === "claude-code") {
-      // Cursor and Claude Code use standard JSON format with "mcpServers" key
-      let jsonConfig: Record<string, unknown> = {};
-      if (content) {
-        try {
-          jsonConfig = parseJsonc(content) as Record<string, unknown>;
-        } catch {
-          // If parsing fails, start fresh
-        }
-      }
-
-      // Ensure mcpServers section exists
-      if (!jsonConfig.mcpServers || typeof jsonConfig.mcpServers !== "object") {
-        jsonConfig.mcpServers = {};
-      }
-
-      // Add routermcp entry
-      (jsonConfig.mcpServers as Record<string, unknown>).routermcp = {
+      // Cursor and Claude Code use standard JSON format with "mcpServers" key - preserve comments
+      await modifyJsoncFile(configPath, ["mcpServers", "routermcp"], {
         command: "bunx",
         args: ["-y", "routermcp"],
-      };
-
-      await write(configPath, JSON.stringify(jsonConfig, null, 2));
+      });
       p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
     }
   } catch (err) {
@@ -1773,14 +2640,38 @@ async function migrateFromClient(config: RouterMcpConfig, scope: ConfigScope): P
   const spinner = p.spinner();
   spinner.start(`Reading ${clientLabel} config...`);
 
-  const clientConfig = await readClientConfig(source.path, source.client);
+  const parseResult = await readClientConfig(source.path, source.client);
 
-  if (!clientConfig) {
-    spinner.stop("Config not found or invalid");
-    p.log.error(`Could not parse ${clientLabel} config at: ${source.path}`);
+  // Handle file not found
+  if (!parseResult) {
+    spinner.stop("Config file not found");
+    p.log.error(`Config file not found at: ${source.path}`);
     return;
   }
 
+  // Handle parse failures with specific reasons
+  if (!parseResult.success) {
+    spinner.stop("No MCP servers found");
+
+    if (parseResult.reason === "no-mcp-section" || parseResult.reason === "empty-mcp") {
+      p.log.warn(`No MCP servers configured in ${clientLabel}`);
+
+      // Offer to add routermcp instead
+      const shouldAdd = await p.confirm({
+        message: `Would you like to add routermcp to ${clientLabel} config instead?`,
+        initialValue: true,
+      });
+
+      if (!p.isCancel(shouldAdd) && shouldAdd) {
+        await addRoutermcpToClientConfig(source.client, source.level);
+      }
+    } else {
+      p.log.error(`Could not parse ${clientLabel} config (invalid format)`);
+    }
+    return;
+  }
+
+  const clientConfig = parseResult.config;
   const serverCount = Object.keys(clientConfig.mcpServers).length;
   spinner.stop(`Found ${serverCount} servers in ${clientLabel} config`);
 
@@ -1834,6 +2725,107 @@ async function migrateFromClient(config: RouterMcpConfig, scope: ConfigScope): P
     if (!p.isCancel(shouldAdd) && shouldAdd) {
       await addRoutermcpToClientConfig(source.client, source.level);
     }
+  }
+}
+
+/**
+ * Configure MCP clients to use routermcp.
+ * Detects available MCP clients and allows adding routermcp to their configs.
+ */
+async function configMcpClients(scope: ConfigScope): Promise<void> {
+  // Determine level based on scope
+  const level: MigrationLevel = scope === "user-global" ? "global" : "project";
+  const levelLabel = level === "global" ? "global" : "project-level";
+
+  p.log.info(`Detecting MCP clients at ${levelLabel}...`);
+
+  // Detect all clients
+  const detectedClients = await detectMcpClients(level);
+
+  if (detectedClients.length === 0) {
+    p.log.warn("No MCP clients detected");
+    return;
+  }
+
+  // Build multi-select options
+  const options = detectedClients.map((dc) => {
+    const label = getClientLabel(dc.client);
+    let hint = "";
+
+    if (dc.hasRoutermcp) {
+      hint = "routermcp already configured";
+    } else if (dc.exists) {
+      hint = "config exists";
+    } else {
+      hint = "config will be created";
+    }
+
+    return {
+      value: dc,
+      label,
+      hint,
+    };
+  });
+
+  // Multi-select
+  const selected = await p.multiselect({
+    message: "Select MCP clients to configure with routermcp:",
+    options,
+    required: false,
+  });
+
+  if (p.isCancel(selected) || selected.length === 0) {
+    p.log.info("No clients selected");
+    return;
+  }
+
+  const selectedClients = selected as DetectedClient[];
+
+  // Process each selected client
+  const results: Array<{
+    client: string;
+    status: "added" | "skipped" | "created" | "error";
+    message?: string;
+  }> = [];
+
+  for (const dc of selectedClients) {
+    const clientLabel = getClientLabel(dc.client);
+
+    // If config doesn't exist, ask user if they want to create it
+    if (!dc.exists) {
+      const shouldCreate = await p.confirm({
+        message: `${clientLabel} config doesn't exist at ${dc.path}. Create it?`,
+        initialValue: true,
+      });
+
+      if (p.isCancel(shouldCreate) || !shouldCreate) {
+        results.push({ client: clientLabel, status: "skipped", message: "config not created" });
+        continue;
+      }
+    }
+
+    // Add routermcp to the client config
+    try {
+      await addRoutermcpToClientConfig(dc.client, dc.level);
+
+      if (dc.hasRoutermcp) {
+        results.push({ client: clientLabel, status: "added", message: "updated existing entry" });
+      } else if (!dc.exists) {
+        results.push({ client: clientLabel, status: "created", message: "config created" });
+      } else {
+        results.push({ client: clientLabel, status: "added" });
+      }
+    } catch (err) {
+      results.push({ client: clientLabel, status: "error", message: String(err) });
+    }
+  }
+
+  // Show summary
+  p.log.info("\nSummary:");
+  for (const result of results) {
+    const icon = result.status === "error" ? "x" : result.status === "skipped" ? "-" : "+";
+    const suffix = result.message ? ` (${result.message})` : "";
+    p.log.message(`  ${icon} ${result.client}: ${result.status}${suffix}`);
   }
 }
 

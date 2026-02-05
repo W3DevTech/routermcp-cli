@@ -10,6 +10,7 @@
     "routermcp": "./dist/index.js"
   },
   "scripts": {
+    "link": "bun install --global file:$(pwd)",
     "build": "bun build src/index.ts --outdir dist --target node --format esm --packages=bundle --conditions module --minify",
     "prepublishOnly": "bun run build",
     "start": "bun run src/index.ts",
