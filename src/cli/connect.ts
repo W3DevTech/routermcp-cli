@@ -24,6 +24,11 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     if (verbose) console.error(`[connect] ${msg}`);
   };
 
+  // Info messages go to stderr (stdout is reserved for MCP protocol)
+  const info = (msg: string) => {
+    console.error(msg);
+  };
+
   try {
     let configPath: string;
 
@@ -51,15 +56,26 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     let status = await getDaemonStatus(paths);
     log(`Daemon status: ${status.running ? "running" : "stopped"}`);
 
+    const wasRunning = status.running;
+
     if (!status.running) {
-      log("Starting daemon...");
+      info("Starting daemon...");
       status = await startDaemon(paths, verbose);
-      log(`Daemon started (pid: ${status.pid})`);
     }
 
     if (status.socket && !isWindows()) {
+      if (wasRunning) {
+        info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`);
+      } else {
+        info(`Daemon started at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`);
+      }
       await proxyStdioToSocket(status.socket, log);
     } else if (status.port) {
+      if (wasRunning) {
+        info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, port: ${status.port})`);
+      } else {
+        info(`Daemon started at ${projectPath} (pid: ${status.pid}, port: ${status.port})`);
+      }
       await proxyStdioToHttp(`http://127.0.0.1:${status.port}/mcp`, log);
     } else {
       throw new Error("Daemon did not report socket or HTTP port");

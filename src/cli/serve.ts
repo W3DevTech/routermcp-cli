@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { type Gateway, createGateway } from "../core/gateway.js";
@@ -45,8 +45,8 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     if (isDaemon) {
-      const projectDir = dirname(resolve(configPath));
-      const projectId = getProjectId(projectDir);
+      // Use cwd for project ID - this matches what connect.ts uses
+      const projectId = getProjectId(process.cwd());
       daemonPaths = getDaemonPaths(projectId, resolve(configPath));
 
       mkdirSync(daemonPaths.dir, { recursive: true });
