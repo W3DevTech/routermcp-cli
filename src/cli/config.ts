@@ -13,6 +13,7 @@ import {
 } from "../config/loader.js";
 import type { ConfigScope, RouterMcpConfig, ServerConfig } from "../config/types.js";
 import { getProjectId } from "../daemon/project.js";
+import { getToolFilter, shouldAllow } from "../filtering/filter.js";
 import { createClientTransport } from "../transports/index.js";
 
 type MigrationClient = "cursor" | "claude-code" | "opencode" | "codex";
@@ -135,6 +136,7 @@ export async function configCommand(): Promise<void> {
 
     options.push(
       { value: "list", label: "List all servers" },
+      { value: "list-tools", label: "List and manage tools (connects to servers)" },
       { value: "advanced", label: "Advanced settings" },
     );
 
@@ -176,7 +178,10 @@ export async function configCommand(): Promise<void> {
         await removeServer(config);
         break;
       case "list":
-        listServers(config);
+        await listAllServers();
+        break;
+      case "list-tools":
+        await listAndManageTools(config);
         break;
       case "advanced":
         await configureAdvancedSettings(config);
@@ -1097,73 +1102,274 @@ async function removeServer(config: RouterMcpConfig): Promise<void> {
 }
 
 /**
- * List all configured servers.
+ * List all configured servers from all scopes.
  */
-function listServers(config: RouterMcpConfig): void {
-  const servers = Object.entries(config.mcpServers);
+async function listAllServers(): Promise<void> {
+  const locations = await getConfigLocations();
+  let totalServers = 0;
+
+  for (const loc of locations) {
+    if (!loc.exists) continue;
+
+    try {
+      const scopeConfig = await loadConfig(loc.path);
+      const servers = Object.entries(scopeConfig.mcpServers);
+
+      if (servers.length === 0) continue;
+
+      p.log.info(`\n${getScopeLabel(loc.scope)} (${loc.path}):`);
+
+      for (const [name, server] of servers) {
+        const details =
+          server.transport === "stdio" ? `command: ${server.command}` : `url: ${server.url}`;
+        const status = server.enabled === false ? " [disabled]" : "";
+        p.log.message(`  ${name} (${server.transport})${status} - ${details}`);
+
+        if (server.allowedTools?.length || server.allowedToolsGlob?.length) {
+          p.log.message(
+            `    Allowed tools: ${[...(server.allowedTools || []), ...(server.allowedToolsGlob || [])].join(", ")}`,
+          );
+        }
+        if (server.denyTools?.length || server.denyToolsGlob?.length) {
+          p.log.message(
+            `    Denied tools: ${[...(server.denyTools || []), ...(server.denyToolsGlob || [])].join(", ")}`,
+          );
+        }
+      }
+
+      totalServers += servers.length;
+
+      // Show advanced settings for this scope if any
+      const hasAdvancedSettings =
+        scopeConfig.codeMode?.enabled ||
+        scopeConfig.mcpToolSearch?.enabled ||
+        scopeConfig.subprocess_timeout !== undefined ||
+        scopeConfig.discovery_concurrency !== undefined ||
+        scopeConfig.connection_timeout !== undefined ||
+        scopeConfig.strictEnvVars !== undefined;
+
+      if (hasAdvancedSettings) {
+        p.log.info("  Advanced Settings:");
+        const mode = getExecutionModeLabel(scopeConfig);
+        p.log.message(`    Execution mode: ${mode}`);
+        if (scopeConfig.subprocess_timeout !== undefined) {
+          p.log.message(`    Subprocess timeout: ${formatDuration(scopeConfig.subprocess_timeout)}`);
+        }
+        if (scopeConfig.discovery_concurrency !== undefined) {
+          p.log.message(`    Discovery concurrency: ${scopeConfig.discovery_concurrency}`);
+        }
+        if (scopeConfig.connection_timeout !== undefined) {
+          p.log.message(`    Connection timeout: ${formatDuration(scopeConfig.connection_timeout)}`);
+        }
+        if (scopeConfig.strictEnvVars !== undefined) {
+          p.log.message(`    Strict env vars: ${scopeConfig.strictEnvVars ? "Yes" : "No"}`);
+        }
+      }
+    } catch {
+      // Skip scopes with invalid configs
+    }
+  }
+
+  if (totalServers === 0) {
+    p.log.info("No servers configured in any scope");
+  }
+}
+
+/**
+ * List all tools from servers in current config and allow enabling/disabling.
+ */
+async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
+  const servers = Object.entries(config.mcpServers).filter(
+    ([_, s]) => s.enabled !== false
+  );
 
   if (servers.length === 0) {
-    p.log.info("No servers configured");
+    p.log.info("No enabled servers in current config");
     return;
   }
 
-  p.log.info("Configured servers:");
-  for (const [name, server] of servers) {
-    const details =
-      server.transport === "stdio" ? `command: ${server.command}` : `url: ${server.url}`;
-    p.log.message(`  ${name} (${server.transport}) - ${details}`);
+  const concurrency = config.discovery_concurrency ?? 5;
 
-    if (server.allowedTools?.length || server.allowedToolsGlob?.length) {
-      p.log.message(
-        `    Allowed tools: ${[...(server.allowedTools || []), ...(server.allowedToolsGlob || [])].join(", ")}`,
-      );
-    }
-    if (server.denyTools?.length || server.denyToolsGlob?.length) {
-      p.log.message(
-        `    Denied tools: ${[...(server.denyTools || []), ...(server.denyToolsGlob || [])].join(", ")}`,
-      );
+  interface ServerTools {
+    name: string;
+    tools: Tool[];
+    error?: string;
+  }
+
+  const allServerTools: ServerTools[] = [];
+  const spinner = p.spinner();
+  spinner.start(`Discovering tools from ${servers.length} server(s)...`);
+
+  // Fetch tools in parallel batches
+  for (let i = 0; i < servers.length; i += concurrency) {
+    const batch = servers.slice(i, i + concurrency);
+
+    const results = await Promise.allSettled(
+      batch.map(async ([name, serverConfig]) => {
+        const { client, cleanup } = await createClientTransport(name, serverConfig);
+        try {
+          const result = await client.listTools();
+          return { name, tools: result.tools || [] };
+        } finally {
+          await cleanup();
+        }
+      })
+    );
+
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j];
+      const serverName = batch[j][0];
+      if (result.status === "fulfilled") {
+        allServerTools.push(result.value);
+      } else {
+        allServerTools.push({
+          name: serverName,
+          tools: [],
+          error: result.reason?.message || "Connection failed",
+        });
+      }
     }
   }
 
-  // Show advanced settings if any non-default values are set
-  const hasAdvancedSettings =
-    config.codeMode?.enabled ||
-    config.mcpToolSearch?.enabled ||
-    config.subprocess_timeout !== undefined ||
-    config.discovery_concurrency !== undefined ||
-    config.connection_timeout !== undefined ||
-    config.strictEnvVars !== undefined;
+  spinner.stop("Discovery complete");
 
-  if (hasAdvancedSettings) {
-    p.log.info("\nAdvanced Settings:");
+  // Display tools grouped by server
+  let totalTools = 0;
+  for (const { name: serverName, tools, error } of allServerTools) {
+    const serverConfig = config.mcpServers[serverName];
+    const filter = getToolFilter(serverConfig);
 
-    // Execution mode
-    const mode = getExecutionModeLabel(config);
-    p.log.message(`  Execution mode: ${mode}`);
-    if (config.codeMode?.enabled) {
-      p.log.message(`    Timeout: ${formatDuration(config.codeMode.timeout ?? 30)}`);
-      p.log.message(`    Allow fetch: ${config.codeMode.allowFetch !== false ? "Yes" : "No"}`);
+    if (error) {
+      p.log.error(`\n${serverName}: ${error}`);
+      continue;
     }
-    if (config.mcpToolSearch?.enabled) {
-      p.log.message(`    Max results: ${config.mcpToolSearch.maxResults ?? 5}`);
-      p.log.message(`    Min score: ${config.mcpToolSearch.minScore ?? 0}`);
-      if (config.mcpToolSearch.description) {
-        p.log.message(`    Description: ${truncate(config.mcpToolSearch.description, 40)}`);
+
+    p.log.info(`\n${serverName} (${tools.length} tools):`);
+
+    if (tools.length === 0) {
+      p.log.message("  (no tools)");
+      continue;
+    }
+
+    for (const tool of tools) {
+      const isEnabled = shouldAllow(tool.name, filter);
+      const status = isEnabled ? "✓" : "✗";
+      const desc = tool.description ? ` - ${truncate(tool.description, 40)}` : "";
+      p.log.message(`  ${status} ${tool.name}${desc}`);
+    }
+
+    totalTools += tools.length;
+  }
+
+  if (totalTools === 0) {
+    p.log.info("\nNo tools found across all servers");
+    return;
+  }
+
+  // Management submenu
+  let manageDone = false;
+  while (!manageDone) {
+    const manageAction = await p.select({
+      message: "Manage tools:",
+      options: [
+        { value: "enable", label: "Enable tools (remove from deny list)" },
+        { value: "disable", label: "Disable tools (add to deny list)" },
+        { value: "back", label: "Back to main menu" },
+      ],
+    });
+
+    if (p.isCancel(manageAction) || manageAction === "back") {
+      manageDone = true;
+      continue;
+    }
+
+    // Select server to modify
+    const serversWithTools = allServerTools.filter(s => !s.error && s.tools.length > 0);
+
+    if (serversWithTools.length === 0) {
+      p.log.warn("No servers with tools available to modify");
+      continue;
+    }
+
+    const serverToModify = await p.select({
+      message: "Select server:",
+      options: serversWithTools.map(s => ({
+        value: s.name,
+        label: `${s.name} (${s.tools.length} tools)`,
+      })),
+    });
+
+    if (p.isCancel(serverToModify)) continue;
+
+    const selectedServerData = allServerTools.find(s => s.name === serverToModify);
+    const serverConfig = config.mcpServers[serverToModify as string];
+    const filter = getToolFilter(serverConfig);
+
+    if (manageAction === "enable") {
+      // Show currently disabled tools
+      const disabledTools = selectedServerData!.tools.filter(
+        t => !shouldAllow(t.name, filter)
+      );
+
+      if (disabledTools.length === 0) {
+        p.log.info("All tools are already enabled for this server");
+        continue;
       }
-    }
 
-    // Other settings (only if non-default)
-    if (config.subprocess_timeout !== undefined) {
-      p.log.message(`  Subprocess timeout: ${formatDuration(config.subprocess_timeout)}`);
-    }
-    if (config.discovery_concurrency !== undefined) {
-      p.log.message(`  Discovery concurrency: ${config.discovery_concurrency}`);
-    }
-    if (config.connection_timeout !== undefined) {
-      p.log.message(`  Connection timeout: ${formatDuration(config.connection_timeout)}`);
-    }
-    if (config.strictEnvVars !== undefined) {
-      p.log.message(`  Strict env vars: ${config.strictEnvVars ? "Yes" : "No"}`);
+      const toolsToEnable = await p.multiselect({
+        message: `Select tools to enable (${disabledTools.length} disabled):`,
+        options: disabledTools.map(t => ({
+          value: t.name,
+          label: t.name,
+          hint: t.description ? truncate(t.description, 40) : undefined,
+        })),
+        required: false,
+      });
+
+      if (p.isCancel(toolsToEnable) || toolsToEnable.length === 0) continue;
+
+      // Remove from denyTools
+      if (serverConfig.denyTools) {
+        serverConfig.denyTools = serverConfig.denyTools.filter(
+          t => !(toolsToEnable as string[]).includes(t)
+        );
+        if (serverConfig.denyTools.length === 0) {
+          delete serverConfig.denyTools;
+        }
+      }
+
+      p.log.success(`Enabled ${toolsToEnable.length} tool(s). Save config to persist changes.`);
+
+    } else if (manageAction === "disable") {
+      // Show currently enabled tools
+      const enabledTools = selectedServerData!.tools.filter(
+        t => shouldAllow(t.name, filter)
+      );
+
+      if (enabledTools.length === 0) {
+        p.log.info("All tools are already disabled for this server");
+        continue;
+      }
+
+      const toolsToDisable = await p.multiselect({
+        message: `Select tools to disable (${enabledTools.length} enabled):`,
+        options: enabledTools.map(t => ({
+          value: t.name,
+          label: t.name,
+          hint: t.description ? truncate(t.description, 40) : undefined,
+        })),
+        required: false,
+      });
+
+      if (p.isCancel(toolsToDisable) || toolsToDisable.length === 0) continue;
+
+      // Add to denyTools
+      serverConfig.denyTools = [
+        ...(serverConfig.denyTools || []),
+        ...(toolsToDisable as string[]),
+      ];
+
+      p.log.success(`Disabled ${toolsToDisable.length} tool(s). Save config to persist changes.`);
     }
   }
 }
