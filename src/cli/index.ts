@@ -1,6 +1,12 @@
+import type { ConfigScope } from "../config/types.js";
 import type { OutputTransport } from "../proxy/types.js";
 import type { TunnelProvider } from "../tunnel/index.js";
-import { configCommand } from "./config.js";
+import {
+  configAddCommand,
+  configCommand,
+  configListCommand,
+  configRemoveCommand,
+} from "./config.js";
 import { type ConnectCommandOptions, connectCommand } from "./connect.js";
 import { doctorCommand } from "./doctor.js";
 import { oauthLoginCommand, oauthLogoutCommand, oauthStatusCommand } from "./oauth.js";
@@ -30,6 +36,7 @@ interface CliOptions extends ServeCommandOptions {
   oauthSubcommand?: OAuthSubcommand;
   clearCache?: boolean;
   telemetryAction?: TelemetryAction;
+  configSubcommand?: ConfigSubcommand;
 }
 
 type Command =
@@ -49,6 +56,35 @@ interface OAuthSubcommand {
   all?: boolean;
 }
 
+export interface ConfigAddOptions {
+  serverName: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  scope: ConfigScope;
+  env: Record<string, string>;
+  headers: Record<string, string>;
+  allowTools?: string[];
+  denyTools?: string[];
+  force: boolean;
+}
+
+export interface ConfigRemoveOptions {
+  serverName: string;
+  scope?: ConfigScope;
+}
+
+export interface ConfigListOptions {
+  scope?: ConfigScope;
+  json: boolean;
+}
+
+type ConfigSubcommand =
+  | { action: "wizard" }
+  | { action: "add"; options: ConfigAddOptions }
+  | { action: "remove"; options: ConfigRemoveOptions }
+  | { action: "list"; options: ConfigListOptions };
+
 export function parseArgs(args: string[]): {
   command: Command;
   options: CliOptions;
@@ -60,9 +96,119 @@ export function parseArgs(args: string[]): {
     const arg = args[i];
 
     switch (arg) {
-      case "config":
+      case "config": {
         command = "config";
+        // Check for subcommands: add, remove, list
+        const nextArg = args[i + 1];
+        if (nextArg === "add") {
+          i++; // consume "add"
+          const serverName = args[++i];
+          if (!serverName || serverName.startsWith("-")) {
+            console.error("Usage: routermcp config add <server-name> --command <cmd> | --url <url>");
+            process.exit(1);
+          }
+          const addOptions: ConfigAddOptions = {
+            serverName,
+            scope: "user-global",
+            env: {},
+            headers: {},
+            force: false,
+          };
+          // Parse remaining args for config add
+          while (i + 1 < args.length) {
+            const opt = args[i + 1];
+            if (opt === "--command") {
+              i++;
+              addOptions.command = args[++i];
+            } else if (opt === "--args") {
+              i++;
+              addOptions.args = args[++i]?.split(",").map((a) => a.trim());
+            } else if (opt === "--url") {
+              i++;
+              addOptions.url = args[++i];
+            } else if (opt === "--scope") {
+              i++;
+              const scope = args[++i];
+              if (scope !== "user-global" && scope !== "project-local" && scope !== "user-project") {
+                console.error("Error: --scope must be user-global, project-local, or user-project");
+                process.exit(1);
+              }
+              addOptions.scope = scope;
+            } else if (opt === "--env") {
+              i++;
+              const envPair = args[++i];
+              const eqIdx = envPair?.indexOf("=");
+              if (eqIdx && eqIdx > 0) {
+                addOptions.env[envPair.slice(0, eqIdx)] = envPair.slice(eqIdx + 1);
+              }
+            } else if (opt === "--headers") {
+              i++;
+              const headerPair = args[++i];
+              const eqIdx = headerPair?.indexOf("=");
+              if (eqIdx && eqIdx > 0) {
+                addOptions.headers[headerPair.slice(0, eqIdx)] = headerPair.slice(eqIdx + 1);
+              }
+            } else if (opt === "--allow-tools") {
+              i++;
+              addOptions.allowTools = args[++i]?.split(",").map((t) => t.trim());
+            } else if (opt === "--deny-tools") {
+              i++;
+              addOptions.denyTools = args[++i]?.split(",").map((t) => t.trim());
+            } else if (opt === "--force") {
+              i++;
+              addOptions.force = true;
+            } else {
+              break; // Unknown option, stop parsing config add args
+            }
+          }
+          options.configSubcommand = { action: "add", options: addOptions };
+        } else if (nextArg === "remove") {
+          i++; // consume "remove"
+          const serverName = args[++i];
+          if (!serverName || serverName.startsWith("-")) {
+            console.error("Usage: routermcp config remove <server-name> [--scope <scope>]");
+            process.exit(1);
+          }
+          const removeOptions: ConfigRemoveOptions = { serverName };
+          // Parse optional --scope
+          if (args[i + 1] === "--scope") {
+            i++;
+            const scope = args[++i];
+            if (scope !== "user-global" && scope !== "project-local" && scope !== "user-project") {
+              console.error("Error: --scope must be user-global, project-local, or user-project");
+              process.exit(1);
+            }
+            removeOptions.scope = scope;
+          }
+          options.configSubcommand = { action: "remove", options: removeOptions };
+        } else if (nextArg === "list") {
+          i++; // consume "list"
+          const listOptions: ConfigListOptions = { json: false };
+          // Parse optional args
+          while (i + 1 < args.length) {
+            const opt = args[i + 1];
+            if (opt === "--scope") {
+              i++;
+              const scope = args[++i];
+              if (scope !== "user-global" && scope !== "project-local" && scope !== "user-project") {
+                console.error("Error: --scope must be user-global, project-local, or user-project");
+                process.exit(1);
+              }
+              listOptions.scope = scope;
+            } else if (opt === "--json") {
+              i++;
+              listOptions.json = true;
+            } else {
+              break;
+            }
+          }
+          options.configSubcommand = { action: "list", options: listOptions };
+        } else {
+          // No subcommand - will run wizard
+          options.configSubcommand = { action: "wizard" };
+        }
         break;
+      }
 
       case "serve":
         command = "serve";
@@ -270,7 +416,7 @@ COMMANDS:
   connect   Connect to gateway daemon (auto-starts if needed)
   proxy     Proxy a stdio MCP server over HTTP (SSE or Streamable HTTP)
   tunnel    Expose gateway via tunnel (Cloudflare, ngrok)
-  config    Interactive configuration wizard
+  config    Configuration management (wizard, add, remove, list)
   doctor    Check configuration and authenticate OAuth servers
   oauth     Manage OAuth authentication
   telemetry Manage anonymous error reporting
@@ -312,6 +458,32 @@ TUNNEL OPTIONS:
   -p, --port <port>            HTTP server port (default: 5151, or httpServer.port in config)
   -v, --verbose                Enable verbose logging
 
+CONFIG SUBCOMMANDS:
+  config                Run interactive configuration wizard
+  config add            Add a server (non-interactive)
+  config remove         Remove a server
+  config list           List configured servers
+
+CONFIG ADD OPTIONS:
+  <server-name>              Server name (required)
+  --command <cmd>            Stdio command (auto-splits args on whitespace)
+  --args <args>              Explicit comma-separated args (overrides auto-split)
+  --url <url>                HTTP URL (mutually exclusive with --command)
+  --scope <scope>            Config scope: user-global (default), project-local, user-project
+  --env <key=value>          Environment variable (repeatable)
+  --headers <key=value>      HTTP header (repeatable)
+  --allow-tools <patterns>   Comma-separated tool allow patterns
+  --deny-tools <patterns>    Comma-separated tool deny patterns
+  --force                    Overwrite if server already exists
+
+CONFIG REMOVE OPTIONS:
+  <server-name>              Server name (required)
+  --scope <scope>            Config scope (searches all scopes if not specified)
+
+CONFIG LIST OPTIONS:
+  --scope <scope>            Show only this scope (shows all if not specified)
+  --json                     Output as JSON
+
 EXAMPLES:
   # Serve (gateway mode)
   routermcp                           Start gateway with default config (stdio mode)
@@ -332,8 +504,23 @@ EXAMPLES:
   routermcp tunnel --tunnel=cloudflare   Expose via Cloudflare tunnel
   routermcp tunnel --tunnel=ngrok        Expose via ngrok tunnel
 
-  # Config
+  # Config (wizard)
   routermcp config                    Run interactive configuration wizard
+
+  # Config add (one-liner)
+  routermcp config add my-server --command "npx -y @modelcontextprotocol/server-filesystem ."
+  routermcp config add my-api --url "http://localhost:3000/mcp"
+  routermcp config add my-server --command "npx server" --scope project-local
+  routermcp config add my-server --command "npx server" --env "API_KEY=\${env:MY_KEY}"
+
+  # Config remove
+  routermcp config remove my-server
+  routermcp config remove my-server --scope user-global
+
+  # Config list
+  routermcp config list
+  routermcp config list --scope user-global
+  routermcp config list --json
 
   # Doctor (OAuth setup)
   routermcp doctor                    Check config and authenticate OAuth servers
@@ -416,9 +603,19 @@ export async function main(args: string[]): Promise<void> {
       });
       break;
 
-    case "config":
-      await configCommand();
+    case "config": {
+      const sub = options.configSubcommand;
+      if (sub?.action === "add") {
+        await configAddCommand(sub.options);
+      } else if (sub?.action === "remove") {
+        await configRemoveCommand(sub.options);
+      } else if (sub?.action === "list") {
+        await configListCommand(sub.options);
+      } else {
+        await configCommand();
+      }
       break;
+    }
 
     case "doctor":
       await doctorCommand(options.config || "./routermcp.jsonc");

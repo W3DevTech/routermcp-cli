@@ -1836,3 +1836,307 @@ async function migrateFromClient(config: RouterMcpConfig, scope: ConfigScope): P
     }
   }
 }
+
+// ============================================================================
+// Non-interactive config subcommands: add, remove, list
+// ============================================================================
+
+import type { ConfigAddOptions, ConfigListOptions, ConfigRemoveOptions } from "./index.js";
+
+/**
+ * Parse a command string into command and args.
+ * Splits on whitespace, handling quoted strings.
+ */
+function parseCommandString(cmd: string): { command: string; args: string[] } {
+  const parts = cmd.trim().split(/\s+/);
+  return { command: parts[0], args: parts.slice(1) };
+}
+
+/**
+ * Load config for a specific scope, returning empty config if none exists.
+ */
+async function loadConfigForScope(scope: ConfigScope): Promise<RouterMcpConfig> {
+  const configPath = getConfigPathForScope(scope);
+
+  try {
+    // Check both .jsonc and .json variants
+    const jsoncFile = file(configPath);
+    if (await jsoncFile.exists()) {
+      return await loadConfig(configPath);
+    }
+
+    const jsonPath = configPath.replace(/\.jsonc$/, ".json");
+    const jsonFile = file(jsonPath);
+    if (await jsonFile.exists()) {
+      return await loadConfig(jsonPath);
+    }
+  } catch {
+    // Ignore errors, return empty config
+  }
+
+  return { mcpServers: {} };
+}
+
+/**
+ * Add a server to config (non-interactive).
+ */
+export async function configAddCommand(options: ConfigAddOptions): Promise<void> {
+  const { serverName, scope, force } = options;
+
+  // Validate server name
+  if (!/^[a-zA-Z0-9-_]+$/.test(serverName)) {
+    console.error(`Error: Server name must be alphanumeric with hyphens/underscores: ${serverName}`);
+    process.exit(1);
+  }
+
+  // Validate mutually exclusive options
+  if (!options.command && !options.url) {
+    console.error("Error: Must specify either --command or --url");
+    process.exit(1);
+  }
+  if (options.command && options.url) {
+    console.error("Error: Cannot specify both --command and --url");
+    process.exit(1);
+  }
+
+  // Validate URL if provided
+  if (options.url) {
+    try {
+      new URL(options.url);
+    } catch {
+      console.error(`Error: Invalid URL: ${options.url}`);
+      process.exit(1);
+    }
+  }
+
+  // Load existing config for scope
+  const config = await loadConfigForScope(scope);
+
+  // Check if server already exists
+  if (config.mcpServers[serverName] && !force) {
+    console.error(`Error: Server "${serverName}" already exists in ${getScopeLabel(scope)} config`);
+    console.error("Use --force to overwrite");
+    process.exit(1);
+  }
+
+  if (config.mcpServers[serverName] && force) {
+    console.error(`Warning: Overwriting existing server "${serverName}"`);
+  }
+
+  // Build ServerConfig
+  let serverConfig: ServerConfig;
+
+  if (options.command) {
+    // Parse command string if no explicit args provided
+    let command: string;
+    let args: string[] | undefined;
+
+    if (options.args && options.args.length > 0) {
+      // Use explicit args
+      command = options.command;
+      args = options.args;
+    } else {
+      // Auto-split command string
+      const parsed = parseCommandString(options.command);
+      command = parsed.command;
+      args = parsed.args.length > 0 ? parsed.args : undefined;
+    }
+
+    serverConfig = {
+      transport: "stdio",
+      command,
+      ...(args && { args }),
+    };
+
+    // Add env if provided
+    if (Object.keys(options.env).length > 0) {
+      serverConfig.env = options.env;
+    }
+  } else {
+    // HTTP transport
+    serverConfig = {
+      transport: "http-streamable",
+      url: options.url!,
+    };
+
+    // Add headers if provided
+    if (Object.keys(options.headers).length > 0) {
+      serverConfig.headers = options.headers;
+    }
+  }
+
+  // Add tool filtering if provided
+  if (options.allowTools && options.allowTools.length > 0) {
+    const exact = options.allowTools.filter((t) => !t.includes("*"));
+    const globs = options.allowTools.filter((t) => t.includes("*"));
+    if (exact.length > 0) serverConfig.allowedTools = exact;
+    if (globs.length > 0) serverConfig.allowedToolsGlob = globs;
+  }
+
+  if (options.denyTools && options.denyTools.length > 0) {
+    const exact = options.denyTools.filter((t) => !t.includes("*"));
+    const globs = options.denyTools.filter((t) => t.includes("*"));
+    if (exact.length > 0) serverConfig.denyTools = exact;
+    if (globs.length > 0) serverConfig.denyToolsGlob = globs;
+  }
+
+  // Add to config
+  config.mcpServers[serverName] = serverConfig;
+
+  // Ensure directory exists and save
+  await ensureConfigDir(scope);
+  const configPath = getConfigPathForScope(scope);
+  const content = JSON.stringify(config, null, 2);
+
+  try {
+    await write(configPath, content);
+    console.log(`Added server "${serverName}" to ${getScopeLabel(scope)} config`);
+    console.log(`  Path: ${configPath}`);
+  } catch (err) {
+    console.error(`Error: Failed to save config: ${err}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Remove a server from config (non-interactive).
+ */
+export async function configRemoveCommand(options: ConfigRemoveOptions): Promise<void> {
+  const { serverName, scope } = options;
+
+  if (scope) {
+    // Remove from specific scope
+    const config = await loadConfigForScope(scope);
+
+    if (!config.mcpServers[serverName]) {
+      console.error(`Error: Server "${serverName}" not found in ${getScopeLabel(scope)} config`);
+      process.exit(1);
+    }
+
+    delete config.mcpServers[serverName];
+
+    const configPath = getConfigPathForScope(scope);
+    const content = JSON.stringify(config, null, 2);
+
+    try {
+      await write(configPath, content);
+      console.log(`Removed server "${serverName}" from ${getScopeLabel(scope)} config`);
+      console.log(`  Path: ${configPath}`);
+    } catch (err) {
+      console.error(`Error: Failed to save config: ${err}`);
+      process.exit(1);
+    }
+  } else {
+    // Search all scopes for the server
+    const scopes: ConfigScope[] = ["project-local", "user-project", "user-global"];
+    let found = false;
+
+    for (const s of scopes) {
+      const config = await loadConfigForScope(s);
+
+      if (config.mcpServers[serverName]) {
+        delete config.mcpServers[serverName];
+
+        const configPath = getConfigPathForScope(s);
+        const content = JSON.stringify(config, null, 2);
+
+        try {
+          await write(configPath, content);
+          console.log(`Removed server "${serverName}" from ${getScopeLabel(s)} config`);
+          console.log(`  Path: ${configPath}`);
+          found = true;
+          break;
+        } catch (err) {
+          console.error(`Error: Failed to save config: ${err}`);
+          process.exit(1);
+        }
+      }
+    }
+
+    if (!found) {
+      console.error(`Error: Server "${serverName}" not found in any config scope`);
+      process.exit(1);
+    }
+  }
+}
+
+/**
+ * List configured servers (non-interactive).
+ */
+export async function configListCommand(options: ConfigListOptions): Promise<void> {
+  const { scope, json } = options;
+
+  interface ServerInfo {
+    name: string;
+    transport: string;
+    command?: string;
+    args?: string[];
+    url?: string;
+    scope: ConfigScope;
+    path: string;
+  }
+
+  const servers: ServerInfo[] = [];
+  const scopesToCheck: ConfigScope[] = scope ? [scope] : ["project-local", "user-project", "user-global"];
+
+  for (const s of scopesToCheck) {
+    const locations = await getConfigLocations();
+    const loc = locations.find((l) => l.scope === s);
+
+    if (!loc?.exists) continue;
+
+    try {
+      const config = await loadConfig(loc.path);
+
+      for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+        servers.push({
+          name,
+          transport: serverConfig.transport,
+          command: serverConfig.command,
+          args: serverConfig.args,
+          url: serverConfig.url,
+          scope: s,
+          path: loc.path,
+        });
+      }
+    } catch {
+      // Ignore errors loading config
+    }
+  }
+
+  if (json) {
+    console.log(JSON.stringify(servers, null, 2));
+    return;
+  }
+
+  if (servers.length === 0) {
+    console.log("No servers configured");
+    return;
+  }
+
+  // Group by scope for display
+  const byScope = new Map<ConfigScope, { path: string; servers: ServerInfo[] }>();
+
+  for (const server of servers) {
+    if (!byScope.has(server.scope)) {
+      byScope.set(server.scope, { path: server.path, servers: [] });
+    }
+    byScope.get(server.scope)!.servers.push(server);
+  }
+
+  for (const [s, { path, servers: scopeServers }] of byScope) {
+    console.log(`\n${getScopeLabel(s)} (${path}):`);
+
+    for (const server of scopeServers) {
+      const details =
+        server.transport === "stdio"
+          ? server.args
+            ? `${server.command} ${server.args.join(" ")}`
+            : server.command
+          : server.url;
+      console.log(`  ${server.name.padEnd(20)} ${server.transport.padEnd(16)} ${details}`);
+    }
+  }
+
+  console.log();
+}
