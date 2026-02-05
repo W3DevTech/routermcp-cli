@@ -1,7 +1,7 @@
 {
   "name": "routermcp",
   "mcpName": "RouterMCP",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "A Bun-based CLI MCP Gateway that aggregates multiple upstream MCP servers",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,14 @@
     "test:coverage": "vitest run --coverage",
     "debug:opencode": "OPENCODE_CONFIG_DIR=./debug/opencode opencode"
   },
-  "keywords": ["mcp", "model-context-protocol", "gateway", "cli", "router", "aggregator"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "gateway",
+    "cli",
+    "router",
+    "aggregator"
+  ],
   "author": "Ashutosh Kumar",
   "license": "MIT",
   "repository": {
