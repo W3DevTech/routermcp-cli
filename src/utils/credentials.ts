@@ -1,13 +1,15 @@
 import { mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { file, write } from "../compat/index.js";
+import { getLegacyRouterMcpDir, getRouterMcpDir } from "../daemon/project.js";
 
-const ROUTERMCP_DIR = join(homedir(), ".routermcp");
+const ROUTERMCP_DIR = getRouterMcpDir();
+const LEGACY_ROUTERMCP_DIR = getLegacyRouterMcpDir();
 const CREDENTIALS_FILE = join(ROUTERMCP_DIR, "credentials.json");
+const LEGACY_CREDENTIALS_FILE = join(LEGACY_ROUTERMCP_DIR, "credentials.json");
 
 /**
- * Credentials stored in ~/.routermcp/credentials.json
+ * Credentials stored in ~/.config/routermcp/credentials.json
  */
 export interface Credentials {
   ngrok?: {
@@ -19,7 +21,7 @@ export interface Credentials {
 }
 
 /**
- * Ensure the ~/.routermcp directory exists.
+ * Ensure the ~/.config/routermcp directory exists.
  */
 export async function ensureCredentialsDir(): Promise<void> {
   try {
@@ -30,11 +32,22 @@ export async function ensureCredentialsDir(): Promise<void> {
 }
 
 /**
- * Load credentials from ~/.routermcp/credentials.json
+ * Load credentials from ~/.config/routermcp/credentials.json
  */
 export async function loadCredentials(): Promise<Credentials> {
   const f = file(CREDENTIALS_FILE);
   if (!(await f.exists())) {
+    // Back-compat: read legacy ~/.routermcp/credentials.json if present.
+    const legacy = file(LEGACY_CREDENTIALS_FILE);
+    if (await legacy.exists()) {
+      try {
+        const text = await legacy.text();
+        return JSON.parse(text) as Credentials;
+      } catch {
+        return {};
+      }
+    }
+
     return {};
   }
   try {
@@ -46,7 +59,7 @@ export async function loadCredentials(): Promise<Credentials> {
 }
 
 /**
- * Save credentials to ~/.routermcp/credentials.json
+ * Save credentials to ~/.config/routermcp/credentials.json
  */
 export async function saveCredentials(credentials: Credentials): Promise<void> {
   await ensureCredentialsDir();

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { loadConfigFromPath } from "../config/loader.js";
+import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { type Gateway, createGateway } from "../core/gateway.js";
 import { type DaemonPaths, getDaemonPaths, getProjectId } from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
@@ -37,10 +37,10 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let daemonPaths: DaemonPaths | null = null;
 
   try {
-    const { config, path: configPath } = await loadConfigFromPath(options.config);
+    const { config, path: configPath, scope } = await resolveConfigFromPath(options.config);
 
     if (verbose) {
-      console.error(`Loaded config from: ${configPath}`);
+      console.error(`Loaded config from: ${configPath} [${getScopeLabel(scope)}]`);
       console.error(`Configured servers: ${Object.keys(config.mcpServers).join(", ")}`);
     }
 

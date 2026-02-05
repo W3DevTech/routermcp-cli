@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { loadConfigFromPath } from "../config/loader.js";
+import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { type Gateway, createGateway } from "../core/gateway.js";
 import { type TunnelInfo, type TunnelProvider, getTunnelProvider } from "../tunnel/index.js";
 import { RouterMcpError } from "../utils/errors.js";
@@ -27,10 +27,10 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
 
   try {
     // Load configuration
-    const { config, path } = await loadConfigFromPath(options.config);
+    const { config, path, scope } = await resolveConfigFromPath(options.config);
 
     if (verbose) {
-      console.error(`Loaded config from: ${path}`);
+      console.error(`Loaded config from: ${path} [${getScopeLabel(scope)}]`);
     }
 
     // Determine port: CLI option > config > default
@@ -100,11 +100,19 @@ export async function tunnelCommand(options: TunnelCommandOptions): Promise<void
       return;
     }
 
+    if (!tunnelProviderInstance) {
+      throw new Error(`Tunnel provider not available: ${provider}`);
+    }
+
     // Start the tunnel
-    console.error(`Starting ${tunnelProviderInstance?.displayName} tunnel...`);
+    console.error(`Starting ${tunnelProviderInstance.displayName} tunnel...`);
 
     try {
-      tunnelInfo = await tunnelProviderInstance?.start(port);
+      tunnelInfo = await tunnelProviderInstance.start(port);
+
+      if (!tunnelInfo) {
+        throw new Error("Tunnel provider did not return tunnel info");
+      }
 
       // Display success message
       console.log();

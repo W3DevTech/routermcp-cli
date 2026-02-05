@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { auth, discoverOAuthMetadata } from "@modelcontextprotocol/sdk/client/auth.js";
-import { loadConfig } from "../config/loader.js";
-import type { OAuthConfig, ServerConfig } from "../config/types.js";
+import { getConfigLocations, getScopeLabel, loadConfig } from "../config/loader.js";
+import type { ConfigScope, OAuthConfig, ServerConfig } from "../config/types.js";
 import { DEFAULT_CLIENT_NAME, RouterMcpOAuthProvider } from "../oauth/provider.js";
 import { isTokenExpired, loadOAuthStorage } from "../oauth/storage.js";
 
@@ -196,8 +196,54 @@ async function authenticateServer(
   }
 }
 
+/**
+ * Display config resolution status showing all config locations and which one was loaded.
+ */
+async function displayConfigResolution(loadedConfigPath: string): Promise<void> {
+  const locations = await getConfigLocations();
+
+
+  console.log("\nConfig Resolution:");
+  console.log("─".repeat(80));
+  console.log(
+    `${"Priority".padEnd(10)} ${"Scope".padEnd(22)} ${"Path".padEnd(35)} ${"Status".padEnd(10)}`,
+  );
+  console.log("─".repeat(80));
+
+  const priorities = { "project-local": 1, "user-project": 2, "user-global": 3 };
+
+  for (const loc of locations) {
+    const priority = priorities[loc.scope];
+    const scopeLabel = getScopeLabel(loc.scope);
+
+    // Truncate path if too long
+    let displayPath = loc.path;
+    if (displayPath.length > 33) {
+      displayPath = `...${displayPath.slice(-30)}`;
+    }
+
+    let status: string;
+    if (loc.path === loadedConfigPath) {
+      status = "✓ LOADED";
+    } else if (loc.exists) {
+      status = "Found (skipped)";
+    } else {
+      status = "Not found";
+    }
+
+    console.log(
+      `${String(priority).padEnd(10)} ${scopeLabel.padEnd(22)} ${displayPath.padEnd(35)} ${status}`,
+    );
+  }
+  console.log("─".repeat(80));
+  console.log();
+}
+
 export async function doctorCommand(configPath: string): Promise<void> {
   p.intro("RouterMCP Doctor - Checking configuration and authentication");
+
+  // Display config resolution status
+  await displayConfigResolution(configPath);
 
   const s = p.spinner();
   s.start("Loading configuration...");

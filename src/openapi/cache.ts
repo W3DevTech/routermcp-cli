@@ -1,14 +1,14 @@
 import crypto from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { getRouterMcpDir } from "../daemon/project.js";
 import type { CacheMetadata, OpenApiTool } from "./types.js";
 
 const CACHE_VERSION = "1.0.0";
 const DEFAULT_TTL_SECONDS = 86400; // 24 hours
 
 export function getOpenApiCacheDir(): string {
-  return resolve(homedir(), ".routermcp", "openapi-cache");
+  return resolve(getRouterMcpDir(), "openapi-cache");
 }
 
 export function getServerCacheDir(serverName: string): string {

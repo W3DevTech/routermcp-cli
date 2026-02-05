@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { findConfigFile, loadConfigFromPath } from "../config/loader.js";
+import { resolveConfig } from "../config/loader.js";
 import {
   getDaemonPaths,
   getDaemonStatus,
@@ -25,18 +25,27 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
   };
 
   try {
-    const configPath = options.config ?? (await findConfigFile(projectPath));
-    if (!configPath) {
-      throw new ConfigError("No config file found. Run 'routermcp config' to create one.");
+    let configPath: string;
+
+    if (options.config) {
+      // Explicit config path provided
+      configPath = resolve(options.config);
+    } else {
+      // Resolve config using priority-based resolution
+      const resolved = await resolveConfig(projectPath);
+      if (!resolved) {
+        throw new ConfigError("No config file found. Run 'routermcp config' to create one.");
+      }
+      configPath = resolve(resolved.path);
+      log(`Resolved config scope: ${resolved.scope}`);
     }
 
-    const resolvedConfigPath = resolve(configPath);
-    log(`Using config: ${resolvedConfigPath}`);
+    log(`Using config: ${configPath}`);
 
     const projectId = getProjectId(projectPath);
     log(`Project ID: ${projectId}`);
 
-    const paths = getDaemonPaths(projectId, resolvedConfigPath);
+    const paths = getDaemonPaths(projectId, configPath);
     log(`Daemon dir: ${paths.dir}`);
 
     let status = await getDaemonStatus(paths);

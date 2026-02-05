@@ -4,6 +4,32 @@ export interface HttpServerConfig {
 }
 
 /**
+ * Configuration scope for multi-level config support.
+ * - project-local: ./routermcp.jsonc (highest priority)
+ * - user-project: ~/.config/routermcp/projects/<projectId>/routermcp.jsonc
+ * - user-global: ~/.config/routermcp/routermcp.jsonc (lowest priority)
+ */
+export type ConfigScope = "project-local" | "user-project" | "user-global";
+
+/**
+ * Represents a config file location with its scope and existence status.
+ */
+export interface ConfigLocation {
+  path: string;
+  scope: ConfigScope;
+  exists: boolean;
+}
+
+/**
+ * Result of resolving configuration across all scopes.
+ */
+export interface ResolvedConfig {
+  config: RouterMcpConfig;
+  path: string;
+  scope: ConfigScope;
+}
+
+/**
  * Authentication configuration for OpenAPI servers.
  * Independent of security schemes defined in the OpenAPI spec itself.
  */

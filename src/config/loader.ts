@@ -1,8 +1,17 @@
+import { mkdir } from "node:fs/promises";
+import { dirname, resolve as resolvePath } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { file } from "../compat/index.js";
+import {
+  getLegacyRouterMcpDir,
+  getProjectId,
+  getRouterMcpDir,
+  getUserGlobalConfigPath,
+  getUserProjectConfigPath,
+} from "../daemon/project.js";
 import { ConfigError } from "../utils/errors.js";
 import { RouterMcpConfigSchema } from "./schema.js";
-import type { RouterMcpConfig } from "./types.js";
+import type { ConfigLocation, ConfigScope, ResolvedConfig, RouterMcpConfig } from "./types.js";
 
 /**
  * Default config file names to search for.
@@ -229,6 +238,7 @@ function expandEnvVars(value: unknown, options: EnvExpansionOptions): unknown {
 
 /**
  * Load config from default location or specified path.
+ * @deprecated Use resolveConfigFromPath for multi-scope support
  */
 export async function loadConfigFromPath(
   configPath?: string,
@@ -249,4 +259,181 @@ export async function loadConfigFromPath(
 
   const config = await loadConfig(path);
   return { config, path };
+}
+
+/**
+ * Get human-readable label for a config scope.
+ */
+export function getScopeLabel(scope: ConfigScope): string {
+  switch (scope) {
+    case "project-local":
+      return "Project-local";
+    case "user-project":
+      return "User-scoped project";
+    case "user-global":
+      return "User global";
+  }
+}
+
+/**
+ * Get the config path for a specific scope.
+ */
+export function getConfigPathForScope(scope: ConfigScope, cwd: string = process.cwd()): string {
+  switch (scope) {
+    case "project-local":
+      return `${cwd}/routermcp.jsonc`;
+    case "user-project":
+      return getUserProjectConfigPath(getProjectId(cwd));
+    case "user-global":
+      return getUserGlobalConfigPath();
+  }
+}
+
+/**
+ * Check if a config file exists at the given path (supports both .jsonc and .json).
+ */
+async function checkConfigExists(basePath: string): Promise<string | null> {
+  // If path ends with .jsonc, also check .json variant
+  if (basePath.endsWith(".jsonc")) {
+    if (await file(basePath).exists()) {
+      return basePath;
+    }
+    const jsonPath = basePath.replace(/\.jsonc$/, ".json");
+    if (await file(jsonPath).exists()) {
+      return jsonPath;
+    }
+    return null;
+  }
+
+  // If path ends with .json, also check .jsonc variant
+  if (basePath.endsWith(".json")) {
+    if (await file(basePath).exists()) {
+      return basePath;
+    }
+    const jsoncPath = basePath.replace(/\.json$/, ".jsonc");
+    if (await file(jsoncPath).exists()) {
+      return jsoncPath;
+    }
+    return null;
+  }
+
+  // Otherwise just check as-is
+  if (await file(basePath).exists()) {
+    return basePath;
+  }
+  return null;
+}
+
+/**
+ * Get all config locations with existence status, ordered by priority.
+ * Priority: project-local (1) > user-project (2) > user-global (3)
+ */
+export async function getConfigLocations(cwd: string = process.cwd()): Promise<ConfigLocation[]> {
+  const projectId = getProjectId(cwd);
+
+  // Define base paths for each scope
+  const projectLocalBase = await findConfigFile(cwd);
+  const userProjectBase = getUserProjectConfigPath(projectId);
+  const userGlobalBase = getUserGlobalConfigPath();
+
+  // Check existence for user-scoped configs (project-local already checked via findConfigFile)
+  const userProjectPath = await checkConfigExists(userProjectBase);
+  const userGlobalPath = await checkConfigExists(userGlobalBase);
+
+  // Back-compat: look for legacy ~/.routermcp locations for user-scoped configs.
+  // Only used if the new ~/.config/routermcp path doesn't exist.
+  const legacyRouterDir = getLegacyRouterMcpDir();
+  const legacyUserGlobalBase = resolvePath(legacyRouterDir, "routermcp.jsonc");
+  const legacyUserProjectBase = resolvePath(legacyRouterDir, "projects", projectId, "routermcp.jsonc");
+
+  const legacyUserProjectPath = userProjectPath ? null : await checkConfigExists(legacyUserProjectBase);
+  const legacyUserGlobalPath = userGlobalPath ? null : await checkConfigExists(legacyUserGlobalBase);
+
+  return [
+    {
+      scope: "project-local",
+      path: projectLocalBase || `${cwd}/routermcp.jsonc`,
+      exists: projectLocalBase !== null,
+    },
+    {
+      scope: "user-project",
+      path: userProjectPath || legacyUserProjectPath || userProjectBase,
+      exists: userProjectPath !== null || legacyUserProjectPath !== null,
+    },
+    {
+      scope: "user-global",
+      path: userGlobalPath || legacyUserGlobalPath || userGlobalBase,
+      exists: userGlobalPath !== null || legacyUserGlobalPath !== null,
+    },
+  ];
+}
+
+/**
+ * Resolve config by priority - returns first existing config.
+ * Priority: project-local (1) > user-project (2) > user-global (3)
+ */
+export async function resolveConfig(cwd: string = process.cwd()): Promise<ResolvedConfig | null> {
+  const locations = await getConfigLocations(cwd);
+
+  for (const loc of locations) {
+    if (loc.exists) {
+      const config = await loadConfig(loc.path);
+      return { config, path: loc.path, scope: loc.scope };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve config from path or by priority if no path specified.
+ * When a specific path is provided, it's loaded directly.
+ * Otherwise, configs are resolved by priority across all scopes.
+ */
+export async function resolveConfigFromPath(
+  configPath?: string,
+  cwd: string = process.cwd(),
+): Promise<ResolvedConfig> {
+  // If explicit path provided, load it directly
+  if (configPath) {
+    const resolvedConfigPath = resolvePath(configPath);
+    const config = await loadConfig(resolvedConfigPath);
+
+    // Determine scope from path (normalize both sides to handle relative paths)
+    const locations = await getConfigLocations(cwd);
+    const matchingLoc = locations.find((loc) => resolvePath(loc.path) === resolvedConfigPath);
+
+    return {
+      config,
+      path: resolvedConfigPath,
+      scope: matchingLoc?.scope || "project-local",
+    };
+  }
+
+  // Resolve by priority
+  const resolved = await resolveConfig(cwd);
+  if (!resolved) {
+    throw new ConfigError(
+      "No config file found. Create routermcp.jsonc or specify --config path.\n" +
+        "Searched locations:\n" +
+        "  - ./routermcp.jsonc (project-local)\n" +
+        "  - ~/.config/routermcp/projects/<project>/routermcp.jsonc (user-project)\n" +
+        "  - ~/.config/routermcp/routermcp.jsonc (user-global)",
+    );
+  }
+
+  return resolved;
+}
+
+/**
+ * Ensure the config directory exists for the given scope.
+ * Creates parent directories as needed.
+ */
+export async function ensureConfigDir(
+  scope: ConfigScope,
+  cwd: string = process.cwd(),
+): Promise<void> {
+  const configPath = getConfigPathForScope(scope, cwd);
+  const dir = dirname(configPath);
+  await mkdir(dir, { recursive: true });
 }

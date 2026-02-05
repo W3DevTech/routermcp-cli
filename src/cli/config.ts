@@ -2,8 +2,15 @@ import * as p from "@clack/prompts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { file, write } from "../compat/index.js";
-import { findConfigFile, loadConfig } from "../config/loader.js";
-import type { RouterMcpConfig, ServerConfig } from "../config/types.js";
+import {
+  ensureConfigDir,
+  getConfigLocations,
+  getConfigPathForScope,
+  getScopeLabel,
+  loadConfig,
+} from "../config/loader.js";
+import type { ConfigScope, RouterMcpConfig, ServerConfig } from "../config/types.js";
+import { getProjectId } from "../daemon/project.js";
 import { createClientTransport } from "../transports/index.js";
 
 type MigrationClient = "cursor" | "claude-code";
@@ -12,11 +19,32 @@ type MigrationClient = "cursor" | "claude-code";
  * Run the interactive config wizard.
  */
 export async function configCommand(): Promise<void> {
-  p.intro("RouterMCP Configuration Wizard");
+  // First, select the scope to edit
+  const scope = await selectScope();
+  if (!scope) return;
 
-  // Check for existing config
-  const existingPath = await findConfigFile(process.cwd());
+  const scopeLabel = getScopeLabel(scope);
+  p.intro(`RouterMCP Configuration Wizard [${scopeLabel}]`);
+
+  // Check for existing config at the selected scope
+  const configPath = getConfigPathForScope(scope);
   let config: RouterMcpConfig = { mcpServers: {} };
+  let existingPath: string | null = null;
+
+  try {
+    const f = file(configPath);
+    if (await f.exists()) {
+      existingPath = configPath;
+    }
+    // Also check .json variant
+    const jsonPath = configPath.replace(/\.jsonc$/, ".json");
+    const jsonFile = file(jsonPath);
+    if (!existingPath && (await jsonFile.exists())) {
+      existingPath = jsonPath;
+    }
+  } catch {
+    // Ignore errors
+  }
 
   if (existingPath) {
     const useExisting = await p.confirm({
@@ -43,16 +71,37 @@ export async function configCommand(): Promise<void> {
   let done = false;
   while (!done) {
     const serverCount = Object.keys(config.mcpServers).length;
-    const options = [
-      { value: "add" as const, label: "Add a new server" },
-      { value: "migrate" as const, label: "Migrate existing MCP Config (Cursor/Claude Code)" },
-      ...(serverCount > 0 ? [{ value: "edit" as const, label: "Edit an existing server" }] : []),
-      ...(serverCount > 0 ? [{ value: "remove" as const, label: "Remove a server" }] : []),
-      { value: "list" as const, label: "List all servers" },
-      { value: "validate-save" as const, label: "Validate, Save and exit" },
-      { value: "save" as const, label: "Save and exit" },
-      { value: "exit" as const, label: "Exit without saving" },
+
+    // Build options based on scope and state
+    const options: Array<{ value: string; label: string }> = [
+      { value: "add", label: "Add a new server" },
     ];
+
+    // Show "Import from user-global" only for project scopes, and only if user-global exists
+    if (scope !== "user-global") {
+      const locations = await getConfigLocations();
+      const userGlobalLoc = locations.find((l) => l.scope === "user-global");
+      if (userGlobalLoc?.exists) {
+        options.push({
+          value: "import-global",
+          label: "Import servers from user-global config",
+        });
+      }
+    }
+
+    options.push({ value: "migrate", label: "Migrate existing MCP Config (Cursor/Claude Code)" });
+
+    if (serverCount > 0) {
+      options.push({ value: "edit", label: "Edit an existing server" });
+      options.push({ value: "remove", label: "Remove a server" });
+    }
+
+    options.push(
+      { value: "list", label: "List all servers" },
+      { value: "validate-save", label: "Validate, Save and exit" },
+      { value: "save", label: "Save and exit" },
+      { value: "exit", label: "Exit without saving" },
+    );
 
     const action = await p.select({
       message: `What would you like to do? (${serverCount} servers configured)`,
@@ -68,6 +117,9 @@ export async function configCommand(): Promise<void> {
       case "add":
         await addServer(config);
         break;
+      case "import-global":
+        await importFromUserGlobal(config);
+        break;
       case "migrate":
         await migrateFromClient(config);
         break;
@@ -81,12 +133,12 @@ export async function configCommand(): Promise<void> {
         listServers(config);
         break;
       case "validate-save":
-        if (await validateAndSaveConfig(config)) {
+        if (await validateAndSaveConfig(config, scope)) {
           done = true;
         }
         break;
       case "save":
-        await saveConfig(config);
+        await saveConfigToScope(config, scope);
         done = true;
         break;
       case "exit":
@@ -96,6 +148,154 @@ export async function configCommand(): Promise<void> {
   }
 
   p.outro("Done!");
+}
+
+/**
+ * Prompt user to select which config scope to edit.
+ */
+async function selectScope(): Promise<ConfigScope | null> {
+  const locations = await getConfigLocations();
+
+  // Build options with hints about existing configs
+  const options = locations.map((loc) => {
+    const label = getScopeLabel(loc.scope);
+    let hint = "";
+
+    // Truncate path for display
+    let displayPath = loc.path;
+    if (displayPath.length > 50) {
+      displayPath = `...${displayPath.slice(-47)}`;
+    }
+
+    if (loc.exists) {
+      hint = `${displayPath} (exists)`;
+    } else {
+      hint = displayPath;
+    }
+
+    return {
+      value: loc.scope,
+      label,
+      hint,
+    };
+  });
+
+  const scope = await p.select({
+    message: "Which configuration scope would you like to edit?",
+    options,
+  });
+
+  if (p.isCancel(scope)) {
+    p.cancel("Configuration cancelled");
+    process.exit(0);
+  }
+
+  return scope as ConfigScope;
+}
+
+/**
+ * Import servers from user-global config into current config.
+ */
+async function importFromUserGlobal(config: RouterMcpConfig): Promise<void> {
+  const locations = await getConfigLocations();
+  const userGlobalLoc = locations.find((l) => l.scope === "user-global");
+
+  if (!userGlobalLoc?.exists) {
+    p.log.error("User-global config not found");
+    return;
+  }
+
+  // Load user-global config
+  let globalConfig: RouterMcpConfig;
+  try {
+    globalConfig = await loadConfig(userGlobalLoc.path);
+  } catch (err) {
+    p.log.error(`Failed to load user-global config: ${err}`);
+    return;
+  }
+
+  const globalServers = Object.entries(globalConfig.mcpServers);
+  if (globalServers.length === 0) {
+    p.log.warn("User-global config has no servers");
+    return;
+  }
+
+  p.log.info(`User-global config has ${globalServers.length} server(s)`);
+
+  // Show multi-select for servers to import
+  const selectedServers = await p.multiselect({
+    message: "Select servers to import (deep copy):",
+    options: globalServers.map(([name, server]) => {
+      const details =
+        server.transport === "stdio" ? `command: ${server.command}` : `url: ${server.url}`;
+      return {
+        value: name,
+        label: name,
+        hint: `${server.transport} - ${truncate(details, 40)}`,
+      };
+    }),
+    required: false,
+  });
+
+  if (p.isCancel(selectedServers) || !Array.isArray(selectedServers) || selectedServers.length === 0) {
+    p.log.info("No servers selected");
+    return;
+  }
+
+  // Import selected servers (deep copy)
+  let importedCount = 0;
+  for (const name of selectedServers) {
+    const serverConfig = globalConfig.mcpServers[name];
+    if (!serverConfig) continue;
+
+    // Check for collision
+    if (config.mcpServers[name]) {
+      const action = await p.select({
+        message: `Server "${name}" already exists. What would you like to do?`,
+        options: [
+          { value: "skip", label: "Skip this server" },
+          { value: "rename", label: "Rename and add" },
+          { value: "replace", label: "Replace existing" },
+        ],
+      });
+
+      if (p.isCancel(action) || action === "skip") {
+        continue;
+      }
+
+      if (action === "rename") {
+        const newName = await p.text({
+          message: "Enter new name for this server:",
+          placeholder: `${name}-imported`,
+          validate: (value) => {
+            if (!value) return "Name is required";
+            if (config.mcpServers[value]) return "Server with this name already exists";
+            if (!/^[a-zA-Z0-9-_]+$/.test(value))
+              return "Name must be alphanumeric with hyphens/underscores";
+            return undefined;
+          },
+        });
+
+        if (p.isCancel(newName)) continue;
+
+        // Deep copy the server config
+        config.mcpServers[newName as string] = JSON.parse(JSON.stringify(serverConfig));
+        importedCount++;
+      } else {
+        // Replace - deep copy
+        config.mcpServers[name] = JSON.parse(JSON.stringify(serverConfig));
+        importedCount++;
+      }
+    } else {
+      // No collision - deep copy
+      config.mcpServers[name] = JSON.parse(JSON.stringify(serverConfig));
+      importedCount++;
+    }
+  }
+
+  if (importedCount > 0) {
+    p.log.success(`Imported ${importedCount} server(s) from user-global config`);
+  }
 }
 
 /**
@@ -473,7 +673,7 @@ function listServers(config: RouterMcpConfig): void {
 }
 
 /**
- * Save the config to a file.
+ * Save the config to a file (legacy - prompts for filename).
  */
 async function saveConfig(config: RouterMcpConfig): Promise<void> {
   const filename = await p.text({
@@ -489,6 +689,24 @@ async function saveConfig(config: RouterMcpConfig): Promise<void> {
   try {
     await write(path, content);
     p.log.success(`Saved config to: ${path}`);
+  } catch (err) {
+    p.log.error(`Failed to save config: ${err}`);
+  }
+}
+
+/**
+ * Save the config to the appropriate path for the given scope.
+ */
+async function saveConfigToScope(config: RouterMcpConfig, scope: ConfigScope): Promise<void> {
+  // Ensure directory exists (especially important for user-project scope)
+  await ensureConfigDir(scope);
+
+  const configPath = getConfigPathForScope(scope);
+  const content = JSON.stringify(config, null, 2);
+
+  try {
+    await write(configPath, content);
+    p.log.success(`Saved config to: ${configPath}`);
   } catch (err) {
     p.log.error(`Failed to save config: ${err}`);
   }
@@ -517,12 +735,15 @@ async function validateServer(
  * Validate all servers and save if successful.
  * Returns true if save was completed, false otherwise.
  */
-async function validateAndSaveConfig(config: RouterMcpConfig): Promise<boolean> {
+async function validateAndSaveConfig(
+  config: RouterMcpConfig,
+  scope: ConfigScope,
+): Promise<boolean> {
   const servers = Object.entries(config.mcpServers);
 
   if (servers.length === 0) {
     p.log.warn("No servers to validate");
-    await saveConfig(config);
+    await saveConfigToScope(config, scope);
     return true;
   }
 
@@ -573,7 +794,7 @@ async function validateAndSaveConfig(config: RouterMcpConfig): Promise<boolean> 
     }
   }
 
-  await saveConfig(config);
+  await saveConfigToScope(config, scope);
   return true;
 }
 

@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { file, write } from "../compat/index.js";
+import { getLegacyRouterMcpDir, getRouterMcpDir } from "../daemon/project.js";
 
-const ROUTERMCP_DIR = join(homedir(), ".routermcp");
+const ROUTERMCP_DIR = getRouterMcpDir();
+const LEGACY_ROUTERMCP_DIR = getLegacyRouterMcpDir();
 const OAUTH_DIR = join(ROUTERMCP_DIR, "mcp-oauth");
+const LEGACY_OAUTH_DIR = join(LEGACY_ROUTERMCP_DIR, "mcp-oauth");
 
 export interface OAuthClientInfo {
   client_id: string;
@@ -56,8 +58,17 @@ export function getOAuthStorageDir(serverUrl: string): string {
   return join(OAUTH_DIR, hostHash);
 }
 
+function getLegacyOAuthStorageDir(serverUrl: string): string {
+  const hostHash = getServerHostHash(serverUrl);
+  return join(LEGACY_OAUTH_DIR, hostHash);
+}
+
 export function getOAuthStoragePath(serverUrl: string): string {
   return join(getOAuthStorageDir(serverUrl), "auth.json");
+}
+
+function getLegacyOAuthStoragePath(serverUrl: string): string {
+  return join(getLegacyOAuthStorageDir(serverUrl), "auth.json");
 }
 
 async function ensureOAuthDir(serverUrl: string): Promise<void> {
@@ -70,6 +81,28 @@ export async function loadOAuthStorage(serverUrl: string): Promise<OAuthStorageD
   const f = file(path);
 
   if (!(await f.exists())) {
+    // Back-compat: read legacy ~/.routermcp/mcp-oauth/<hash>/auth.json if present.
+    const legacyPath = getLegacyOAuthStoragePath(serverUrl);
+    const legacy = file(legacyPath);
+    if (await legacy.exists()) {
+      try {
+        const text = await legacy.text();
+        const data = JSON.parse(text) as OAuthStorageData;
+
+        if (data.serverUrl !== serverUrl) {
+          console.error(
+            `[oauth] Warning: Hash collision detected for ${serverUrl}, ignoring legacy data`,
+          );
+          return null;
+        }
+
+        return data;
+      } catch (err) {
+        console.error(`[oauth] Error loading legacy OAuth storage: ${err}`);
+        return null;
+      }
+    }
+
     return null;
   }
 
