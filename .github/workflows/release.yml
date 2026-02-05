@@ -142,23 +142,20 @@ jobs:
           git add package.json
           git commit -m "chore(release): ${{ steps.version.outputs.version }}"
 
-      - name: Create tag (manual trigger only)
-        if: steps.version.outputs.trigger_type == 'manual'
-        run: |
-          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.version }}"
-          echo "🏷️ Created tag ${{ steps.version.outputs.tag }}"
-
-      - name: Push changes and tag (manual trigger only)
-        if: steps.version.outputs.trigger_type == 'manual'
-        run: |
-          git push origin HEAD:main
-          git push origin "${{ steps.version.outputs.tag }}"
-          echo "✅ Pushed commit and tag to main"
-
       - name: Publish to npm
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Only push commit and tag AFTER successful npm publish
+      - name: Create and push tag (manual trigger only)
+        if: steps.version.outputs.trigger_type == 'manual'
+        run: |
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.version }}"
+          echo "🏷️ Created tag ${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
+          git push origin "${{ steps.version.outputs.tag }}"
+          echo "✅ Pushed commit and tag to main"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
