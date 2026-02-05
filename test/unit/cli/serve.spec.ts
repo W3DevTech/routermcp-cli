@@ -18,7 +18,8 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("../../../src/config/loader.js", () => ({
-  loadConfigFromPath: vi.fn(),
+  resolveConfigFromPath: vi.fn(),
+  getScopeLabel: vi.fn(() => "Project-local"),
 }));
 
 vi.mock("../../../src/core/gateway.js", () => ({
@@ -41,7 +42,7 @@ vi.mock("../../../src/cli/config.js", () => ({
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { serveCommand } from "../../../src/cli/serve.js";
-import { loadConfigFromPath } from "../../../src/config/loader.js";
+import { resolveConfigFromPath } from "../../../src/config/loader.js";
 import { createGateway } from "../../../src/core/gateway.js";
 import { ConfigError, RouterMcpError } from "../../../src/utils/errors.js";
 
@@ -63,13 +64,14 @@ describe("serveCommand", () => {
     };
 
     vi.mocked(createGateway).mockReturnValue(mockGateway as never);
-    vi.mocked(loadConfigFromPath).mockResolvedValue({
+    vi.mocked(resolveConfigFromPath).mockResolvedValue({
       config: {
         mcpServers: {
           test: { transport: "stdio", command: "echo", args: ["test"] },
         },
       },
       path: "/path/to/routermcp.jsonc",
+      scope: "project-local",
     });
 
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -123,7 +125,7 @@ describe("serveCommand", () => {
       expect(createGateway).toHaveBeenCalledWith(
         expect.objectContaining({
           mode: "http-streamable",
-          httpPort: 5151,
+          httpPort: 7858,
         }),
       );
 
@@ -136,10 +138,10 @@ describe("serveCommand", () => {
       const startPromise = serveCommand({});
 
       await vi.waitFor(() => {
-        expect(loadConfigFromPath).toHaveBeenCalled();
+        expect(resolveConfigFromPath).toHaveBeenCalled();
       });
 
-      expect(loadConfigFromPath).toHaveBeenCalledWith(undefined);
+      expect(resolveConfigFromPath).toHaveBeenCalledWith(undefined);
 
       mockGateway.stop();
     });
@@ -148,10 +150,10 @@ describe("serveCommand", () => {
       const startPromise = serveCommand({ config: "/custom/config.jsonc" });
 
       await vi.waitFor(() => {
-        expect(loadConfigFromPath).toHaveBeenCalled();
+        expect(resolveConfigFromPath).toHaveBeenCalled();
       });
 
-      expect(loadConfigFromPath).toHaveBeenCalledWith("/custom/config.jsonc");
+      expect(resolveConfigFromPath).toHaveBeenCalledWith("/custom/config.jsonc");
 
       mockGateway.stop();
     });
@@ -187,7 +189,7 @@ describe("serveCommand", () => {
       const startPromise = serveCommand({ daemonMode: true });
 
       await vi.waitFor(() => {
-        expect(writeFileSync).toHaveBeenCalledWith("/tmp/daemon/daemon.port", "5151");
+        expect(writeFileSync).toHaveBeenCalledWith("/tmp/daemon/daemon.port", "7858");
       });
 
       mockGateway.stop();
@@ -230,7 +232,7 @@ describe("serveCommand", () => {
       const originalIsTTY = process.stdin.isTTY;
       Object.defineProperty(process.stdin, "isTTY", { value: false, writable: true });
 
-      vi.mocked(loadConfigFromPath).mockRejectedValue(
+      vi.mocked(resolveConfigFromPath).mockRejectedValue(
         new ConfigError("No config file found in current directory"),
       );
 
@@ -248,7 +250,7 @@ describe("serveCommand", () => {
     });
 
     it("handles RouterMcpError", async () => {
-      vi.mocked(loadConfigFromPath).mockRejectedValue(
+      vi.mocked(resolveConfigFromPath).mockRejectedValue(
         new RouterMcpError("Some MCP error", "TEST_ERROR"),
       );
 
@@ -266,7 +268,7 @@ describe("serveCommand", () => {
 
     it("rethrows unknown errors", async () => {
       const unknownError = new Error("Unknown error");
-      vi.mocked(loadConfigFromPath).mockRejectedValue(unknownError);
+      vi.mocked(resolveConfigFromPath).mockRejectedValue(unknownError);
 
       await expect(serveCommand({})).rejects.toThrow("Unknown error");
     });

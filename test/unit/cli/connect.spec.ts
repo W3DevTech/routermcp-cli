@@ -16,8 +16,7 @@ vi.mock("node:net", () => ({
 }));
 
 vi.mock("../../../src/config/loader.js", () => ({
-  loadConfigFromPath: vi.fn(),
-  findConfigFile: vi.fn(),
+  resolveConfig: vi.fn(),
 }));
 
 vi.mock("../../../src/daemon/index.js", () => ({
@@ -37,7 +36,7 @@ vi.mock("../../../src/daemon/index.js", () => ({
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import { type ConnectCommandOptions, connectCommand } from "../../../src/cli/connect.js";
-import { findConfigFile } from "../../../src/config/loader.js";
+import { resolveConfig } from "../../../src/config/loader.js";
 import {
   getDaemonPaths,
   getDaemonStatus,
@@ -73,7 +72,11 @@ describe("connectCommand", () => {
     };
     vi.mocked(createConnection).mockReturnValue(mockSocket as never);
 
-    vi.mocked(findConfigFile).mockResolvedValue("/path/to/routermcp.jsonc");
+    vi.mocked(resolveConfig).mockResolvedValue({
+      config: { mcpServers: {} },
+      path: "/path/to/routermcp.jsonc",
+      scope: "project-local",
+    });
   });
 
   afterEach(() => {
@@ -82,7 +85,7 @@ describe("connectCommand", () => {
 
   describe("config file handling", () => {
     it("fails when no config file found", async () => {
-      vi.mocked(findConfigFile).mockResolvedValue(null);
+      vi.mocked(resolveConfig).mockResolvedValue(null);
 
       const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
         throw new Error("process.exit called");
@@ -120,7 +123,7 @@ describe("connectCommand", () => {
       connectCommand({ project: "/custom/project" });
 
       await vi.waitFor(() => {
-        expect(findConfigFile).toHaveBeenCalledWith("/custom/project");
+        expect(resolveConfig).toHaveBeenCalledWith("/custom/project");
       });
 
       expect(getProjectId).toHaveBeenCalledWith("/custom/project");

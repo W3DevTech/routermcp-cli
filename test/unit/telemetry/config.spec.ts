@@ -92,7 +92,7 @@ describe("telemetry/config", () => {
 
       await saveUserConfig(testConfig);
 
-      expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(".routermcp"), {
+      expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(".config/routermcp"), {
         recursive: true,
       });
     });
@@ -186,10 +186,10 @@ describe("telemetry/config", () => {
   });
 
   describe("getConfigPath", () => {
-    it("returns path to config file in .routermcp directory", () => {
+    it("returns path to config file in .config/routermcp directory", () => {
       const result = getConfigPath();
 
-      expect(result).toContain(".routermcp");
+      expect(result).toContain(".config/routermcp");
       expect(result).toContain("config.json");
     });
 
