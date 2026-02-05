@@ -154,7 +154,7 @@ Vitest config: `vitest.config.ts` with 75% coverage thresholds.
 
 ## Defaults
 
-- HTTP port: 5151
+- HTTP port: 7858
 - Session timeout: 300 seconds (5 minutes)
 - Max sessions: 25
 - Daemon idle shutdown: 10 seconds after last client disconnects

@@ -17,7 +17,7 @@ export interface ServeCommandOptions {
   clearCache?: boolean;
 }
 
-const DEFAULT_DAEMON_PORT = 5151;
+const DEFAULT_DAEMON_PORT = 7858;
 const DAEMON_IDLE_TIMEOUT = 10000;
 const DAEMON_IDLE_CHECK_INTERVAL = 2000;
 
