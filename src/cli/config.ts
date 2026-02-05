@@ -1,6 +1,8 @@
+import { homedir } from "node:os";
 import * as p from "@clack/prompts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { file, write } from "../compat/index.js";
 import {
   ensureConfigDir,
@@ -13,7 +15,15 @@ import type { ConfigScope, RouterMcpConfig, ServerConfig } from "../config/types
 import { getProjectId } from "../daemon/project.js";
 import { createClientTransport } from "../transports/index.js";
 
-type MigrationClient = "cursor" | "claude-code";
+type MigrationClient = "cursor" | "claude-code" | "opencode" | "codex";
+type MigrationLevel = "project" | "global";
+
+interface MigrationSource {
+  client: MigrationClient;
+  level: MigrationLevel;
+  path: string;
+  label: string;
+}
 
 /**
  * Run the interactive config wizard.
@@ -89,7 +99,15 @@ export async function configCommand(): Promise<void> {
       }
     }
 
-    options.push({ value: "migrate", label: "Migrate existing MCP Config (Cursor/Claude Code)" });
+    // Show migrate option only if migration sources are available for this scope
+    const migrationSources = await getAvailableMigrationSources(scope);
+    if (migrationSources.length > 0) {
+      const clientNames = [...new Set(migrationSources.map((s) => getClientLabel(s.client)))];
+      options.push({
+        value: "migrate",
+        label: `Migrate from existing MCP config (${clientNames.join(", ")})`,
+      });
+    }
 
     if (serverCount > 0) {
       options.push({ value: "edit", label: "Edit an existing server" });
@@ -121,7 +139,7 @@ export async function configCommand(): Promise<void> {
         await importFromUserGlobal(config);
         break;
       case "migrate":
-        await migrateFromClient(config);
+        await migrateFromClient(config, scope);
         break;
       case "edit":
         await editServer(config);
@@ -610,9 +628,352 @@ async function editServer(config: RouterMcpConfig): Promise<void> {
 
   const serverConfig = config.mcpServers[name as string];
 
-  // Edit filtering
-  await configureServerFiltering(name as string, serverConfig);
+  // Show edit menu based on transport type
+  let done = false;
+  while (!done) {
+    const options: Array<{ value: string; label: string; hint?: string }> = [];
+
+    if (serverConfig.transport === "stdio") {
+      options.push({
+        value: "command",
+        label: "Edit command",
+        hint: serverConfig.command,
+      });
+      options.push({
+        value: "args",
+        label: "Edit arguments",
+        hint: serverConfig.args?.join(" ") || "(none)",
+      });
+      options.push({
+        value: "env",
+        label: "Edit environment variables",
+        hint: serverConfig.env ? `${Object.keys(serverConfig.env).length} vars` : "(none)",
+      });
+    } else {
+      // HTTP transport
+      options.push({
+        value: "url",
+        label: "Edit URL",
+        hint: serverConfig.url,
+      });
+      options.push({
+        value: "headers",
+        label: "Edit headers",
+        hint: serverConfig.headers ? `${Object.keys(serverConfig.headers).length} headers` : "(none)",
+      });
+    }
+
+    options.push({
+      value: "filtering",
+      label: "Configure tool/resource/prompt filtering",
+    });
+    options.push({
+      value: "rename",
+      label: "Rename server",
+    });
+    options.push({
+      value: "done",
+      label: "Done editing",
+    });
+
+    const action = await p.select({
+      message: `Editing "${name}" - what would you like to change?`,
+      options,
+    });
+
+    if (p.isCancel(action)) {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "command": {
+        const newCommand = await p.text({
+          message: "Command to run:",
+          initialValue: serverConfig.command,
+        });
+        if (!p.isCancel(newCommand) && newCommand) {
+          serverConfig.command = newCommand;
+          p.log.success("Command updated");
+        }
+        break;
+      }
+      case "args": {
+        const argsStr = await p.text({
+          message: "Arguments (space-separated):",
+          initialValue: serverConfig.args?.join(" ") || "",
+          placeholder: "arg1 arg2 arg3",
+        });
+        if (!p.isCancel(argsStr)) {
+          const args = argsStr ? argsStr.split(/\s+/).filter(Boolean) : [];
+          if (args.length > 0) {
+            serverConfig.args = args;
+          } else {
+            delete serverConfig.args;
+          }
+          p.log.success("Arguments updated");
+        }
+        break;
+      }
+      case "env": {
+        await editEnvironmentVariables(serverConfig);
+        break;
+      }
+      case "url": {
+        const newUrl = await p.text({
+          message: "Server URL:",
+          initialValue: serverConfig.url,
+          validate: (value) => {
+            try {
+              new URL(value);
+              return undefined;
+            } catch {
+              return "Invalid URL";
+            }
+          },
+        });
+        if (!p.isCancel(newUrl) && newUrl) {
+          serverConfig.url = newUrl;
+          p.log.success("URL updated");
+        }
+        break;
+      }
+      case "headers": {
+        await editHeaders(serverConfig);
+        break;
+      }
+      case "filtering": {
+        await configureServerFiltering(name as string, serverConfig);
+        break;
+      }
+      case "rename": {
+        const newName = await p.text({
+          message: "New server name:",
+          initialValue: name as string,
+          validate: (value) => {
+            if (!value) return "Name is required";
+            if (value !== name && config.mcpServers[value])
+              return "Server with this name already exists";
+            if (!/^[a-zA-Z0-9-_]+$/.test(value))
+              return "Name must be alphanumeric with hyphens/underscores";
+            return undefined;
+          },
+        });
+        if (!p.isCancel(newName) && newName && newName !== name) {
+          config.mcpServers[newName] = serverConfig;
+          delete config.mcpServers[name as string];
+          p.log.success(`Server renamed to: ${newName}`);
+          done = true; // Exit since we changed the key
+        }
+        break;
+      }
+      case "done": {
+        done = true;
+        break;
+      }
+    }
+  }
+
   p.log.success(`Updated server: ${name}`);
+}
+
+/**
+ * Edit environment variables for a server.
+ */
+async function editEnvironmentVariables(serverConfig: ServerConfig): Promise<void> {
+  let done = false;
+
+  while (!done) {
+    const envVars = serverConfig.env || {};
+    const envEntries = Object.entries(envVars);
+
+    const options: Array<{ value: string; label: string; hint?: string }> = [
+      { value: "add", label: "Add environment variable" },
+    ];
+
+    if (envEntries.length > 0) {
+      options.push({ value: "edit", label: "Edit existing variable" });
+      options.push({ value: "remove", label: "Remove variable" });
+    }
+
+    options.push({
+      value: "done",
+      label: "Done",
+      hint: envEntries.length > 0 ? `${envEntries.length} vars configured` : undefined,
+    });
+
+    const action = await p.select({
+      message: "Environment variables:",
+      options,
+    });
+
+    if (p.isCancel(action) || action === "done") {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "add": {
+        const varName = await p.text({
+          message: "Variable name:",
+          placeholder: "MY_API_KEY",
+          validate: (value) => {
+            if (!value) return "Name is required";
+            if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) return "Invalid variable name";
+            return undefined;
+          },
+        });
+        if (p.isCancel(varName)) break;
+
+        const varValue = await p.text({
+          message: `Value for ${varName}:`,
+          placeholder: "value or ${env:OTHER_VAR}",
+        });
+        if (p.isCancel(varValue)) break;
+
+        if (!serverConfig.env) serverConfig.env = {};
+        serverConfig.env[varName as string] = varValue as string;
+        p.log.success(`Added ${varName}`);
+        break;
+      }
+      case "edit": {
+        const varToEdit = await p.select({
+          message: "Select variable to edit:",
+          options: envEntries.map(([key, value]) => ({
+            value: key,
+            label: key,
+            hint: truncate(value, 30),
+          })),
+        });
+        if (p.isCancel(varToEdit)) break;
+
+        const newValue = await p.text({
+          message: `New value for ${varToEdit}:`,
+          initialValue: envVars[varToEdit as string],
+        });
+        if (!p.isCancel(newValue)) {
+          serverConfig.env![varToEdit as string] = newValue as string;
+          p.log.success(`Updated ${varToEdit}`);
+        }
+        break;
+      }
+      case "remove": {
+        const varToRemove = await p.select({
+          message: "Select variable to remove:",
+          options: envEntries.map(([key, value]) => ({
+            value: key,
+            label: key,
+            hint: truncate(value, 30),
+          })),
+        });
+        if (p.isCancel(varToRemove)) break;
+
+        delete serverConfig.env![varToRemove as string];
+        if (Object.keys(serverConfig.env!).length === 0) {
+          delete serverConfig.env;
+        }
+        p.log.success(`Removed ${varToRemove}`);
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Edit headers for an HTTP server.
+ */
+async function editHeaders(serverConfig: ServerConfig): Promise<void> {
+  let done = false;
+
+  while (!done) {
+    const headers = serverConfig.headers || {};
+    const headerEntries = Object.entries(headers);
+
+    const options: Array<{ value: string; label: string; hint?: string }> = [
+      { value: "add", label: "Add header" },
+    ];
+
+    if (headerEntries.length > 0) {
+      options.push({ value: "edit", label: "Edit existing header" });
+      options.push({ value: "remove", label: "Remove header" });
+    }
+
+    options.push({
+      value: "done",
+      label: "Done",
+      hint: headerEntries.length > 0 ? `${headerEntries.length} headers configured` : undefined,
+    });
+
+    const action = await p.select({
+      message: "HTTP Headers:",
+      options,
+    });
+
+    if (p.isCancel(action) || action === "done") {
+      done = true;
+      continue;
+    }
+
+    switch (action) {
+      case "add": {
+        const headerName = await p.text({
+          message: "Header name:",
+          placeholder: "Authorization",
+        });
+        if (p.isCancel(headerName)) break;
+
+        const headerValue = await p.text({
+          message: `Value for ${headerName}:`,
+          placeholder: "Bearer ${env:API_KEY}",
+        });
+        if (p.isCancel(headerValue)) break;
+
+        if (!serverConfig.headers) serverConfig.headers = {};
+        serverConfig.headers[headerName as string] = headerValue as string;
+        p.log.success(`Added ${headerName}`);
+        break;
+      }
+      case "edit": {
+        const headerToEdit = await p.select({
+          message: "Select header to edit:",
+          options: headerEntries.map(([key, value]) => ({
+            value: key,
+            label: key,
+            hint: truncate(value, 30),
+          })),
+        });
+        if (p.isCancel(headerToEdit)) break;
+
+        const newValue = await p.text({
+          message: `New value for ${headerToEdit}:`,
+          initialValue: headers[headerToEdit as string],
+        });
+        if (!p.isCancel(newValue)) {
+          serverConfig.headers![headerToEdit as string] = newValue as string;
+          p.log.success(`Updated ${headerToEdit}`);
+        }
+        break;
+      }
+      case "remove": {
+        const headerToRemove = await p.select({
+          message: "Select header to remove:",
+          options: headerEntries.map(([key, value]) => ({
+            value: key,
+            label: key,
+            hint: truncate(value, 30),
+          })),
+        });
+        if (p.isCancel(headerToRemove)) break;
+
+        delete serverConfig.headers![headerToRemove as string];
+        if (Object.keys(serverConfig.headers!).length === 0) {
+          delete serverConfig.headers;
+        }
+        p.log.success(`Removed ${headerToRemove}`);
+        break;
+      }
+    }
+  }
 }
 
 /**
@@ -799,15 +1160,28 @@ async function validateAndSaveConfig(
 }
 
 /**
- * Get the config file path for an MCP client.
+ * Get the config file path for an MCP client at a given level.
+ * Returns null if the client doesn't support that level.
  */
-function getMcpClientConfigPath(client: MigrationClient): string {
+function getMcpClientConfigPath(client: MigrationClient, level: MigrationLevel): string | null {
   const cwd = process.cwd();
+  const home = homedir();
+
   switch (client) {
     case "cursor":
-      return `${cwd}/.cursor/mcp.json`;
+      // Cursor has both project and global configs
+      return level === "project" ? `${cwd}/.cursor/mcp.json` : `${home}/.cursor/mcp.json`;
     case "claude-code":
-      return `${cwd}/.mcp.json`;
+      // Claude Code has both project (.mcp.json) and global (~/.claude.json) configs
+      return level === "project" ? `${cwd}/.mcp.json` : `${home}/.claude.json`;
+    case "opencode":
+      // OpenCode has both project and global configs
+      return level === "project"
+        ? `${cwd}/opencode.json`
+        : `${home}/.config/opencode/opencode.json`;
+    case "codex":
+      // Codex has both project and global configs
+      return level === "project" ? `${cwd}/.codex/config.toml` : `${home}/.codex/config.toml`;
   }
 }
 
@@ -820,19 +1194,300 @@ function getClientLabel(client: MigrationClient): string {
       return "Cursor IDE";
     case "claude-code":
       return "Claude Code";
+    case "opencode":
+      return "OpenCode";
+    case "codex":
+      return "OpenAI Codex";
   }
 }
 
 /**
- * Read and parse a client's MCP config file.
+ * Get available migration sources based on the target scope.
+ * - user-project scope: no migration sources (use import-global instead)
+ * - project-local scope: check project-level configs for all 4 clients
+ * - user-global scope: check global AND project-level configs for all 4 clients
  */
-async function readClientConfig(path: string): Promise<RouterMcpConfig | null> {
+async function getAvailableMigrationSources(scope: ConfigScope): Promise<MigrationSource[]> {
+  const sources: MigrationSource[] = [];
+
+  // user-project scope doesn't support migration (use import-global instead)
+  if (scope === "user-project") {
+    return sources;
+  }
+
+  // Determine which clients and levels to check based on scope
+  const clientsToCheck: Array<{ client: MigrationClient; level: MigrationLevel }> =
+    scope === "user-global"
+      ? [
+          // Global scope: check global configs for all clients
+          { client: "cursor", level: "global" },
+          { client: "claude-code", level: "global" },
+          { client: "opencode", level: "global" },
+          { client: "codex", level: "global" },
+          // Also check project-level configs (user may want to migrate from current project)
+          { client: "cursor", level: "project" },
+          { client: "claude-code", level: "project" },
+          { client: "opencode", level: "project" },
+          { client: "codex", level: "project" },
+        ]
+      : [
+          // Project-local scope: check project configs for all clients
+          { client: "cursor", level: "project" },
+          { client: "claude-code", level: "project" },
+          { client: "opencode", level: "project" },
+          { client: "codex", level: "project" },
+        ];
+
+  // Check each client/level combination
+  for (const { client, level } of clientsToCheck) {
+    const configPath = getMcpClientConfigPath(client, level);
+    if (!configPath) continue;
+
+    try {
+      const f = file(configPath);
+      if (await f.exists()) {
+        sources.push({
+          client,
+          level,
+          path: configPath,
+          label: `${getClientLabel(client)} (${level})`,
+        });
+      }
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * Convert OpenCode env syntax {env:VAR} to RouterMCP syntax ${env:VAR}.
+ * Also handles {env:VAR:-default} format.
+ */
+function convertOpenCodeEnvSyntax(value: string): string {
+  // Convert {env:VAR} or {env:VAR:-default} to ${env:VAR} or ${env:VAR:-default}
+  return value.replace(/\{env:([^}]+)\}/g, "${env:$1}");
+}
+
+/**
+ * Recursively convert OpenCode env syntax in an object.
+ */
+function convertOpenCodeEnvInObject<T>(obj: T): T {
+  if (typeof obj === "string") {
+    return convertOpenCodeEnvSyntax(obj) as T;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item) => convertOpenCodeEnvInObject(item)) as T;
+  }
+  if (obj && typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = convertOpenCodeEnvInObject(value);
+    }
+    return result as T;
+  }
+  return obj;
+}
+
+/**
+ * Parse OpenCode config format into RouterMCP format.
+ *
+ * OpenCode format:
+ * {
+ *   "mcp": {
+ *     "server-name": {
+ *       "type": "local" | "remote",
+ *       "command": ["cmd", "arg1", "arg2"],  // for local
+ *       "url": "https://...",                 // for remote
+ *       "environment": { "KEY": "{env:VAR}" }
+ *     }
+ *   }
+ * }
+ */
+function parseOpenCodeConfig(content: string): RouterMcpConfig | null {
   try {
-    const f = file(path);
-    if (!(await f.exists())) {
+    const parsed = parseJsonc(content);
+    if (!parsed || typeof parsed !== "object") {
       return null;
     }
-    const content = await f.text();
+
+    // OpenCode uses "mcp" key instead of "mcpServers"
+    const mcpSection = parsed.mcp;
+    if (!mcpSection || typeof mcpSection !== "object") {
+      return null;
+    }
+
+    const mcpServers: Record<string, ServerConfig> = {};
+
+    for (const [name, server] of Object.entries(mcpSection)) {
+      if (!server || typeof server !== "object") continue;
+
+      const serverObj = server as Record<string, unknown>;
+      const serverType = serverObj.type as string | undefined;
+
+      if (serverType === "local" || serverType === "stdio" || serverObj.command) {
+        // stdio transport
+        const commandArray = serverObj.command as string[] | undefined;
+        if (!commandArray || !Array.isArray(commandArray) || commandArray.length === 0) {
+          continue;
+        }
+
+        const [command, ...args] = commandArray;
+        const serverConfig: ServerConfig = {
+          transport: "stdio",
+          command: convertOpenCodeEnvSyntax(command),
+        };
+
+        if (args.length > 0) {
+          serverConfig.args = args.map((arg) => convertOpenCodeEnvSyntax(arg));
+        }
+
+        // Handle environment variables
+        const env = serverObj.environment || serverObj.env;
+        if (env && typeof env === "object") {
+          serverConfig.env = convertOpenCodeEnvInObject(env as Record<string, string>);
+        }
+
+        mcpServers[name] = serverConfig;
+      } else if (serverType === "remote" || serverType === "http-streamable" || serverObj.url) {
+        // HTTP transport
+        const url = serverObj.url as string | undefined;
+        if (!url) continue;
+
+        const serverConfig: ServerConfig = {
+          transport: "http-streamable",
+          url: convertOpenCodeEnvSyntax(url),
+        };
+
+        // Handle headers
+        if (serverObj.headers && typeof serverObj.headers === "object") {
+          serverConfig.headers = convertOpenCodeEnvInObject(
+            serverObj.headers as Record<string, string>,
+          );
+        }
+
+        mcpServers[name] = serverConfig;
+      }
+    }
+
+    if (Object.keys(mcpServers).length === 0) {
+      return null;
+    }
+
+    return { mcpServers };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse Codex TOML config format into RouterMCP format.
+ *
+ * Codex format (TOML):
+ * [mcp_servers.server-name]
+ * command = "cmd"
+ * args = ["arg1", "arg2"]
+ * env = { KEY = "value" }
+ * # OR for HTTP:
+ * url = "https://..."
+ * bearer_token_env_var = "API_KEY"
+ * enabled_tools = ["tool1", "tool2"]
+ * disabled_tools = ["tool3"]
+ */
+function parseCodexConfig(content: string): RouterMcpConfig | null {
+  try {
+    const parsed = parseToml(content);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    // Codex uses "mcp_servers" section
+    const mcpServersSection = parsed.mcp_servers;
+    if (!mcpServersSection || typeof mcpServersSection !== "object") {
+      return null;
+    }
+
+    const mcpServers: Record<string, ServerConfig> = {};
+
+    for (const [name, server] of Object.entries(mcpServersSection)) {
+      if (!server || typeof server !== "object") continue;
+
+      const serverObj = server as Record<string, unknown>;
+
+      if (serverObj.command) {
+        // stdio transport
+        const command = serverObj.command as string;
+        const args = serverObj.args as string[] | undefined;
+
+        const serverConfig: ServerConfig = {
+          transport: "stdio",
+          command,
+        };
+
+        if (args && Array.isArray(args) && args.length > 0) {
+          serverConfig.args = args;
+        }
+
+        // Handle environment variables
+        if (serverObj.env && typeof serverObj.env === "object") {
+          serverConfig.env = serverObj.env as Record<string, string>;
+        }
+
+        // Handle tool filtering
+        if (serverObj.enabled_tools && Array.isArray(serverObj.enabled_tools)) {
+          serverConfig.allowedTools = serverObj.enabled_tools as string[];
+        }
+        if (serverObj.disabled_tools && Array.isArray(serverObj.disabled_tools)) {
+          serverConfig.denyTools = serverObj.disabled_tools as string[];
+        }
+
+        mcpServers[name] = serverConfig;
+      } else if (serverObj.url) {
+        // HTTP transport
+        const url = serverObj.url as string;
+
+        const serverConfig: ServerConfig = {
+          transport: "http-streamable",
+          url,
+        };
+
+        // Handle bearer_token_env_var -> Authorization header
+        if (serverObj.bearer_token_env_var) {
+          const envVar = serverObj.bearer_token_env_var as string;
+          serverConfig.headers = {
+            // Auto-converted from bearer_token_env_var
+            Authorization: `Bearer \${env:${envVar}}`,
+          };
+        }
+
+        // Handle tool filtering
+        if (serverObj.enabled_tools && Array.isArray(serverObj.enabled_tools)) {
+          serverConfig.allowedTools = serverObj.enabled_tools as string[];
+        }
+        if (serverObj.disabled_tools && Array.isArray(serverObj.disabled_tools)) {
+          serverConfig.denyTools = serverObj.disabled_tools as string[];
+        }
+
+        mcpServers[name] = serverConfig;
+      }
+    }
+
+    if (Object.keys(mcpServers).length === 0) {
+      return null;
+    }
+
+    return { mcpServers };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse standard MCP config format (Cursor, Claude Code).
+ */
+function parseStandardMcpConfig(content: string): RouterMcpConfig | null {
+  try {
     const parsed = parseJsonc(content);
 
     // Validate structure
@@ -841,6 +1496,36 @@ async function readClientConfig(path: string): Promise<RouterMcpConfig | null> {
     }
 
     return parsed as RouterMcpConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read and parse a client's MCP config file.
+ */
+async function readClientConfig(
+  path: string,
+  client: MigrationClient,
+): Promise<RouterMcpConfig | null> {
+  try {
+    const f = file(path);
+    if (!(await f.exists())) {
+      return null;
+    }
+    const content = await f.text();
+
+    // Dispatch to appropriate parser based on client
+    switch (client) {
+      case "opencode":
+        return parseOpenCodeConfig(content);
+      case "codex":
+        return parseCodexConfig(content);
+      case "cursor":
+      case "claude-code":
+      default:
+        return parseStandardMcpConfig(content);
+    }
   } catch {
     return null;
   }
@@ -904,21 +1589,56 @@ async function mergeServerConfigs(
 }
 
 /**
- * Replace a client's MCP config with routermcp proxy.
+ * Replace a client's project-level MCP config with routermcp proxy.
+ * Only works for project-level configs (Cursor, Claude Code).
  */
-async function replaceClientConfig(client: MigrationClient): Promise<void> {
-  const configPath = getMcpClientConfigPath(client);
-  const routermcpConfig = {
-    mcpServers: {
-      routermcp: {
-        command: "bunx",
-        args: ["-y", "routermcp"],
+async function replaceClientConfig(client: MigrationClient, level: MigrationLevel): Promise<void> {
+  const configPath = getMcpClientConfigPath(client, level);
+  if (!configPath) {
+    p.log.error(`Cannot replace ${getClientLabel(client)} config at ${level} level`);
+    return;
+  }
+
+  // Generate appropriate config based on client
+  let newConfig: string;
+
+  if (client === "codex") {
+    // Codex uses TOML format
+    const tomlConfig = {
+      mcp_servers: {
+        routermcp: {
+          command: "bunx",
+          args: ["-y", "routermcp"],
+        },
       },
-    },
-  };
+    };
+    newConfig = stringifyToml(tomlConfig);
+  } else if (client === "opencode") {
+    // OpenCode uses different JSON structure
+    const opencodeConfig = {
+      mcp: {
+        routermcp: {
+          type: "local",
+          command: ["bunx", "-y", "routermcp"],
+        },
+      },
+    };
+    newConfig = JSON.stringify(opencodeConfig, null, 2);
+  } else {
+    // Standard MCP config (Cursor, Claude Code)
+    const standardConfig = {
+      mcpServers: {
+        routermcp: {
+          command: "bunx",
+          args: ["-y", "routermcp"],
+        },
+      },
+    };
+    newConfig = JSON.stringify(standardConfig, null, 2);
+  }
 
   try {
-    await write(configPath, JSON.stringify(routermcpConfig, null, 2));
+    await write(configPath, newConfig);
     p.log.success(`Replaced ${getClientLabel(client)} config with routermcp proxy`);
   } catch (err) {
     p.log.error(`Failed to replace config: ${err}`);
@@ -926,32 +1646,138 @@ async function replaceClientConfig(client: MigrationClient): Promise<void> {
 }
 
 /**
+ * Add routermcp entry to a client's global config.
+ * This preserves existing servers and just adds routermcp.
+ */
+async function addRoutermcpToClientConfig(
+  client: MigrationClient,
+  level: MigrationLevel,
+): Promise<void> {
+  const configPath = getMcpClientConfigPath(client, level);
+  if (!configPath) {
+    p.log.error(`Cannot add to ${getClientLabel(client)} config at ${level} level`);
+    return;
+  }
+
+  try {
+    const f = file(configPath);
+    const exists = await f.exists();
+    let content = exists ? await f.text() : "";
+
+    if (client === "codex") {
+      // Codex uses TOML format
+      let tomlConfig: Record<string, unknown> = {};
+      if (content) {
+        try {
+          tomlConfig = parseToml(content) as Record<string, unknown>;
+        } catch {
+          // If parsing fails, start fresh
+        }
+      }
+
+      // Ensure mcp_servers section exists
+      if (!tomlConfig.mcp_servers || typeof tomlConfig.mcp_servers !== "object") {
+        tomlConfig.mcp_servers = {};
+      }
+
+      // Add routermcp entry
+      (tomlConfig.mcp_servers as Record<string, unknown>).routermcp = {
+        command: "bunx",
+        args: ["-y", "routermcp"],
+      };
+
+      await write(configPath, stringifyToml(tomlConfig));
+      p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
+    } else if (client === "opencode") {
+      // OpenCode uses JSON format with "mcp" key
+      let jsonConfig: Record<string, unknown> = {};
+      if (content) {
+        try {
+          jsonConfig = parseJsonc(content) as Record<string, unknown>;
+        } catch {
+          // If parsing fails, start fresh
+        }
+      }
+
+      // Ensure mcp section exists
+      if (!jsonConfig.mcp || typeof jsonConfig.mcp !== "object") {
+        jsonConfig.mcp = {};
+      }
+
+      // Add routermcp entry
+      (jsonConfig.mcp as Record<string, unknown>).routermcp = {
+        type: "local",
+        command: ["bunx", "-y", "routermcp"],
+      };
+
+      await write(configPath, JSON.stringify(jsonConfig, null, 2));
+      p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
+    } else if (client === "cursor" || client === "claude-code") {
+      // Cursor and Claude Code use standard JSON format with "mcpServers" key
+      let jsonConfig: Record<string, unknown> = {};
+      if (content) {
+        try {
+          jsonConfig = parseJsonc(content) as Record<string, unknown>;
+        } catch {
+          // If parsing fails, start fresh
+        }
+      }
+
+      // Ensure mcpServers section exists
+      if (!jsonConfig.mcpServers || typeof jsonConfig.mcpServers !== "object") {
+        jsonConfig.mcpServers = {};
+      }
+
+      // Add routermcp entry
+      (jsonConfig.mcpServers as Record<string, unknown>).routermcp = {
+        command: "bunx",
+        args: ["-y", "routermcp"],
+      };
+
+      await write(configPath, JSON.stringify(jsonConfig, null, 2));
+      p.log.success(`Added routermcp to ${getClientLabel(client)} config`);
+    }
+  } catch (err) {
+    p.log.error(`Failed to add routermcp to config: ${err}`);
+  }
+}
+
+/**
  * Migrate servers from an MCP client config.
  */
-async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
-  // 1. Select client
-  const client = await p.select({
-    message: "Select MCP client to migrate from:",
-    options: [
-      { value: "cursor" as const, label: "Cursor IDE (.cursor/mcp.json)" },
-      { value: "claude-code" as const, label: "Claude Code (.mcp.json)" },
-    ],
+async function migrateFromClient(config: RouterMcpConfig, scope: ConfigScope): Promise<void> {
+  // 1. Get available migration sources for this scope
+  const sources = await getAvailableMigrationSources(scope);
+
+  if (sources.length === 0) {
+    p.log.warn("No migration sources found for this scope");
+    return;
+  }
+
+  // 2. Select source to migrate from
+  const selectedSource = await p.select({
+    message: "Select MCP client config to migrate from:",
+    options: sources.map((source) => ({
+      value: source,
+      label: source.label,
+      hint: truncate(source.path, 50),
+    })),
   });
 
-  if (p.isCancel(client)) return;
+  if (p.isCancel(selectedSource)) return;
 
-  const clientLabel = getClientLabel(client);
-  const configPath = getMcpClientConfigPath(client);
+  const source = selectedSource as MigrationSource;
+  const clientLabel = getClientLabel(source.client);
 
-  // 2. Read and parse config
+  // 3. Read and parse config
   const spinner = p.spinner();
   spinner.start(`Reading ${clientLabel} config...`);
 
-  const clientConfig = await readClientConfig(configPath);
+  const clientConfig = await readClientConfig(source.path, source.client);
 
   if (!clientConfig) {
     spinner.stop("Config not found or invalid");
-    p.log.error(`Could not find or parse ${clientLabel} config at: ${configPath}`);
+    p.log.error(`Could not parse ${clientLabel} config at: ${source.path}`);
     return;
   }
 
@@ -963,7 +1789,7 @@ async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
     return;
   }
 
-  // 3. List servers to migrate
+  // 4. List servers to migrate
   p.log.info("Servers to migrate:");
   for (const [name, server] of Object.entries(clientConfig.mcpServers)) {
     const details = server.command
@@ -974,7 +1800,7 @@ async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
     p.log.message(`  ${name} - ${details}`);
   }
 
-  // 4. Confirm migration
+  // 5. Confirm migration
   const confirmMigrate = await p.confirm({
     message: `Migrate ${serverCount} servers from ${clientLabel}?`,
     initialValue: true,
@@ -982,19 +1808,31 @@ async function migrateFromClient(config: RouterMcpConfig): Promise<void> {
 
   if (p.isCancel(confirmMigrate) || !confirmMigrate) return;
 
-  // 5. Merge servers
+  // 6. Merge servers
   const mergedCount = await mergeServerConfigs(config, clientConfig);
   p.log.success(`Migrated ${mergedCount} servers`);
 
-  // 6. Ask about replacement
-  const shouldReplace = await p.confirm({
-    message: `Replace ${clientLabel}'s config with routermcp proxy?\nThis will replace all servers with a single routermcp entry.`,
-    initialValue: false,
-  });
+  // 7. Ask about updating the source client config
+  // Behavior differs based on migration level
+  if (source.level === "project") {
+    // Project-level: offer to replace entire config with routermcp proxy
+    const shouldReplace = await p.confirm({
+      message: `Replace ${clientLabel}'s config with routermcp proxy?\nThis will replace all servers with a single routermcp entry.`,
+      initialValue: false,
+    });
 
-  if (p.isCancel(shouldReplace)) return;
+    if (!p.isCancel(shouldReplace) && shouldReplace) {
+      await replaceClientConfig(source.client, source.level);
+    }
+  } else {
+    // Global-level: offer to ADD routermcp entry (highly recommended)
+    const shouldAdd = await p.confirm({
+      message: `Add routermcp to ${clientLabel}'s global config?\nHighly recommended for routermcp to work with ${clientLabel}.`,
+      initialValue: true,
+    });
 
-  if (shouldReplace) {
-    await replaceClientConfig(client);
+    if (!p.isCancel(shouldAdd) && shouldAdd) {
+      await addRoutermcpToClientConfig(source.client, source.level);
+    }
   }
 }
