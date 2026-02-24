@@ -14,6 +14,7 @@ import { type ProxyCommandOptions, proxyCommand } from "./proxy.js";
 import { type ServeCommandOptions, serveCommand } from "./serve.js";
 import { type TelemetryAction, telemetryCommand } from "./telemetry.js";
 import { type TunnelCommandOptions, tunnelCommand } from "./tunnel.js";
+import { VERSION } from "../version.js";
 
 interface CliOptions extends ServeCommandOptions {
   tunnel?: TunnelProvider;
@@ -48,7 +49,8 @@ type Command =
   | "doctor"
   | "oauth"
   | "telemetry"
-  | "help";
+  | "help"
+  | "version";
 
 interface OAuthSubcommand {
   action: "status" | "login" | "logout";
@@ -274,6 +276,12 @@ export function parseArgs(args: string[]): {
         command = "help";
         break;
 
+      case "version":
+      case "--version":
+      case "-v":
+        command = "version";
+        break;
+
       case "--config":
       case "-c":
         options.config = args[++i];
@@ -296,7 +304,6 @@ export function parseArgs(args: string[]): {
         break;
 
       case "--verbose":
-      case "-v":
         options.verbose = true;
         break;
 
@@ -410,6 +417,7 @@ routermcp - MCP Gateway CLI
 
 USAGE:
   routermcp [command] [options]
+  routermcp -v, --version    Print version and exit
 
 COMMANDS:
   serve     Start the MCP gateway (default)
@@ -429,12 +437,12 @@ SERVE OPTIONS:
   --daemon-mode         Run as background daemon (for connect command)
   --socket <path>       Unix socket path (daemon mode, non-Windows)
   --clear               Clear OpenAPI cache before starting (force re-parse)
-  -v, --verbose         Enable verbose logging
+  --verbose             Enable verbose logging
 
 CONNECT OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --project <path>      Project directory (default: current directory)
-  -v, --verbose         Enable verbose logging
+  --verbose             Enable verbose logging
 
 PROXY OPTIONS:
   --stdio <command>           Command to spawn MCP server (required)
@@ -450,13 +458,13 @@ PROXY OPTIONS:
   --cors                      Enable CORS (default: true)
   --no-cors                   Disable CORS
   --maxRestarts <n>           Max child process restart attempts (default: 3)
-  -v, --verbose               Enable verbose logging
+  --verbose               Enable verbose logging
 
 TUNNEL OPTIONS:
   -c, --config <path>          Path to config file (default: ./routermcp.jsonc)
   --tunnel=<provider>          Tunnel provider: standalone (default), cloudflare, ngrok, routermcp-cloud
   -p, --port <port>            HTTP server port (default: 5151, or httpServer.port in config)
-  -v, --verbose                Enable verbose logging
+  --verbose                Enable verbose logging
 
 CONFIG SUBCOMMANDS:
   config                Run interactive configuration wizard
@@ -644,6 +652,10 @@ export async function main(args: string[]): Promise<void> {
 
     case "help":
       printHelp();
+      break;
+
+    case "version":
+      console.log(VERSION);
       break;
 
     case "telemetry":
