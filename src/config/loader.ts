@@ -344,10 +344,19 @@ export async function getConfigLocations(cwd: string = process.cwd()): Promise<C
   // Only used if the new ~/.config/routermcp path doesn't exist.
   const legacyRouterDir = getLegacyRouterMcpDir();
   const legacyUserGlobalBase = resolvePath(legacyRouterDir, "routermcp.jsonc");
-  const legacyUserProjectBase = resolvePath(legacyRouterDir, "projects", projectId, "routermcp.jsonc");
+  const legacyUserProjectBase = resolvePath(
+    legacyRouterDir,
+    "projects",
+    projectId,
+    "routermcp.jsonc",
+  );
 
-  const legacyUserProjectPath = userProjectPath ? null : await checkConfigExists(legacyUserProjectBase);
-  const legacyUserGlobalPath = userGlobalPath ? null : await checkConfigExists(legacyUserGlobalBase);
+  const legacyUserProjectPath = userProjectPath
+    ? null
+    : await checkConfigExists(legacyUserProjectBase);
+  const legacyUserGlobalPath = userGlobalPath
+    ? null
+    : await checkConfigExists(legacyUserGlobalBase);
 
   return [
     {

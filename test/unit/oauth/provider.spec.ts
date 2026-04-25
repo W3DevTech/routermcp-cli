@@ -16,16 +16,16 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createOAuthCallbackServer } from "../../../src/oauth/callback-server.js";
 import {
+  createOAuthProvider,
   DEFAULT_CLIENT_NAME,
   type OAuthProviderCallbacks,
   type OAuthProviderConfig,
   RouterMcpOAuthProvider,
-  createOAuthProvider,
 } from "../../../src/oauth/provider.js";
 import {
-  type OAuthStorageData,
   isClientSecretExpired,
   loadOAuthStorage,
+  type OAuthStorageData,
   saveOAuthStorage,
 } from "../../../src/oauth/storage.js";
 

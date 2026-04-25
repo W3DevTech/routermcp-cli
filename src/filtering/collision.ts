@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
 import { CollisionError } from "../utils/errors.js";
+
+function fourHexId(name: string, serverName: string): string {
+  return createHash("sha256").update(`${name}\0${serverName}`).digest("hex").slice(0, 4);
+}
 
 /**
  * Item with source server information.
@@ -46,6 +51,29 @@ export function detectCollisions(
   }
 
   return null;
+}
+
+export function disambiguateNames(items: ItemWithSource[]): string[] {
+  const nameToServers = new Map<string, string[]>();
+  for (const item of items) {
+    const servers = nameToServers.get(item.name) ?? [];
+    if (!servers.includes(item.serverName)) servers.push(item.serverName);
+    nameToServers.set(item.name, servers);
+  }
+  const nameToIndex = new Map<string, number>();
+  const result: string[] = [];
+  for (const item of items) {
+    const servers = nameToServers.get(item.name);
+    const count = servers ? servers.length : 0;
+    if (count <= 1) {
+      result.push(item.name);
+      continue;
+    }
+    const idx = nameToIndex.get(item.name) ?? 0;
+    nameToIndex.set(item.name, idx + 1);
+    result.push(idx === 0 ? item.name : `${item.name}_${fourHexId(item.name, item.serverName)}`);
+  }
+  return result;
 }
 
 /**

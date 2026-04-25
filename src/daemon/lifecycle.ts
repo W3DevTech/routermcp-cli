@@ -72,25 +72,52 @@ export async function startDaemon(paths: DaemonPaths, verbose = false): Promise<
     args.push("--verbose");
   }
 
+  const stderrChunks: string[] = [];
   const child = spawn(process.execPath, [process.argv[1], ...args], {
     detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, ROUTERMCP_DAEMON: "1" },
   });
 
-  child.unref();
+  let exitCode: number | null = null;
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrChunks.push(chunk);
+  });
+  child.on("exit", (code) => {
+    exitCode = code ?? null;
+  });
 
   if (child.pid) {
     writeFileSync(paths.pid, String(child.pid));
   }
 
-  return waitForDaemonReady(paths);
+  const status = await waitForDaemonReady(
+    paths,
+    () => exitCode,
+    () => stderrChunks.join(""),
+  );
+  child.unref();
+  child.stderr?.destroy();
+  return status;
 }
 
-async function waitForDaemonReady(paths: DaemonPaths): Promise<DaemonStatus> {
+async function waitForDaemonReady(
+  paths: DaemonPaths,
+  getExitCode: () => number | null,
+  getStderr: () => string,
+): Promise<DaemonStatus> {
   const startTime = Date.now();
 
   while (Date.now() - startTime < DAEMON_STARTUP_TIMEOUT) {
+    const code = getExitCode();
+    if (code !== null && code !== 0) {
+      const stderr = getStderr().trim();
+      const msg = stderr
+        ? `Daemon exited with code ${code}:\n${stderr}`
+        : `Daemon exited with code ${code}`;
+      throw new Error(msg);
+    }
     const status = await getDaemonStatus(paths);
     if (status.running && (status.port || status.socket)) {
       return status;
@@ -98,6 +125,14 @@ async function waitForDaemonReady(paths: DaemonPaths): Promise<DaemonStatus> {
     await sleep(DAEMON_HEALTH_CHECK_INTERVAL);
   }
 
+  const code = getExitCode();
+  if (code !== null && code !== 0) {
+    const stderr = getStderr().trim();
+    const msg = stderr
+      ? `Daemon exited with code ${code}:\n${stderr}`
+      : `Daemon exited with code ${code}`;
+    throw new Error(msg);
+  }
   throw new Error("Daemon failed to start within timeout");
 }
 

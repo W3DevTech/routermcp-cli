@@ -1,6 +1,7 @@
 import type { ConfigScope } from "../config/types.js";
 import type { OutputTransport } from "../proxy/types.js";
 import type { TunnelProvider } from "../tunnel/index.js";
+import { VERSION } from "../version.js";
 import {
   configAddCommand,
   configCommand,
@@ -13,8 +14,8 @@ import { oauthLoginCommand, oauthLogoutCommand, oauthStatusCommand } from "./oau
 import { type ProxyCommandOptions, proxyCommand } from "./proxy.js";
 import { type ServeCommandOptions, serveCommand } from "./serve.js";
 import { type TelemetryAction, telemetryCommand } from "./telemetry.js";
+import { type ToolsCommandOptions, toolsCommand } from "./tools.js";
 import { type TunnelCommandOptions, tunnelCommand } from "./tunnel.js";
-import { VERSION } from "../version.js";
 
 interface CliOptions extends ServeCommandOptions {
   tunnel?: TunnelProvider;
@@ -38,6 +39,7 @@ interface CliOptions extends ServeCommandOptions {
   clearCache?: boolean;
   telemetryAction?: TelemetryAction;
   configSubcommand?: ConfigSubcommand;
+  toolsJson?: boolean;
 }
 
 type Command =
@@ -49,6 +51,7 @@ type Command =
   | "doctor"
   | "oauth"
   | "telemetry"
+  | "tools"
   | "help"
   | "version";
 
@@ -106,7 +109,9 @@ export function parseArgs(args: string[]): {
           i++; // consume "add"
           const serverName = args[++i];
           if (!serverName || serverName.startsWith("-")) {
-            console.error("Usage: routermcp config add <server-name> --command <cmd> | --url <url>");
+            console.error(
+              "Usage: routermcp config add <server-name> --command <cmd> | --url <url>",
+            );
             process.exit(1);
           }
           const addOptions: ConfigAddOptions = {
@@ -131,7 +136,11 @@ export function parseArgs(args: string[]): {
             } else if (opt === "--scope") {
               i++;
               const scope = args[++i];
-              if (scope !== "user-global" && scope !== "project-local" && scope !== "user-project") {
+              if (
+                scope !== "user-global" &&
+                scope !== "project-local" &&
+                scope !== "user-project"
+              ) {
                 console.error("Error: --scope must be user-global, project-local, or user-project");
                 process.exit(1);
               }
@@ -192,7 +201,11 @@ export function parseArgs(args: string[]): {
             if (opt === "--scope") {
               i++;
               const scope = args[++i];
-              if (scope !== "user-global" && scope !== "project-local" && scope !== "user-project") {
+              if (
+                scope !== "user-global" &&
+                scope !== "project-local" &&
+                scope !== "user-project"
+              ) {
                 console.error("Error: --scope must be user-global, project-local, or user-project");
                 process.exit(1);
               }
@@ -231,6 +244,20 @@ export function parseArgs(args: string[]): {
       case "doctor":
         command = "doctor";
         break;
+
+      case "tools": {
+        command = "tools";
+        while (i + 1 < args.length) {
+          const opt = args[i + 1];
+          if (opt === "--json") {
+            i++;
+            options.toolsJson = true;
+          } else {
+            break;
+          }
+        }
+        break;
+      }
 
       case "oauth": {
         command = "oauth";
@@ -280,6 +307,12 @@ export function parseArgs(args: string[]): {
       case "--version":
       case "-v":
         command = "version";
+        break;
+
+      case "--json":
+        if (command === "tools") {
+          options.toolsJson = true;
+        }
         break;
 
       case "--config":
@@ -428,6 +461,7 @@ COMMANDS:
   doctor    Check configuration and authenticate OAuth servers
   oauth     Manage OAuth authentication
   telemetry Manage anonymous error reporting
+  tools     List all tools from configured MCP servers
   help      Show this help message
 
 SERVE OPTIONS:
@@ -492,6 +526,11 @@ CONFIG LIST OPTIONS:
   --scope <scope>            Show only this scope (shows all if not specified)
   --json                     Output as JSON
 
+TOOLS OPTIONS:
+  -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
+  --json                     Output as JSON array
+  --verbose                  Enable verbose logging
+
 EXAMPLES:
   # Serve (gateway mode)
   routermcp                           Start gateway with default config (stdio mode)
@@ -543,6 +582,10 @@ EXAMPLES:
   routermcp telemetry                 Show telemetry status
   routermcp telemetry enable          Enable anonymous error reporting (default)
   routermcp telemetry disable         Disable anonymous error reporting
+
+  # Tools
+  routermcp tools                    List all tools (human-readable)
+  routermcp tools --json              List all tools as JSON
 `);
 }
 
@@ -660,6 +703,14 @@ export async function main(args: string[]): Promise<void> {
 
     case "telemetry":
       await telemetryCommand(options.telemetryAction);
+      break;
+
+    case "tools":
+      await toolsCommand({
+        config: options.config,
+        json: options.toolsJson ?? false,
+        verbose: options.verbose ?? false,
+      });
       break;
   }
 }

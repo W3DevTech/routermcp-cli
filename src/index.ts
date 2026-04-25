@@ -8,6 +8,7 @@ if (typeof globalThis.Bun !== "undefined" && !process.env.FORCE_UNICODE) {
 }
 
 import { ensureWebCrypto } from "./oauth/crypto-polyfill.js";
+
 ensureWebCrypto();
 
 // Dynamic import to ensure TERM is set before @clack/prompts loads

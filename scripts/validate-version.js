@@ -169,9 +169,7 @@ function main() {
   const args = process.argv.slice(2);
 
   if (args.length < 2) {
-    console.error(
-      "Usage: node scripts/validate-version.js <current-version> <new-version>"
-    );
+    console.error("Usage: node scripts/validate-version.js <current-version> <new-version>");
     process.exit(1);
   }
 

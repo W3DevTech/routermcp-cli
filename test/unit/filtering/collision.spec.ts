@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { type ItemWithSource, checkAllCollisions } from "../../../src/filtering/collision.js";
+import {
+  checkAllCollisions,
+  disambiguateNames,
+  type ItemWithSource,
+} from "../../../src/filtering/collision.js";
 
 describe("checkAllCollisions", () => {
   describe("tool collisions", () => {
@@ -160,5 +164,35 @@ describe("checkAllCollisions", () => {
         expect(message).toContain("server3");
       }
     });
+  });
+});
+
+describe("disambiguateNames", () => {
+  it("returns same names when no collisions", () => {
+    const items: ItemWithSource[] = [
+      { name: "read_file", serverName: "server1" },
+      { name: "write_file", serverName: "server2" },
+    ];
+    expect(disambiguateNames(items)).toEqual(["read_file", "write_file"]);
+  });
+
+  it("keeps first occurrence and suffixes others with 4-char id", () => {
+    const items: ItemWithSource[] = [
+      { name: "read_file", serverName: "server1" },
+      { name: "read_file", serverName: "server2" },
+    ];
+    const result = disambiguateNames(items);
+    expect(result[0]).toBe("read_file");
+    expect(result[1]).toMatch(/^read_file_[0-9a-f]{4}$/);
+  });
+
+  it("is deterministic for same (name, serverName)", () => {
+    const items: ItemWithSource[] = [
+      { name: "x", serverName: "a" },
+      { name: "x", serverName: "b" },
+    ];
+    const a = disambiguateNames(items);
+    const b = disambiguateNames(items);
+    expect(a).toEqual(b);
   });
 });

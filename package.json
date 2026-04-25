@@ -11,7 +11,7 @@
   },
   "scripts": {
     "link": "bun install --global file:$(pwd)",
-    "link:opencode":"bun run build && bun link && cd ~/.config/opencode && bun link routermcp && cd - > /dev/null",
+    "link:opencode": "bun run build && bun link && cd ~/.config/opencode && bun link routermcp && cd - > /dev/null",
     "build": "bun run scripts/write-version.ts && bun build src/index.ts --outdir dist --target bun --format esm --packages=bundle --conditions module --minify",
     "prepublishOnly": "bun run build",
     "start": "bun run src/index.ts",

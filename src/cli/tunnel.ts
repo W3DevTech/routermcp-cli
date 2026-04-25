@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
-import { type Gateway, createGateway } from "../core/gateway.js";
-import { type TunnelInfo, type TunnelProvider, getTunnelProvider } from "../tunnel/index.js";
+import { createGateway, type Gateway } from "../core/gateway.js";
+import { getTunnelProvider, type TunnelInfo, type TunnelProvider } from "../tunnel/index.js";
 import { RouterMcpError } from "../utils/errors.js";
 
 /**

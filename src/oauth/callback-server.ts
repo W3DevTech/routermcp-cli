@@ -1,4 +1,4 @@
-import { type Server, createServer } from "node:net";
+import { createServer, type Server } from "node:net";
 import { type ServerHandle, serve } from "../compat/index.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;

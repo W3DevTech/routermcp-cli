@@ -6,7 +6,7 @@ import type {
   Resource,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { type ItemWithSource, checkAllCollisions } from "../filtering/collision.js";
+import { disambiguateNames, type ItemWithSource } from "../filtering/collision.js";
 import {
   getPromptFilter,
   getResourceFilter,
@@ -47,8 +47,11 @@ export class Aggregator {
     this.resourcesMap.clear();
     this.promptsMap.clear();
 
+    const toolList: { tool: Tool; serverName: string }[] = [];
     const allTools: ItemWithSource[] = [];
+    const resourceList: { resource: Resource; serverName: string }[] = [];
     const allResources: ItemWithSource[] = [];
+    const promptList: { prompt: Prompt; serverName: string }[] = [];
     const allPrompts: ItemWithSource[] = [];
 
     for (const server of this.upstreamManager.getDiscoveredOrConnected()) {
@@ -60,45 +63,64 @@ export class Aggregator {
       const toolFilter = getToolFilter(server.config);
       for (const tool of tools) {
         if (shouldAllow(tool.name, toolFilter)) {
+          toolList.push({ tool, serverName: server.name });
           allTools.push({ name: tool.name, serverName: server.name });
-          this.toolsMap.set(tool.name, { tool, serverName: server.name });
         }
       }
 
       const resourceFilter = getResourceFilter(server.config);
       for (const resource of resources) {
         if (shouldAllow(resource.uri, resourceFilter)) {
+          resourceList.push({ resource, serverName: server.name });
           allResources.push({ name: resource.uri, serverName: server.name });
-          this.resourcesMap.set(resource.uri, { resource, serverName: server.name });
         }
       }
 
       const promptFilter = getPromptFilter(server.config);
       for (const prompt of prompts) {
         if (shouldAllow(prompt.name, promptFilter)) {
+          promptList.push({ prompt, serverName: server.name });
           allPrompts.push({ name: prompt.name, serverName: server.name });
-          this.promptsMap.set(prompt.name, { prompt, serverName: server.name });
         }
       }
     }
 
-    checkAllCollisions({
-      tools: allTools,
-      resources: allResources,
-      prompts: allPrompts,
-    });
+    const toolDisplayNames = disambiguateNames(allTools);
+    for (let i = 0; i < toolList.length; i++) {
+      this.toolsMap.set(toolDisplayNames[i], {
+        tool: toolList[i].tool,
+        serverName: toolList[i].serverName,
+      });
+    }
+    const resourceDisplayNames = disambiguateNames(allResources);
+    for (let i = 0; i < resourceList.length; i++) {
+      this.resourcesMap.set(resourceDisplayNames[i], {
+        resource: resourceList[i].resource,
+        serverName: resourceList[i].serverName,
+      });
+    }
+    const promptDisplayNames = disambiguateNames(allPrompts);
+    for (let i = 0; i < promptList.length; i++) {
+      this.promptsMap.set(promptDisplayNames[i], {
+        prompt: promptList[i].prompt,
+        serverName: promptList[i].serverName,
+      });
+    }
   }
 
   getTools(): Tool[] {
-    return Array.from(this.toolsMap.values()).map((t) => t.tool);
+    return Array.from(this.toolsMap.entries()).map(([name, { tool }]) => ({ ...tool, name }));
   }
 
   getResources(): Resource[] {
-    return Array.from(this.resourcesMap.values()).map((r) => r.resource);
+    return Array.from(this.resourcesMap.entries()).map(([uri, { resource }]) => ({
+      ...resource,
+      uri,
+    }));
   }
 
   getPrompts(): Prompt[] {
-    return Array.from(this.promptsMap.values()).map((p) => p.prompt);
+    return Array.from(this.promptsMap.entries()).map(([name, { prompt }]) => ({ ...prompt, name }));
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
@@ -112,7 +134,7 @@ export class Aggregator {
 
     try {
       const client = await this.upstreamManager.ensureConnected(entry.serverName);
-      const result = await client.callTool({ name, arguments: args });
+      const result = await client.callTool({ name: entry.tool.name, arguments: args });
       return result as CallToolResult;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -131,7 +153,7 @@ export class Aggregator {
 
     try {
       const client = await this.upstreamManager.ensureConnected(entry.serverName);
-      return client.readResource({ uri });
+      return client.readResource({ uri: entry.resource.uri });
     } catch (err) {
       throw new UpstreamError(entry.serverName, err instanceof Error ? err.message : String(err));
     }
@@ -145,7 +167,7 @@ export class Aggregator {
 
     try {
       const client = await this.upstreamManager.ensureConnected(entry.serverName);
-      return client.getPrompt({ name, arguments: args });
+      return client.getPrompt({ name: entry.prompt.name, arguments: args });
     } catch (err) {
       throw new UpstreamError(entry.serverName, err instanceof Error ? err.message : String(err));
     }

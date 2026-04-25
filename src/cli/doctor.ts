@@ -202,7 +202,6 @@ async function authenticateServer(
 async function displayConfigResolution(loadedConfigPath: string): Promise<void> {
   const locations = await getConfigLocations();
 
-
   console.log("\nConfig Resolution:");
   console.log("─".repeat(80));
   console.log(

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config/loader.js";
-import { type Gateway, createGateway } from "../../src/core/gateway.js";
+import { createGateway, type Gateway } from "../../src/core/gateway.js";
 
 const FIXTURES_DIR = join(__dirname, "../fixtures");
 const MULTI_SERVER_CONFIG = join(FIXTURES_DIR, "multi-server-everything-config.jsonc");

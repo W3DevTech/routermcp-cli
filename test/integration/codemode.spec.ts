@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { CodeModeConfig } from "../../src/config/types.js";
 import type { Aggregator, ToolWithSource } from "../../src/core/aggregator.js";
 import {
-  META_TOOL_EXECUTE_CODE,
-  META_TOOL_LIST_TOOLS,
   getCodeModeMetaTools,
   handleExecuteCode,
   handleListTools,
+  META_TOOL_EXECUTE_CODE,
+  META_TOOL_LIST_TOOLS,
 } from "../../src/core/codemode/meta-tools.js";
 
 function createMockToolsMap(): Map<string, ToolWithSource> {

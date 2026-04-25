@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import * as p from "@clack/prompts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { parse as parseJsonc, modify, applyEdits } from "jsonc-parser/lib/esm/main.js";
+import { applyEdits, modify, parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { file, write } from "../compat/index.js";
 import {
@@ -294,7 +294,11 @@ async function importFromUserGlobal(config: RouterMcpConfig): Promise<void> {
     required: false,
   });
 
-  if (p.isCancel(selectedServers) || !Array.isArray(selectedServers) || selectedServers.length === 0) {
+  if (
+    p.isCancel(selectedServers) ||
+    !Array.isArray(selectedServers) ||
+    selectedServers.length === 0
+  ) {
     p.log.info("No servers selected");
     return;
   }
@@ -757,7 +761,9 @@ async function editServer(config: RouterMcpConfig): Promise<void> {
       options.push({
         value: "headers",
         label: "Edit headers",
-        hint: serverConfig.headers ? `${Object.keys(serverConfig.headers).length} headers` : "(none)",
+        hint: serverConfig.headers
+          ? `${Object.keys(serverConfig.headers).length} headers`
+          : "(none)",
       });
     }
 
@@ -1153,13 +1159,17 @@ async function listAllServers(): Promise<void> {
         const mode = getExecutionModeLabel(scopeConfig);
         p.log.message(`    Execution mode: ${mode}`);
         if (scopeConfig.subprocess_timeout !== undefined) {
-          p.log.message(`    Subprocess timeout: ${formatDuration(scopeConfig.subprocess_timeout)}`);
+          p.log.message(
+            `    Subprocess timeout: ${formatDuration(scopeConfig.subprocess_timeout)}`,
+          );
         }
         if (scopeConfig.discovery_concurrency !== undefined) {
           p.log.message(`    Discovery concurrency: ${scopeConfig.discovery_concurrency}`);
         }
         if (scopeConfig.connection_timeout !== undefined) {
-          p.log.message(`    Connection timeout: ${formatDuration(scopeConfig.connection_timeout)}`);
+          p.log.message(
+            `    Connection timeout: ${formatDuration(scopeConfig.connection_timeout)}`,
+          );
         }
         if (scopeConfig.strictEnvVars !== undefined) {
           p.log.message(`    Strict env vars: ${scopeConfig.strictEnvVars ? "Yes" : "No"}`);
@@ -1179,9 +1189,7 @@ async function listAllServers(): Promise<void> {
  * List all tools from servers in current config and allow enabling/disabling.
  */
 async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
-  const servers = Object.entries(config.mcpServers).filter(
-    ([_, s]) => s.enabled !== false
-  );
+  const servers = Object.entries(config.mcpServers).filter(([_, s]) => s.enabled !== false);
 
   if (servers.length === 0) {
     p.log.info("No enabled servers in current config");
@@ -1213,7 +1221,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
         } finally {
           await cleanup();
         }
-      })
+      }),
     );
 
     for (let j = 0; j < results.length; j++) {
@@ -1284,7 +1292,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
     }
 
     // Select server to modify
-    const serversWithTools = allServerTools.filter(s => !s.error && s.tools.length > 0);
+    const serversWithTools = allServerTools.filter((s) => !s.error && s.tools.length > 0);
 
     if (serversWithTools.length === 0) {
       p.log.warn("No servers with tools available to modify");
@@ -1293,7 +1301,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
 
     const serverToModify = await p.select({
       message: "Select server:",
-      options: serversWithTools.map(s => ({
+      options: serversWithTools.map((s) => ({
         value: s.name,
         label: `${s.name} (${s.tools.length} tools)`,
       })),
@@ -1301,15 +1309,13 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
 
     if (p.isCancel(serverToModify)) continue;
 
-    const selectedServerData = allServerTools.find(s => s.name === serverToModify);
+    const selectedServerData = allServerTools.find((s) => s.name === serverToModify);
     const serverConfig = config.mcpServers[serverToModify as string];
     const filter = getToolFilter(serverConfig);
 
     if (manageAction === "enable") {
       // Show currently disabled tools
-      const disabledTools = selectedServerData!.tools.filter(
-        t => !shouldAllow(t.name, filter)
-      );
+      const disabledTools = selectedServerData!.tools.filter((t) => !shouldAllow(t.name, filter));
 
       if (disabledTools.length === 0) {
         p.log.info("All tools are already enabled for this server");
@@ -1318,7 +1324,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
 
       const toolsToEnable = await p.multiselect({
         message: `Select tools to enable (${disabledTools.length} disabled):`,
-        options: disabledTools.map(t => ({
+        options: disabledTools.map((t) => ({
           value: t.name,
           label: t.name,
           hint: t.description ? truncate(t.description, 40) : undefined,
@@ -1331,7 +1337,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
       // Remove from denyTools
       if (serverConfig.denyTools) {
         serverConfig.denyTools = serverConfig.denyTools.filter(
-          t => !(toolsToEnable as string[]).includes(t)
+          (t) => !(toolsToEnable as string[]).includes(t),
         );
         if (serverConfig.denyTools.length === 0) {
           delete serverConfig.denyTools;
@@ -1339,12 +1345,9 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
       }
 
       p.log.success(`Enabled ${toolsToEnable.length} tool(s). Save config to persist changes.`);
-
     } else if (manageAction === "disable") {
       // Show currently enabled tools
-      const enabledTools = selectedServerData!.tools.filter(
-        t => shouldAllow(t.name, filter)
-      );
+      const enabledTools = selectedServerData!.tools.filter((t) => shouldAllow(t.name, filter));
 
       if (enabledTools.length === 0) {
         p.log.info("All tools are already disabled for this server");
@@ -1353,7 +1356,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
 
       const toolsToDisable = await p.multiselect({
         message: `Select tools to disable (${enabledTools.length} enabled):`,
-        options: enabledTools.map(t => ({
+        options: enabledTools.map((t) => ({
           value: t.name,
           label: t.name,
           hint: t.description ? truncate(t.description, 40) : undefined,
@@ -1364,10 +1367,7 @@ async function listAndManageTools(config: RouterMcpConfig): Promise<void> {
       if (p.isCancel(toolsToDisable) || toolsToDisable.length === 0) continue;
 
       // Add to denyTools
-      serverConfig.denyTools = [
-        ...(serverConfig.denyTools || []),
-        ...(toolsToDisable as string[]),
-      ];
+      serverConfig.denyTools = [...(serverConfig.denyTools || []), ...(toolsToDisable as string[])];
 
       p.log.success(`Disabled ${toolsToDisable.length} tool(s). Save config to persist changes.`);
     }
@@ -1531,7 +1531,8 @@ Note: Code Mode and Tool Search are mutually exclusive.
     case "code-mode": {
       if (isToolSearchEnabled) {
         const confirm = await p.confirm({
-          message: "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
+          message:
+            "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
           initialValue: true,
         });
         if (p.isCancel(confirm) || !confirm) return;
@@ -1557,7 +1558,8 @@ Note: Code Mode and Tool Search are mutually exclusive.
     case "tool-search": {
       if (isCodeModeEnabled) {
         const confirm = await p.confirm({
-          message: "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
+          message:
+            "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
           initialValue: true,
         });
         if (p.isCancel(confirm) || !confirm) return;
@@ -1655,7 +1657,8 @@ Meta-tools exposed:
         // Check for Tool Search conflict
         if (config.mcpToolSearch?.enabled) {
           const confirm = await p.confirm({
-            message: "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
+            message:
+              "Code Mode and Tool Search are mutually exclusive.\nDisable Tool Search and enable Code Mode?",
             initialValue: true,
           });
           if (p.isCancel(confirm) || !confirm) break;
@@ -1711,7 +1714,8 @@ Meta-tools exposed:
       }
       case "reset": {
         const confirm = await p.confirm({
-          message: "Reset Code Mode to defaults? This will disable Code Mode and clear all settings.",
+          message:
+            "Reset Code Mode to defaults? This will disable Code Mode and clear all settings.",
           initialValue: false,
         });
         if (!p.isCancel(confirm) && confirm) {
@@ -1805,7 +1809,8 @@ Meta-tools exposed:
         // Check for Code Mode conflict
         if (config.codeMode?.enabled) {
           const confirm = await p.confirm({
-            message: "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
+            message:
+              "Code Mode and Tool Search are mutually exclusive.\nDisable Code Mode and enable Tool Search?",
             initialValue: true,
           });
           if (p.isCancel(confirm) || !confirm) break;
@@ -1892,7 +1897,8 @@ Meta-tools exposed:
       }
       case "reset": {
         const confirm = await p.confirm({
-          message: "Reset Tool Search to defaults? This will disable Tool Search and clear all settings.",
+          message:
+            "Reset Tool Search to defaults? This will disable Tool Search and clear all settings.",
           initialValue: false,
         });
         if (!p.isCancel(confirm) && confirm) {
@@ -2742,7 +2748,7 @@ async function modifyJsoncFile(
   value: unknown,
 ): Promise<void> {
   const f = file(filePath);
-  let content = (await f.exists()) ? await f.text() : "{}";
+  const content = (await f.exists()) ? await f.text() : "{}";
 
   const edits = modify(content, jsonPath, value, {
     formattingOptions: { tabSize: 2, insertSpaces: true },
@@ -3083,7 +3089,9 @@ export async function configAddCommand(options: ConfigAddOptions): Promise<void>
 
   // Validate server name
   if (!/^[a-zA-Z0-9-_]+$/.test(serverName)) {
-    console.error(`Error: Server name must be alphanumeric with hyphens/underscores: ${serverName}`);
+    console.error(
+      `Error: Server name must be alphanumeric with hyphens/underscores: ${serverName}`,
+    );
     process.exit(1);
   }
 
@@ -3275,7 +3283,9 @@ export async function configListCommand(options: ConfigListOptions): Promise<voi
   }
 
   const servers: ServerInfo[] = [];
-  const scopesToCheck: ConfigScope[] = scope ? [scope] : ["project-local", "user-project", "user-global"];
+  const scopesToCheck: ConfigScope[] = scope
+    ? [scope]
+    : ["project-local", "user-project", "user-global"];
 
   for (const s of scopesToCheck) {
     const locations = await getConfigLocations();

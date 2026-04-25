@@ -25,8 +25,8 @@ import { createServer } from "node:net";
 import type { FetchHandler, ServeOptions, ServerHandle } from "../../../src/compat/index.js";
 import { serve } from "../../../src/compat/index.js";
 import {
-  type OAuthCallbackServer,
   createOAuthCallbackServer,
+  type OAuthCallbackServer,
 } from "../../../src/oauth/callback-server.js";
 
 describe("createOAuthCallbackServer", () => {

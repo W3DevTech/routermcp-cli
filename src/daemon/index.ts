@@ -1,19 +1,19 @@
-export {
-  getProjectId,
-  getRouterMcpDir,
-  getProjectsDir,
-  getDaemonDir,
-  getUserGlobalConfigPath,
-  getUserProjectConfigPath,
-} from "./project.js";
-export { getDaemonPaths, isWindows, type DaemonPaths } from "./paths.js";
 export { ConnectionTracker } from "./connection-tracker.js";
 export {
+  cleanupDaemonFiles,
+  connectToSocket,
+  type DaemonStatus,
   getDaemonStatus,
   isProcessRunning,
   startDaemon,
   stopDaemon,
-  cleanupDaemonFiles,
-  connectToSocket,
-  type DaemonStatus,
 } from "./lifecycle.js";
+export { type DaemonPaths, getDaemonPaths, isWindows } from "./paths.js";
+export {
+  getDaemonDir,
+  getProjectId,
+  getProjectsDir,
+  getRouterMcpDir,
+  getUserGlobalConfigPath,
+  getUserProjectConfigPath,
+} from "./project.js";

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
-import { type Gateway, createGateway } from "../core/gateway.js";
+import { createGateway, type Gateway } from "../core/gateway.js";
 import { type DaemonPaths, getDaemonPaths, getProjectId } from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 import { configCommand } from "./config.js";

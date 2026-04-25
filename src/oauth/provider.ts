@@ -7,15 +7,15 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import {
+  createOAuthCallbackServer,
   type OAuthCallbackResult,
   type OAuthCallbackServer,
-  createOAuthCallbackServer,
 } from "./callback-server.js";
 import {
-  type OAuthClientInfo,
-  type OAuthTokensData,
   isClientSecretExpired,
   loadOAuthStorage,
+  type OAuthClientInfo,
+  type OAuthTokensData,
   saveOAuthStorage,
 } from "./storage.js";
 

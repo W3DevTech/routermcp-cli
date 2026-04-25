@@ -3,7 +3,7 @@ import {
   refreshAuthorization,
 } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthConfig } from "../config/types.js";
-import { type OAuthTokensData, isTokenExpired, loadOAuthStorage, saveTokens } from "./storage.js";
+import { isTokenExpired, loadOAuthStorage, type OAuthTokensData, saveTokens } from "./storage.js";
 
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 

@@ -1,4 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
@@ -7,10 +8,9 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
 import { OpenApiHandler } from "../openapi/index.js";
-import { type ServerTransportHandle, createServerTransport } from "../transports/index.js";
+import { createServerTransport, type ServerTransportHandle } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
 import {

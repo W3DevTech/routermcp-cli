@@ -1,9 +1,9 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
-  type ToolInfo,
   generateTypeScriptDefinitions,
   groupToolsByServer,
+  type ToolInfo,
   toolsToToolInfo,
 } from "../../../../src/core/codemode/codegen.js";
 

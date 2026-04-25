@@ -1,9 +1,9 @@
-export { reportError, buildTelemetryEvent, sendTelemetryEvent } from "./reporter.js";
 export {
+  getConfigPath,
   isTelemetryEnabled,
-  setTelemetryEnabled,
   loadUserConfig,
   saveUserConfig,
-  getConfigPath,
+  setTelemetryEnabled,
 } from "./config.js";
-export type { TelemetryEvent, ErrorContext, TelemetryConfig, UserConfig } from "./types.js";
+export { buildTelemetryEvent, reportError, sendTelemetryEvent } from "./reporter.js";
+export type { ErrorContext, TelemetryConfig, TelemetryEvent, UserConfig } from "./types.js";

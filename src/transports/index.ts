@@ -3,19 +3,19 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
 import {
-  type HttpClientTransportOptions,
-  type HttpServerHandle,
   createHttpClientTransport,
   createHttpServerTransport,
+  type HttpClientTransportOptions,
+  type HttpServerHandle,
 } from "./http-streamable.js";
 import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 
-export { createStdioServerTransport } from "./stdio.js";
 export {
   createHttpServerTransport,
-  type HttpServerHandle,
   type HttpClientTransportOptions,
+  type HttpServerHandle,
 } from "./http-streamable.js";
+export { createStdioServerTransport } from "./stdio.js";
 
 export interface ClientConnection {
   client: Client;

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  type RankingOptions,
-  type ToolRankingInput,
   levenshteinDistance,
+  type RankingOptions,
   rankTools,
+  type ToolRankingInput,
   tokenize,
 } from "../../../../src/core/toolsearch/ranking.js";
 

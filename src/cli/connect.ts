@@ -65,7 +65,9 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
     if (status.socket && !isWindows()) {
       if (wasRunning) {
-        info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`);
+        info(
+          `Connected to daemon at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`,
+        );
       } else {
         info(`Daemon started at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`);
       }

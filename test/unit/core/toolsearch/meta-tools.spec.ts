@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { McpToolSearchConfig } from "../../../../src/config/types.js";
 import type { Aggregator, ToolWithSource } from "../../../../src/core/aggregator.js";
 import {
-  META_TOOL_CALL_TOOL,
-  META_TOOL_SEARCH_MCP_FOR_TASK,
   getToolSearchMetaTools,
   handleCallTool,
   handleSearchMcpForTask,
+  META_TOOL_CALL_TOOL,
+  META_TOOL_SEARCH_MCP_FOR_TASK,
 } from "../../../../src/core/toolsearch/meta-tools.js";
 
 describe("META_TOOL_SEARCH_MCP_FOR_TASK", () => {

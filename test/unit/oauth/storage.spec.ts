@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  type OAuthClientInfo,
-  type OAuthTokensData,
   getServerHostHash,
   isClientSecretExpired,
   isTokenExpired,
+  type OAuthClientInfo,
+  type OAuthTokensData,
 } from "../../../src/oauth/storage.js";
 
 describe("getServerHostHash", () => {

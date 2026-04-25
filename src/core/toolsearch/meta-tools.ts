@@ -1,7 +1,7 @@
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpToolSearchConfig } from "../../config/types.js";
 import type { Aggregator, ToolWithSource } from "../aggregator.js";
-import { type RankedTool, type ToolRankingInput, rankTools } from "./ranking.js";
+import { type RankedTool, rankTools, type ToolRankingInput } from "./ranking.js";
 
 const DEFAULT_SEARCH_DESCRIPTION =
   "Search and rank available MCP tools by relevance to a task description. " +

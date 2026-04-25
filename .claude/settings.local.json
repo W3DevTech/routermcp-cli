@@ -10,7 +10,5 @@
     ]
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "rmcp"
-  ]
+  "enabledMcpjsonServers": ["rmcp"]
 }
