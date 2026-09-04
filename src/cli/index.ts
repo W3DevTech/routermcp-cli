@@ -305,8 +305,11 @@ export function parseArgs(args: string[]): {
 
       case "version":
       case "--version":
-      case "-v":
         command = "version";
+        break;
+
+      case "-v":
+        options.verbose = true;
         break;
 
       case "--json":
