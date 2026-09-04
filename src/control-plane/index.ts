@@ -1,4 +1,7 @@
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
+import { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
+
+export { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
 
 export {
   DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS,
@@ -10,9 +13,6 @@ export {
   type ManagementCredentialGrant,
   type ManagementCredentialStoreOptions,
 } from "./management-credentials.js";
-
-export const CONTROL_PLANE_PATH = "/api/v1" as const;
-export const CONTROL_PLANE_HEALTH_PATH = `${CONTROL_PLANE_PATH}/health` as const;
 export const CONTROL_PLANE_DEFAULT_EVENT_LIMIT = 40;
 export const CONTROL_PLANE_MAX_EVENT_LIMIT = 200;
 export const CONTROL_PLANE_EVENT_BUFFER_SIZE = 1_000;
@@ -355,3 +355,5 @@ export function sanitizeUrl(value: string | undefined): string | undefined {
     return sanitizeText(value);
   }
 }
+
+export * from "./pairing.js";

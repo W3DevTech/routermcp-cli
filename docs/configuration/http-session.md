@@ -124,8 +124,10 @@ adapters. OpenAPI entries expose their resolved base URL, tool count, loading
 or failure state, and last check timing; authentication configuration and
 generated tool details are never returned.
 
-Peer mutations and device pairing are intentionally not exposed in this phase;
-they will use a separately reviewed scoped-pairing contract later.
+Peer mutations and device-pairing routes are intentionally not exposed in this
+phase. The separately reviewed [scoped-pairing contract](../advanced/device-pairing.md)
+now defines the process-local grant and challenge model that a later route
+implementation will use.
 
 ## Upstream Connection Management
 

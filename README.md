@@ -66,6 +66,7 @@ Full documentation is available in the [docs/](./docs/) folder:
 - **Advanced**
   - [Code Mode](./docs/advanced/code-mode.md) - JavaScript sandbox
   - [Daemon Mode](./docs/advanced/daemon-mode.md) - Process sharing
+  - [Device Pairing](./docs/advanced/device-pairing.md) - Hosted-console pairing contract
   - [Multiple Servers](./docs/advanced/multiple-servers.md) - Aggregation
   - [Security](./docs/advanced/security.md) - Best practices
 

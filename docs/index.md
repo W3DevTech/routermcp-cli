@@ -70,6 +70,7 @@ Deep dives into advanced features.
 - [Code Mode](advanced/code-mode.md) - JavaScript execution sandbox
 - [Tool Search Mode](advanced/tool-search.md) - Intelligent tool discovery
 - [Daemon Mode](advanced/daemon-mode.md) - Background process sharing
+- [Device Pairing](advanced/device-pairing.md) - Hosted-console pairing contract
 - [Multiple Servers](advanced/multiple-servers.md) - Aggregation strategies
 - [Security](advanced/security.md) - Security best practices
 

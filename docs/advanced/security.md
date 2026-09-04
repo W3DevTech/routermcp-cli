@@ -326,6 +326,17 @@ When using OAuth for upstream servers:
 3. Implement token refresh
 4. Use minimal scopes
 
+## Hosted Console Pairing
+
+The hosted RouterMCP console must not receive the managed daemon's
+`localAuthToken`. That token protects the daemon's internal MCP and control
+plane and remains private runtime state. Device pairing uses an independent,
+short-lived, one-time scoped grant and challenge; a later exchange phase will
+mint a separate management credential for the browser.
+
+See the [device-pairing contract](device-pairing.md) for scope, expiry,
+revocation, profile/instance binding, and URL-fragment handling requirements.
+
 ## Deployment Checklist
 
 ### Development
