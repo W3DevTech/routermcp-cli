@@ -9,9 +9,11 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
+import { ConnectionTracker } from "../daemon/connection-tracker.js";
 import { OpenApiHandler } from "../openapi/index.js";
 import {
   createServerTransport,
+  type BridgeLeaseTracker,
   type HttpServerOptions,
   type ServerTransportHandle,
 } from "../transports/index.js";
@@ -55,9 +57,26 @@ export class Gateway {
   private options: GatewayOptions;
   private stdioSession: VirtualSession | null = null;
   private openApiHandler: OpenApiHandler | null = null;
+  private readonly connectionTracker: BridgeLeaseTracker | null;
+  private readonly ownedConnectionTracker: ConnectionTracker | null;
 
   constructor(options: GatewayOptions) {
     this.options = options;
+
+    if (options.mode === "http-streamable") {
+      const configuredTracker = options.httpOptions?.connectionTracker;
+      if (configuredTracker) {
+        this.connectionTracker = configuredTracker;
+        this.ownedConnectionTracker = null;
+      } else {
+        const tracker = new ConnectionTracker();
+        this.connectionTracker = tracker;
+        this.ownedConnectionTracker = tracker;
+      }
+    } else {
+      this.connectionTracker = null;
+      this.ownedConnectionTracker = null;
+    }
 
     this.server = new Server(
       { name: "routermcp-gateway", version: "1.0.0" },
@@ -252,11 +271,23 @@ export class Gateway {
         );
       }
 
+      const httpOptions: HttpServerOptions | undefined =
+        this.options.mode === "http-streamable" && this.connectionTracker
+          ? {
+              ...this.options.httpOptions,
+              connectionTracker: this.connectionTracker,
+              onSessionClose: async (sessionId) => {
+                await this.sessionManager?.cleanup(sessionId);
+                await this.options.httpOptions?.onSessionClose?.(sessionId);
+              },
+            }
+          : this.options.httpOptions;
+
       this.serverTransport = createServerTransport(
         this.options.mode,
         this.options.httpPort,
         this.options.httpHost,
-        this.options.httpOptions,
+        httpOptions,
       );
 
       await this.server.connect(this.serverTransport.transport);
@@ -331,6 +362,8 @@ export class Gateway {
     // Always release any upstream clients opened during discovery as part of
     // teardown so a failed daemon cannot keep subprocesses or sockets alive.
     await this.discoveryManager.disconnectAll();
+
+    this.ownedConnectionTracker?.destroy();
 
     this.stdioSession = null;
 

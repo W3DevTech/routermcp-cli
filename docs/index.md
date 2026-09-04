@@ -41,8 +41,9 @@ Installation, quick start guide, and your first configuration.
 ### [Commands](commands/serve.md)
 Complete reference for all CLI commands.
 
-- [serve](commands/serve.md) - Start the MCP gateway (default)
-- [connect](commands/connect.md) - Connect to daemon mode
+- [serve](commands/serve.md) - Start the MCP gateway in foreground/debug mode
+- [connect](commands/connect.md) - Connect to the managed daemon (default)
+- [daemon lifecycle](advanced/daemon-mode.md) - Start, inspect, stop, or restart the managed daemon
 - [proxy](commands/proxy.md) - Proxy stdio server over HTTP
 - [tunnel](commands/tunnel.md) - Expose via public tunnel
 - [config](commands/config.md) - Interactive configuration wizard

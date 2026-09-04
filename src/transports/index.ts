@@ -12,8 +12,11 @@ import {
 import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 
 export {
+  DAEMON_BRIDGE_LEASES_PATH,
   DAEMON_HEALTH_PATH,
   DAEMON_HEALTH_PATH_LEGACY,
+  DEFAULT_DAEMON_CORS_ORIGIN,
+  type BridgeLeaseTracker,
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,

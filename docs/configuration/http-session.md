@@ -5,7 +5,9 @@ description: Configure HTTP server and session management
 
 # HTTP & Sessions
 
-Configure the HTTP server and session management for HTTP mode.
+Configure the HTTP server and session management for HTTP mode. The managed
+daemon binds to loopback and exposes its authenticated MCP endpoint over HTTP;
+standalone `serve --http` remains available for foreground/debug use.
 
 ## HTTP Server Configuration
 
@@ -65,6 +67,19 @@ In HTTP mode, RouterMCP manages virtual sessions:
 2. **Activity**: Each request resets the session timeout
 3. **Idle Timeout**: Session cleaned up after `timeout` seconds of inactivity
 4. **Upstream Disconnection**: Idle upstream connections disconnect after `subprocess_timeout` seconds
+
+The `connect` bridge sends `DELETE /mcp` when its stdio input closes so the
+daemon can immediately release that virtual session. If a client crashes before
+cleanup, its bridge lease expires after the heartbeat TTL and no longer counts
+as an active connection.
+
+## Managed daemon endpoint
+
+The managed daemon publishes `mcpUrl`, `controlUrl`, and a private local bearer
+token in its per-profile runtime state. The token protects health, bridge lease,
+and MCP requests; it is not included in `status --json` output. Browser-based
+management should use a separately designed pairing/control API rather than
+reading this private token from the filesystem.
 
 ## Upstream Connection Management
 

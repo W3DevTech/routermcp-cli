@@ -17,8 +17,12 @@ routermcp [command] [options]
 
 | Command | Description |
 |---------|-------------|
-| `serve` | Start the MCP gateway (default) |
-| `connect` | Connect to gateway daemon |
+| `serve` | Start the MCP gateway in foreground/debug mode |
+| `connect` | Connect to the managed gateway daemon (default) |
+| `start` | Start or reuse the profile daemon |
+| `status` | Show profile daemon status |
+| `stop` | Stop the profile daemon |
+| `restart` | Restart the profile daemon |
 | `proxy` | Proxy a stdio MCP server over HTTP |
 | `tunnel` | Expose gateway via tunnel |
 | `config` | Interactive configuration wizard |
@@ -52,8 +56,8 @@ routermcp serve [options]
 | `--config <path>` | string | `./routermcp.jsonc` | Path to config file |
 | `--stdio` | flag | (default) | Use stdio transport |
 | `--http <port>` | number | - | Use HTTP transport on specified port |
-| `--daemon-mode` | flag | false | Run as background daemon |
-| `--socket <path>` | string | - | Unix socket path (daemon mode) |
+| `--daemon-mode` | flag | false | Internal managed-daemon mode |
+| `--socket <path>` | string | - | Legacy state path; managed connections use loopback HTTP |
 | `--clear` | flag | false | Clear OpenAPI cache before starting |
 | `--verbose` | flag | false | Enable verbose logging |
 
@@ -87,7 +91,7 @@ routermcp connect [options]
 |--------|------|---------|-------------|
 | `--config <path>` | string | `./routermcp.jsonc` | Path to config file |
 | `--project <path>` | string | `.` | Project directory |
-| `--stdio` | flag | true | Use stdio output |
+| `--stdio` | flag | true | Use stdio output (accepted for compatibility) |
 | `--verbose` | flag | false | Enable verbose logging |
 
 ### Examples

@@ -26,9 +26,9 @@ Client 3 ─┘
 ## How It Works
 
 1. **First client** starts the gateway as a background daemon
-2. **Subsequent clients** connect to the existing daemon via HTTP
-3. **Idle shutdown** - daemon exits after configurable idle time when all clients disconnect
-4. **Automatic restart** - if daemon crashes, next client restarts it
+2. **Subsequent clients** connect to the existing daemon via authenticated loopback HTTP
+3. **Persistent process** - the daemon remains available until explicitly stopped
+4. **Automatic restart** - if the daemon crashes or its health check fails, the next client starts it again
 
 ## Using Daemon Mode
 
@@ -39,9 +39,6 @@ Use `connect` instead of `serve` for daemon-aware operation:
 ```bash
 # Connect to existing daemon, or start one if needed
 routermcp connect
-
-# Force stdio mode (for Claude Code, Cursor, etc.)
-routermcp connect --stdio
 
 # Specify config file
 routermcp connect --config ./my-config.jsonc
@@ -54,40 +51,23 @@ routermcp connect -v
 
 ```bash
 # Check if daemon is running
-routermcp connect --status
+routermcp status
 
 # Stop the daemon
-routermcp connect --stop
+routermcp stop
 
 # Force restart
-routermcp connect --stop && routermcp connect
+routermcp restart
 ```
 
 ## Configuration
 
-### Idle Shutdown
-
-The daemon shuts down after all clients disconnect:
-
-```jsonc
-{
-  "daemon": {
-    "idle_shutdown": 10  // Seconds to wait (default: 10)
-  }
-}
-```
-
-Set to `0` to disable idle shutdown (daemon runs until manually stopped).
-
 ### Port Selection
 
-```jsonc
-{
-  "daemon": {
-    "port": 5151  // Default port
-  }
-}
-```
+The supervisor prefers loopback port `7858` and automatically advances to the
+next available port when it is occupied. The selected port is published in
+`runtime.json` and should be read from `status --json`; it is not the
+`httpServer.port` used by standalone `serve --http` or `tunnel`.
 
 ## File Locations
 
@@ -97,10 +77,9 @@ Daemon state is stored per-project:
 ~/.routermcp/
 └── projects/
     └── <project-id>/
-        ├── config.jsonc    # Project config (optional)
-        ├── daemon.pid      # Process ID
-        ├── daemon.port     # HTTP port
-        └── daemon.socket   # Unix socket (Linux/macOS)
+        ├── daemon.log      # Daemon stderr and startup diagnostics
+        ├── daemon.lock     # Per-profile lifecycle lock
+        └── runtime.json    # Atomic runtime manifest and endpoint metadata
 ```
 
 The project ID is derived from the config file path.
@@ -124,7 +103,7 @@ The project ID is derived from the config file path.
 
 ## Stdio-to-HTTP Bridge
 
-When using `connect --stdio`, the client bridges stdio to HTTP:
+When using `connect`, the client bridges stdio to HTTP:
 
 ```
 ┌──────────┐      stdio       ┌──────────┐      HTTP       ┌──────────┐
@@ -137,6 +116,8 @@ The bridge:
 - Reads JSON-RPC from stdin
 - Forwards to daemon via HTTP
 - Writes responses to stdout
+- Acquires a short-lived lease and heartbeats it while connected
+- Releases the lease and closes the MCP session when stdin closes
 
 ## Connection Tracking
 
@@ -146,16 +127,16 @@ The daemon tracks active connections:
 ┌─────────────────────────────────────────┐
 │                 Daemon                  │
 │                                         │
-│  Connections: [client-1, client-2]      │
-│  Idle Timer:  (not running)             │
+│  Leases: [client-1, client-2]           │
+│  Daemon: persistent                     │
 │                                         │
 └─────────────────────────────────────────┘
-         When all disconnect:
+         When a client disconnects:
 ┌─────────────────────────────────────────┐
 │                 Daemon                  │
 │                                         │
-│  Connections: []                        │
-│  Idle Timer:  10s remaining...          │
+│  Leases: [client-2]                     │
+│  Daemon: still available                │
 │                                         │
 └─────────────────────────────────────────┘
 ```
@@ -168,13 +149,13 @@ Share tools across VS Code, Cursor, and Claude Code:
 
 ```bash
 # Terminal 1 (VS Code)
-routermcp connect --stdio
+routermcp connect
 
 # Terminal 2 (Cursor)
-routermcp connect --stdio
+routermcp connect
 
 # Terminal 3 (Claude Code)
-routermcp connect --stdio
+routermcp connect
 ```
 
 All three connect to the same daemon, sharing upstream connections.
@@ -186,38 +167,30 @@ Start daemon at pipeline start, reuse across jobs:
 ```yaml
 jobs:
   setup:
-    - run: routermcp connect &  # Start daemon in background
+    - run: routermcp start  # Start or reuse daemon
 
   test-1:
-    - run: routermcp connect --stdio < commands.json
+    - run: routermcp connect < commands.json
 
   test-2:
-    - run: routermcp connect --stdio < commands.json
+    - run: routermcp connect < commands.json
 ```
 
 ### Long-Running Services
 
-Keep gateway running for API clients:
-
-```jsonc
-{
-  "daemon": {
-    "idle_shutdown": 0  // Never auto-shutdown
-  }
-}
-```
+Keep the gateway running for API clients with `routermcp start`; stop it with
+`routermcp stop` when it is no longer needed.
 
 ## Troubleshooting
 
 ### Daemon Won't Start
 
 ```bash
-# Check for stale PID file
-cat ~/.routermcp/projects/<id>/daemon.pid
-ps aux | grep <pid>
+# Check daemon status and its runtime manifest
+routermcp status --json
 
 # Clean up and restart
-rm -rf ~/.routermcp/projects/<id>
+routermcp stop
 routermcp connect
 ```
 
@@ -225,13 +198,13 @@ routermcp connect
 
 ```bash
 # Check daemon status
-routermcp connect --status
+routermcp status
 
 # Check port availability
 lsof -i :5151
 
 # Force restart
-routermcp connect --stop
+routermcp stop
 routermcp connect
 ```
 
@@ -240,22 +213,18 @@ routermcp connect
 The daemon uses the config file that started it. To change:
 
 ```bash
-routermcp connect --stop
+routermcp stop
 routermcp connect --config ./new-config.jsonc
 ```
 
 ## Platform Notes
 
-### Unix (Linux/macOS)
+### All platforms
 
-- Uses Unix domain sockets for local communication
-- Socket file: `~/.routermcp/projects/<id>/daemon.socket`
-- Falls back to HTTP port if socket unavailable
-
-### Windows
-
-- Uses HTTP port only (no Unix sockets)
-- Port file: `%USERPROFILE%\.routermcp\projects\<id>\daemon.port`
+- Uses authenticated HTTP on `127.0.0.1` for managed daemon communication
+- Endpoint metadata is in `runtime.json`; `mcpUrl` points to `/mcp`
+- A random local bearer token is generated per daemon and is not included in
+  the public status manifest
 
 ## Comparison: serve vs connect
 
@@ -264,7 +233,7 @@ routermcp connect --config ./new-config.jsonc
 | Process per client | Yes | No (shared) |
 | Startup time | Slow | Fast (if running) |
 | Resource usage | High | Low |
-| Auto-shutdown | No | Yes (configurable) |
+| Persistence | Foreground lifetime | Persistent until explicitly stopped |
 | Best for | Single client | Multiple clients |
 
 ---

@@ -7,6 +7,7 @@ import type {
   TransportSendOptions,
 } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import type { ConnectionLease } from "../daemon/connection-tracker.js";
 import { type ServerHandle, serve } from "../compat/index.js";
 import type { ServerConfig } from "../config/types.js";
 import { TransportError } from "../utils/errors.js";
@@ -70,10 +71,24 @@ export interface HttpServerHandle {
 export const DAEMON_HEALTH_PATH = "/api/v1/health";
 /** Kept for clients built against the pre-control-plane daemon prototype. */
 export const DAEMON_HEALTH_PATH_LEGACY = "/__routermcp/health";
+/** Narrow lifecycle API used by the stdio bridge; not the management API. */
+export const DAEMON_BRIDGE_LEASES_PATH = "/api/v1/bridge-leases";
+/** Default hosted management origin for a token-protected local daemon. */
+export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
+
+export interface BridgeLeaseTracker {
+  acquire: () => ConnectionLease;
+  heartbeat: (leaseId: string) => ConnectionLease | null;
+  release: (leaseId: string) => void;
+}
 
 export interface HttpServerOptions {
   authToken?: string;
   health?: () => Record<string, unknown>;
+  connectionTracker?: BridgeLeaseTracker;
+  onSessionClose?: (sessionId: string) => Promise<void> | void;
+  /** Exact browser origins allowed to call this HTTP server. */
+  corsOrigins?: readonly string[];
 }
 
 export interface SessionAwareTransport extends Transport {
@@ -182,12 +197,14 @@ export function createHttpServerTransport(
   let server: ServerHandle | null = null;
   let boundPort: number | null = null;
 
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id",
+  const corsPolicy = createCorsPolicy(options);
+
+  const corsHeaders = (request: Request): Record<string, string> => ({
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
     "Access-Control-Expose-Headers": "Mcp-Session-Id",
-  };
+    ...corsPolicyHeaders(request, corsPolicy),
+  });
 
   const handle: HttpServerHandle = {
     transport,
@@ -206,16 +223,26 @@ export function createHttpServerTransport(
             fetch: async (request: Request) => {
               const url = new URL(request.url);
 
-          if (url.pathname === DAEMON_HEALTH_PATH || url.pathname === DAEMON_HEALTH_PATH_LEGACY) {
-                if (request.method !== "GET") {
-                  return new Response("Method Not Allowed", { status: 405 });
+              if (
+                url.pathname === DAEMON_HEALTH_PATH ||
+                url.pathname === DAEMON_HEALTH_PATH_LEGACY
+              ) {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
                 }
 
-                if (options.authToken) {
-                  const authorization = request.headers.get("authorization");
-                  if (authorization !== `Bearer ${options.authToken}`) {
-                    return new Response("Unauthorized", { status: 401 });
-                  }
+                if (request.method !== "GET") {
+                  return new Response("Method Not Allowed", {
+                    status: 405,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                if (!isAuthorized(request, options.authToken)) {
+                  return new Response("Unauthorized", {
+                    status: 401,
+                    headers: corsHeaders(request),
+                  });
                 }
 
                 return new Response(
@@ -227,10 +254,53 @@ export function createHttpServerTransport(
                     status: 200,
                     headers: {
                       "Content-Type": "application/json",
+                      ...corsHeaders(request),
                       ...(options.authToken ? {} : { "Cache-Control": "no-store" }),
                     },
                   },
                 );
+              }
+
+              const leaseRoute = parseBridgeLeasePath(url.pathname);
+              if (leaseRoute) {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+
+                if (!options.connectionTracker) {
+                  return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                }
+
+                if (!isAuthorized(request, options.authToken)) {
+                  return new Response("Unauthorized", {
+                    status: 401,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                if (leaseRoute.kind === "acquire" && request.method === "POST") {
+                  return jsonResponse(options.connectionTracker.acquire(), 201, corsHeaders(request));
+                }
+
+                if (leaseRoute.kind === "heartbeat" && request.method === "POST") {
+                  const lease = options.connectionTracker.heartbeat(leaseRoute.leaseId);
+                  return lease
+                    ? jsonResponse(lease, 200, corsHeaders(request))
+                    : new Response("Lease Not Found", {
+                        status: 404,
+                        headers: corsHeaders(request),
+                      });
+                }
+
+                if (leaseRoute.kind === "release" && request.method === "DELETE") {
+                  options.connectionTracker.release(leaseRoute.leaseId);
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+
+                return new Response("Method Not Allowed", {
+                  status: 405,
+                  headers: corsHeaders(request),
+                });
               }
 
               if (url.pathname !== "/mcp") {
@@ -238,7 +308,14 @@ export function createHttpServerTransport(
               }
 
               if (request.method === "OPTIONS") {
-                return new Response(null, { status: 204, headers: corsHeaders });
+                return new Response(null, { status: 204, headers: corsHeaders(request) });
+              }
+
+              if (!isAuthorized(request, options.authToken)) {
+                return new Response("Unauthorized", {
+                  status: 401,
+                  headers: corsHeaders(request),
+                });
               }
 
               if (request.method === "POST") {
@@ -254,7 +331,7 @@ export function createHttpServerTransport(
                       headers: {
                         "Content-Type": "application/json",
                         "Mcp-Session-Id": sessionId,
-                        ...corsHeaders,
+                        ...corsHeaders(request),
                       },
                     });
                   }
@@ -263,7 +340,7 @@ export function createHttpServerTransport(
                     status: 202,
                     headers: {
                       "Mcp-Session-Id": sessionId,
-                      ...corsHeaders,
+                      ...corsHeaders(request),
                     },
                   });
                 } catch (err) {
@@ -278,16 +355,29 @@ export function createHttpServerTransport(
                       status: 500,
                       headers: {
                         "Content-Type": "application/json",
-                        ...corsHeaders,
+                        ...corsHeaders(request),
                       },
                     },
                   );
                 }
               }
 
+              if (request.method === "DELETE") {
+                const sessionId = request.headers.get("mcp-session-id");
+                if (!sessionId) {
+                  return new Response("Mcp-Session-Id is required", {
+                    status: 400,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                await options.onSessionClose?.(sessionId);
+                return new Response(null, { status: 204, headers: corsHeaders(request) });
+              }
+
               return new Response("Method Not Allowed", {
                 status: 405,
-                headers: corsHeaders,
+                headers: corsHeaders(request),
               });
             },
           });
@@ -331,4 +421,117 @@ export function createHttpServerTransport(
   };
 
   return handle;
+}
+
+type BridgeLeaseRoute =
+  | { kind: "acquire" }
+  | { kind: "heartbeat" | "release"; leaseId: string };
+
+function parseBridgeLeasePath(pathname: string): BridgeLeaseRoute | null {
+  if (pathname === DAEMON_BRIDGE_LEASES_PATH) {
+    return { kind: "acquire" };
+  }
+
+  const prefix = `${DAEMON_BRIDGE_LEASES_PATH}/`;
+  if (!pathname.startsWith(prefix)) return null;
+
+  const suffix = pathname.slice(prefix.length);
+  const parts = suffix.split("/");
+  if (parts.length === 1 && parts[0]) {
+    return { kind: "release", leaseId: decodePathPart(parts[0]) };
+  }
+  if (parts.length === 2 && parts[1] === "heartbeat" && parts[0]) {
+    return { kind: "heartbeat", leaseId: decodePathPart(parts[0]) };
+  }
+  return null;
+}
+
+function decodePathPart(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function isAuthorized(request: Request, authToken: string | undefined): boolean {
+  if (!authToken) return true;
+  return request.headers.get("authorization") === `Bearer ${authToken}`;
+}
+
+function jsonResponse(
+  value: ConnectionLease,
+  status: number,
+  headers: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+interface CorsPolicy {
+  wildcard: boolean;
+  origins: Set<string>;
+}
+
+function createCorsPolicy(options: HttpServerOptions): CorsPolicy {
+  if (options.corsOrigins) {
+    return {
+      wildcard: false,
+      origins: new Set(options.corsOrigins.map(normalizeOrigin).filter(Boolean)),
+    };
+  }
+
+  // A daemon bearer token protects a local service that may be called from the
+  // hosted management UI. Never pair that token with wildcard browser access.
+  if (options.authToken) {
+    return {
+      wildcard: false,
+      origins: new Set([DEFAULT_DAEMON_CORS_ORIGIN]),
+    };
+  }
+
+  // Preserve the standalone HTTP transport's backwards-compatible behavior.
+  return { wildcard: true, origins: new Set() };
+}
+
+function corsPolicyHeaders(request: Request, policy: CorsPolicy): Record<string, string> {
+  const requestedOrigin = request.headers.get("origin");
+  const normalizedRequestedOrigin = requestedOrigin ? normalizeOrigin(requestedOrigin) : "";
+  const allowed = policy.wildcard
+    ? "*"
+    : normalizedRequestedOrigin && policy.origins.has(normalizedRequestedOrigin)
+      ? normalizedRequestedOrigin
+      : undefined;
+
+  const headers: Record<string, string> = {};
+  if (allowed) {
+    headers["Access-Control-Allow-Origin"] = allowed;
+  }
+
+  if (!policy.wildcard) {
+    headers.Vary = "Origin, Access-Control-Request-Private-Network";
+  }
+
+  if (
+    allowed &&
+    allowed !== "*" &&
+    request.headers.get("access-control-request-private-network")?.toLowerCase() === "true"
+  ) {
+    headers["Access-Control-Allow-Private-Network"] = "true";
+  }
+
+  return headers;
+}
+
+function normalizeOrigin(origin: string): string {
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return origin.trim();
+  }
 }

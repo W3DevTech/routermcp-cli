@@ -46,6 +46,11 @@ export interface DaemonStatus {
   configFingerprint?: string;
   mcpUrl?: string;
   controlUrl?: string;
+  /**
+   * Private token for callers running in the same user context. It is kept
+   * outside `manifest`, which is always redacted before status is printed.
+   */
+  authToken?: string;
   manifest?: ReturnType<typeof redactRuntimeManifest>;
   reason?: string;
 }
@@ -567,6 +572,7 @@ function toDaemonStatus(manifest: RuntimeManifest, running: boolean): DaemonStat
     configFingerprint: manifest.configFingerprint,
     mcpUrl: manifest.mcpUrl,
     controlUrl: manifest.controlUrl,
+    ...(manifest.localAuthToken ? { authToken: manifest.localAuthToken } : {}),
     manifest: redactRuntimeManifest(manifest),
   };
 }

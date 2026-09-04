@@ -1,4 +1,9 @@
-export { ConnectionTracker } from "./connection-tracker.js";
+export {
+  ConnectionTracker,
+  DEFAULT_BRIDGE_LEASE_TTL_MS,
+  DEFAULT_CONNECTION_IDLE_TIMEOUT_MS,
+  type ConnectionLease,
+} from "./connection-tracker.js";
 export {
   fingerprintConfig,
   fingerprintConfigFile,

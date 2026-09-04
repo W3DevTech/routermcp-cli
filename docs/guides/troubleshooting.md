@@ -308,12 +308,12 @@ Error: Connection refused
 
 1. Check daemon status:
    ```bash
-   routermcp connect --status
+   routermcp status
    ```
 
 2. Restart daemon:
    ```bash
-   routermcp connect --stop
+   routermcp stop
    routermcp connect
    ```
 
