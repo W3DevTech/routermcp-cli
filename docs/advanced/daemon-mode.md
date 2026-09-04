@@ -94,25 +94,42 @@ in the CLI package.
 
 ### Port Selection
 
-The supervisor prefers loopback port `7858` and automatically advances to the
-next available port when it is occupied. The selected port is published in
-`runtime.json` and should be read from `status --json`; it is not the
-`httpServer.port` used by standalone `serve --http` or `tunnel`.
+The supervisor uses a loopback port. When no port is configured, it prefers
+`7858`; `--port` or `httpServer.port` can provide a different preferred port.
+If the preferred port is occupied, the supervisor automatically advances to
+the next available port. The selected port is published in `runtime.json` and
+should be read from `status --json`, because it may differ from the preferred
+port.
 
 ## File Locations
 
-Daemon state is stored per-project:
+Runtime state is stored per project and configuration profile under the
+platform's application-state directory. Configuration files remain under
+`~/.config/routermcp`; runtime metadata is kept separately so locks, manifests,
+and logs are not mixed with user-edited configuration.
+
+On Linux, the default path is:
 
 ```
-~/.routermcp/
-└── projects/
-    └── <project-id>/
-        ├── daemon.log      # Daemon stderr and startup diagnostics
-        ├── daemon.lock     # Per-profile lifecycle lock
-        └── runtime.json    # Atomic runtime manifest and endpoint metadata
+${XDG_STATE_HOME:-~/.local/state}/routermcp/projects/<project-id>/profiles/<profile-id>/
 ```
 
-The project ID is derived from the config file path.
+`XDG_STATE_HOME` is honored when set. On macOS, the equivalent base directory
+is `~/Library/Application Support/RouterMCP/`; on Windows it is
+`%LOCALAPPDATA%\RouterMCP\` (falling back to `AppData\Local\RouterMCP`).
+
+Each profile directory contains:
+
+```
+<profile-id>/
+├── daemon.log      # Daemon stderr and startup diagnostics
+├── daemon.lock     # Per-profile lifecycle lock
+└── runtime.json    # Atomic runtime manifest and endpoint metadata
+```
+
+The project ID is derived from the resolved project directory. The profile ID
+is a stable digest of that project ID and the normalized config-file path, so
+two config files in the same project receive independent daemon state.
 
 ## Connection Flow
 

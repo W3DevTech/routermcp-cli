@@ -23,6 +23,9 @@ routermcp connect -v                 # Verbose logging
 |--------|-------------|
 | `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
 | `--project <path>` | Project directory for daemon lookup (default: current directory) |
+| `--host <host>` | Loopback bind host for a newly started daemon |
+| `--port <port>` | Preferred daemon port (falls back when occupied) |
+| `--json` | Print machine-readable daemon status when used with lifecycle commands |
 | `-v, --verbose` | Enable verbose logging |
 
 ## Why Use Daemon Mode?
@@ -53,7 +56,10 @@ routermcp connect -v                 # Verbose logging
 
 ## Daemon Files
 
-Daemon state is stored in `~/.routermcp/projects/<project-id>/`:
+Daemon state is stored in a platform-specific runtime directory, per project
+and configuration profile. On Linux, the default is
+`~/.local/state/routermcp/projects/<project-id>/profiles/<profile-id>/` (or the
+same path below `XDG_STATE_HOME` when it is set). See [Daemon Mode](../advanced/daemon-mode.md#file-locations) for macOS and Windows paths.
 
 | File | Description |
 |------|-------------|

@@ -281,18 +281,29 @@ Error: Daemon failed to start within timeout
 
 **Solutions:**
 
-1. Check for stale files:
+1. Inspect the managed daemon status and selected endpoint:
    ```bash
-   rm -rf ~/.routermcp/projects/<id>
+   routermcp status --json
+   ```
+
+   Runtime state is stored in the platform-specific per-profile directory
+   described in [Daemon Mode](../advanced/daemon-mode.md#file-locations). Do
+   not delete a profile directory while its daemon process is running.
+
+2. Stop any known instance and start a fresh one:
+   ```bash
+   routermcp stop
    routermcp connect
    ```
 
-2. Check port availability:
+3. Check the preferred port availability. The managed default is `7858` when
+   no `--port` flag or `httpServer.port` is configured; use the configured
+   preference if one is set:
    ```bash
-   lsof -i :5151
+   lsof -i :7858
    ```
 
-3. Check logs:
+4. Check logs:
    ```bash
    routermcp connect -v
    ```

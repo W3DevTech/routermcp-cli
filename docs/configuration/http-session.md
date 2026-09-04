@@ -16,7 +16,7 @@ is not bundled with the CLI.
 ```jsonc
 {
   "httpServer": {
-    "port": 5151,        // Default: 5151
+    "port": 5151,        // Standalone/tunnel default; managed daemon prefers 7858 when unset
     "host": "127.0.0.1"  // Default: 127.0.0.1
   }
 }
@@ -24,8 +24,14 @@ is not bundled with the CLI.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `port` | number | 5151 | HTTP server port |
+| `port` | number | 5151 | Standalone/tunnel HTTP port; managed commands use it as their preferred port |
 | `host` | string | 127.0.0.1 | Host to bind to |
+
+The managed daemon uses `httpServer.port` as its preferred port when it is set;
+otherwise it prefers loopback port `7858`. A `--port` flag overrides the
+configured preference. If the preferred port is occupied, the daemon advances
+to another available port and publishes the actual value in `runtime.json` and
+`status --json`. Managed daemon hosts must be loopback addresses.
 
 ## Session Configuration
 
