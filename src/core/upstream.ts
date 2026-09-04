@@ -35,6 +35,9 @@ export interface UpstreamServer {
   cachedResources: Resource[];
   cachedPrompts: Prompt[];
   lastActivity: number | null;
+  /** Timestamp and duration of the most recent capability check/connection. */
+  lastCheckedAt?: number | null;
+  lastLatencyMs?: number | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   connectionPromise: Promise<Client> | null;
 }
@@ -72,6 +75,8 @@ export class UpstreamManager {
         cachedResources: cached?.resources ?? [],
         cachedPrompts: cached?.prompts ?? [],
         lastActivity: null,
+        lastCheckedAt: null,
+        lastLatencyMs: null,
         idleTimer: null,
         connectionPromise: null,
       });
@@ -112,6 +117,10 @@ export class UpstreamManager {
       return;
     }
 
+    const checkedAt = Date.now();
+    const startedAt = performance.now();
+    server.lastCheckedAt = checkedAt;
+
     try {
       await this.connectOneWithTimeout(name);
       await this.fetchCapabilities(server);
@@ -131,6 +140,9 @@ export class UpstreamManager {
       server.status = "error";
       server.error = err instanceof Error ? err : new Error(String(err));
       console.error(`Failed to discover ${name}: ${server.error.message}`);
+    } finally {
+      server.lastCheckedAt = checkedAt;
+      server.lastLatencyMs = Math.max(0, Math.round(performance.now() - startedAt));
     }
   }
 
@@ -246,8 +258,7 @@ export class UpstreamManager {
     server.connectionPromise = this.doConnect(name);
 
     try {
-      const client = await server.connectionPromise;
-      return client;
+      return await server.connectionPromise;
     } finally {
       server.connectionPromise = null;
     }
@@ -255,23 +266,31 @@ export class UpstreamManager {
 
   private async doConnect(name: string): Promise<Client> {
     const server = this.servers.get(name)!;
+    const checkedAt = Date.now();
+    const startedAt = performance.now();
+    server.lastCheckedAt = checkedAt;
 
-    await this.connectOneWithTimeout(name);
+    try {
+      await this.connectOneWithTimeout(name);
 
-    if (!server.client) {
-      throw new UpstreamError(name, "Connection failed");
+      if (!server.client) {
+        throw new UpstreamError(name, "Connection failed");
+      }
+
+      if (server.cachedTools.length > 0) {
+        server.tools = server.cachedTools;
+        server.resources = server.cachedResources;
+        server.prompts = server.cachedPrompts;
+      }
+
+      this.resetIdleTimer(server);
+
+      this.log(`Connected to ${name} (on-demand)`);
+      return server.client;
+    } finally {
+      server.lastCheckedAt = checkedAt;
+      server.lastLatencyMs = Math.max(0, Math.round(performance.now() - startedAt));
     }
-
-    if (server.cachedTools.length > 0) {
-      server.tools = server.cachedTools;
-      server.resources = server.cachedResources;
-      server.prompts = server.cachedPrompts;
-    }
-
-    this.resetIdleTimer(server);
-
-    this.log(`Connected to ${name} (on-demand)`);
-    return server.client;
   }
 
   private resetIdleTimer(server: UpstreamServer): void {
@@ -370,7 +389,18 @@ export class UpstreamManager {
       server.cleanup = null;
       server.connectionPromise = null;
       server.lastActivity = null;
-      server.status = server.config.enabled !== false ? "disconnected" : "disabled";
+      // A successful discovery remains useful health information even after
+      // the short-lived discovery client is closed. Keep that state distinct
+      // from an upstream that has never connected or failed discovery; the
+      // managed control plane can then report a discovered peer as available
+      // while on-demand sessions reconnect lazily.
+      if (server.config.enabled === false) {
+        server.status = "disabled";
+      } else if (server.status === "connected" || server.status === "discovered") {
+        server.status = "discovered";
+      } else if (server.status !== "error") {
+        server.status = "disconnected";
+      }
     }
   }
 

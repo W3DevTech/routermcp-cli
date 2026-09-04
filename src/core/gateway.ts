@@ -9,8 +9,9 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
-import { ConnectionTracker } from "../daemon/connection-tracker.js";
+import { ConnectionTracker, type ConnectionLease } from "../daemon/connection-tracker.js";
 import { OpenApiHandler } from "../openapi/index.js";
+import type { OpenApiServerSnapshot } from "../openapi/index.js";
 import {
   createServerTransport,
   type BridgeLeaseTracker,
@@ -24,11 +25,16 @@ import {
   handleCallTool,
   handleSearchMcpForTask,
 } from "./toolsearch/index.js";
-import { type ServerCapabilityCache, UpstreamManager } from "./upstream.js";
+import {
+  type ServerCapabilityCache,
+  type UpstreamServer,
+  UpstreamManager,
+} from "./upstream.js";
 import {
   type CachedCapabilities,
   type VirtualSession,
   VirtualSessionManager,
+  type VirtualSessionSnapshot,
 } from "./virtual-session.js";
 
 export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "error";
@@ -97,7 +103,8 @@ export class Gateway {
   }
 
   private registerHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    this.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
+      this.getSessionForRequest(extra);
       if (this.isCodeModeEnabled()) {
         return { tools: getCodeModeMetaTools() };
       }
@@ -133,7 +140,8 @@ export class Gateway {
       return session.aggregator.callTool(name, args || {});
     });
 
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    this.server.setRequestHandler(ListResourcesRequestSchema, async (_request, extra) => {
+      this.getSessionForRequest(extra);
       if (this.cachedCapabilities) {
         return {
           resources: Array.from(this.cachedCapabilities.resources.values()).map((r) => r.resource),
@@ -148,7 +156,8 @@ export class Gateway {
       return session.aggregator.readResource(uri);
     });
 
-    this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+    this.server.setRequestHandler(ListPromptsRequestSchema, async (_request, extra) => {
+      this.getSessionForRequest(extra);
       if (this.cachedCapabilities) {
         return {
           prompts: Array.from(this.cachedCapabilities.prompts.values()).map((p) => p.prompt),
@@ -276,6 +285,10 @@ export class Gateway {
           ? {
               ...this.options.httpOptions,
               connectionTracker: this.connectionTracker,
+              onSessionInitialize: async (sessionId, clientInfo) => {
+                this.sessionManager?.getOrCreate(sessionId, clientInfo);
+                await this.options.httpOptions?.onSessionInitialize?.(sessionId, clientInfo);
+              },
               onSessionClose: async (sessionId) => {
                 await this.sessionManager?.cleanup(sessionId);
                 await this.options.httpOptions?.onSessionClose?.(sessionId);
@@ -379,6 +392,63 @@ export class Gateway {
     return this.sessionManager?.getStats() ?? null;
   }
 
+  /**
+   * Return the currently configured upstreams without exposing mutable
+   * gateway internals to management-plane adapters. Discovery state is merged
+   * with active per-session managers so on-demand failures are visible.
+   */
+  getUpstreamServers(): readonly UpstreamServer[] {
+    const merged = new Map<string, UpstreamServer>();
+    for (const server of this.discoveryManager.getAll()) {
+      merged.set(server.name, server);
+    }
+
+    const sessionServers = this.sessionManager?.getUpstreamServers() ?? [];
+    for (const server of sessionServers) {
+      const current = merged.get(server.name);
+      if (!current) {
+        merged.set(server.name, server);
+        continue;
+      }
+
+      merged.set(server.name, mergeUpstreamServerHealth(current, server));
+    }
+
+    // A successful connection in one virtual session must clear a stale
+    // startup discovery error, but an error in another still-active session
+    // is meaningful because session upstream connections are isolated. Keep
+    // that aggregate state degraded until the failing session reconnects or
+    // expires.
+    for (const failure of latestSessionFailures(sessionServers)) {
+      const current = merged.get(failure.name);
+      if (!current) continue;
+
+      merged.set(failure.name, {
+        ...current,
+        status: "error",
+        error: failure.error ?? current.error,
+      });
+    }
+
+    return Array.from(merged.values());
+  }
+
+  /** Return browser-safe OpenAPI adapter state for the local management API. */
+  getOpenApiServerSnapshots(): readonly OpenApiServerSnapshot[] {
+    return this.openApiHandler?.getSnapshots() ?? [];
+  }
+
+  /** Return browser-safe session timing data for the local management API. */
+  getSessionSnapshots(): readonly VirtualSessionSnapshot[] {
+    return this.sessionManager?.getSnapshots() ?? [];
+  }
+
+  /** Return active bridge leases when the HTTP gateway owns a tracker. */
+  getConnectionLeases(): readonly ConnectionLease[] {
+    const tracker = this.connectionTracker;
+    return tracker?.leases?.map((lease) => ({ ...lease })) ?? [];
+  }
+
   getHttpPort(): number | null {
     return this.serverTransport?.getPort?.() ?? this.options.httpPort ?? null;
   }
@@ -448,6 +518,74 @@ export class Gateway {
         };
     }
   }
+}
+
+export function mergeUpstreamServerHealth(
+  base: UpstreamServer,
+  candidate: UpstreamServer,
+): UpstreamServer {
+  const latestStatus = latestUpstreamRecord(base, candidate);
+  const latest = latestUpstreamObservation(base, candidate);
+  return {
+    ...base,
+    // Discovery and per-session managers are independent observations. An
+    // error from startup must not permanently dominate a later successful
+    // on-demand connection, and a newer on-demand failure must not be hidden
+    // by an older cached discovery result.
+    status: latestStatus.status,
+    error: latestStatus.status === "error" ? latestStatus.error : null,
+    client: candidate.client ?? base.client,
+    cleanup: candidate.cleanup ?? base.cleanup,
+    tools: candidate.tools.length > base.tools.length ? candidate.tools : base.tools,
+    resources:
+      candidate.resources.length > base.resources.length ? candidate.resources : base.resources,
+    prompts: candidate.prompts.length > base.prompts.length ? candidate.prompts : base.prompts,
+    cachedTools:
+      candidate.cachedTools.length > base.cachedTools.length ? candidate.cachedTools : base.cachedTools,
+    cachedResources:
+      candidate.cachedResources.length > base.cachedResources.length
+        ? candidate.cachedResources
+        : base.cachedResources,
+    cachedPrompts:
+      candidate.cachedPrompts.length > base.cachedPrompts.length
+        ? candidate.cachedPrompts
+        : base.cachedPrompts,
+    lastActivity: Math.max(base.lastActivity ?? 0, candidate.lastActivity ?? 0) || null,
+    lastCheckedAt: latest.lastCheckedAt,
+    lastLatencyMs: latest.lastLatencyMs,
+    idleTimer: candidate.idleTimer ?? base.idleTimer,
+    connectionPromise: candidate.connectionPromise ?? base.connectionPromise,
+  };
+}
+
+function latestUpstreamRecord(base: UpstreamServer, candidate: UpstreamServer): UpstreamServer {
+  const baseCheckedAt = base.lastCheckedAt ?? -1;
+  const candidateCheckedAt = candidate.lastCheckedAt ?? -1;
+  return candidateCheckedAt >= baseCheckedAt ? candidate : base;
+}
+
+function latestSessionFailures(servers: readonly UpstreamServer[]): UpstreamServer[] {
+  const failures = new Map<string, UpstreamServer>();
+  for (const server of servers) {
+    if (server.status !== "error") continue;
+
+    const current = failures.get(server.name);
+    if (!current || (server.lastCheckedAt ?? -1) >= (current.lastCheckedAt ?? -1)) {
+      failures.set(server.name, server);
+    }
+  }
+  return Array.from(failures.values());
+}
+
+function latestUpstreamObservation(
+  base: UpstreamServer,
+  candidate: UpstreamServer,
+): Pick<UpstreamServer, "lastCheckedAt" | "lastLatencyMs"> {
+  const baseCheckedAt = base.lastCheckedAt ?? -1;
+  const candidateCheckedAt = candidate.lastCheckedAt ?? -1;
+  return candidateCheckedAt >= baseCheckedAt
+    ? { lastCheckedAt: candidate.lastCheckedAt, lastLatencyMs: candidate.lastLatencyMs }
+    : { lastCheckedAt: base.lastCheckedAt, lastLatencyMs: base.lastLatencyMs };
 }
 
 export function createGateway(options: GatewayOptions): Gateway {

@@ -7,6 +7,8 @@ description: Official documentation for RouterMCP CLI - MCP Gateway that aggrega
 
 RouterMCP is a powerful CLI MCP Gateway that aggregates multiple upstream MCP servers into a single unified interface with comprehensive filtering capabilities.
 
+The local daemon control plane is managed by the CLI, while the browser UI for stats and future peering controls lives at `https://cli.routermcp.com` and is not bundled in the binary.
+
 ## Why RouterMCP?
 
 - **Aggregate Multiple Servers**: Combine tools from multiple MCP servers into one endpoint

@@ -383,7 +383,11 @@ async function spawnAndWaitForDaemon(
     );
   }
 
-  const script = options.entrypoint ?? process.argv[1];
+  const script = options.entrypoint
+    ? resolve(options.entrypoint)
+    : process.argv[1]
+      ? resolve(process.argv[1])
+      : undefined;
   if (!script) {
     closeSync(logFd);
     throw new DaemonStartupError("Unable to determine the RouterMCP CLI entrypoint");
@@ -711,11 +715,14 @@ async function probeHealth(
 }
 
 export function isLoopbackHost(host: string): boolean {
-  const addressType = isIP(host);
-  if (addressType === 6) return host === "::1";
+  const normalizedHost = host.startsWith("[") && host.endsWith("]")
+    ? host.slice(1, -1)
+    : host;
+  const addressType = isIP(normalizedHost);
+  if (addressType === 6) return normalizedHost === "::1";
   if (addressType !== 4) return false;
 
-  const octets = host.split(".");
+  const octets = normalizedHost.split(".");
   return octets.length === 4 && octets[0] === "127";
 }
 

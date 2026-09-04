@@ -1,4 +1,4 @@
-import { chmod, mkdir, rmdir, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, rmdir, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -71,6 +71,43 @@ describe("profile lock", () => {
 
     const lock = await tryAcquireProfileLock(lockPath);
     expect(lock).not.toBeNull();
+    await lock?.release();
+  });
+
+  it("recovers a stale legacy file without leaving the file primitive behind", async () => {
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        lockId: "stale-legacy-lock",
+        pid: 999_999_999,
+        acquiredAt: new Date(0).toISOString(),
+        processIdentity: { pid: 999_999_999, source: "pid" },
+      })}\n`,
+    );
+
+    const lock = await tryAcquireProfileLock(lockPath);
+    expect(lock).not.toBeNull();
+    await lock?.release();
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recovers an owner record left quarantined by an interrupted stale cleanup", async () => {
+    const staleOwner = {
+      lockId: "interrupted-stale-cleanup",
+      pid: 999_999_999,
+      acquiredAt: new Date(0).toISOString(),
+      processIdentity: { pid: 999_999_999, source: "pid" },
+    };
+    const quarantinedPath = join(lockPath, "owner.json.stale-interrupted");
+
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(quarantinedPath, `${JSON.stringify(staleOwner)}\n`);
+    const old = Date.now() - 120_000;
+    await utimes(lockPath, old / 1000, old / 1000);
+
+    const lock = await tryAcquireProfileLock(lockPath, { staleAfterMs: 1_000 });
+    expect(lock).not.toBeNull();
+    expect(await readdir(lockPath)).toEqual(["owner.json"]);
     await lock?.release();
   });
 

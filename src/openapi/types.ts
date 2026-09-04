@@ -41,5 +41,20 @@ export interface OpenApiServerState {
   config: OpenApiServerConfig;
   status: OpenApiServerStatus;
   tools: OpenApiTool[];
+  /** Resolved API base URL, retained for browser-safe management snapshots. */
+  baseUrl?: string;
   error?: Error;
+  lastCheckedAt?: number;
+  lastLatencyMs?: number;
+}
+
+/** Provider-neutral OpenAPI state exposed to the local management plane. */
+export interface OpenApiServerSnapshot {
+  name: string;
+  status: OpenApiServerStatus;
+  baseUrl?: string;
+  toolCount: number;
+  lastCheckedAt?: number;
+  lastLatencyMs?: number;
+  lastError?: string;
 }

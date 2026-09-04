@@ -73,6 +73,31 @@ describe("VirtualSessionManager", () => {
       expect(session.createdAt).toBeGreaterThanOrEqual(before);
       expect(session.createdAt).toBeLessThanOrEqual(after);
     });
+
+    it("includes client metadata and reports active, idle, and expired snapshots", async () => {
+      const manager = new VirtualSessionManager({
+        config: createTestConfig(),
+        sessionTimeout: 10,
+        maxSessions: 5,
+        verbose: false,
+      });
+
+      manager.getOrCreate("session-1", { name: "test-client", version: "2.0.0" });
+      const snapshot = manager.getSnapshots()[0];
+
+      expect(snapshot).toMatchObject({
+        id: "session-1",
+        state: "active",
+        clientName: "test-client",
+        clientVersion: "2.0.0",
+      });
+      expect(snapshot).toBeDefined();
+
+      expect(manager.getSnapshots(snapshot.lastSeenAt + 5_000)[0]?.state).toBe("idle");
+      expect(manager.getSnapshots(snapshot.lastSeenAt + 10_000)[0]?.state).toBe("expired");
+
+      await manager.cleanupAll();
+    });
   });
 
   describe("session retrieval", () => {

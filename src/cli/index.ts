@@ -545,6 +545,8 @@ SERVE OPTIONS:
   CONNECT OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
   --verbose             Enable verbose logging
 
 DAEMON OPTIONS:
@@ -729,6 +731,7 @@ export async function main(args: string[]): Promise<void> {
       await connectCommand({
         config: options.config,
         project: options.project,
+        host: options.host,
         preferredPort: options.port,
         verbose: options.verbose,
       });

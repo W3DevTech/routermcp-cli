@@ -6,6 +6,7 @@ import {
   DEFAULT_DAEMON_PORT,
   getDaemonStatus,
   ensureRunning,
+  isLoopbackHost,
   stopDaemon,
 } from "../../../src/daemon/lifecycle.js";
 import { getDaemonPaths } from "../../../src/daemon/paths.js";
@@ -33,6 +34,12 @@ describe("daemon lifecycle", () => {
     }
     await cleanupTempDir(projectDir);
     await cleanupTempDir(tempDir);
+  });
+
+  it("recognizes URL-bracketed IPv6 loopback hostnames", () => {
+    expect(isLoopbackHost("::1")).toBe(true);
+    expect(isLoopbackHost("[::1]")).toBe(true);
+    expect(isLoopbackHost("[::2]")).toBe(false);
   });
 
   it("starts one persistent daemon when concurrent callers race", async () => {

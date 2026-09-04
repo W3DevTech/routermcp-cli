@@ -7,7 +7,9 @@ description: Configure HTTP server and session management
 
 Configure the HTTP server and session management for HTTP mode. The managed
 daemon binds to loopback and exposes its authenticated MCP endpoint over HTTP;
-standalone `serve --http` remains available for foreground/debug use.
+standalone `serve --http` remains available for foreground/debug use. The
+browser management UI is hosted separately at `https://cli.routermcp.com` and
+is not bundled with the CLI.
 
 ## HTTP Server Configuration
 
@@ -80,6 +82,27 @@ token in its per-profile runtime state. The token protects health, bridge lease,
 and MCP requests; it is not included in `status --json` output. Browser-based
 management should use a separately designed pairing/control API rather than
 reading this private token from the filesystem.
+
+The local management API is served on loopback under `/api/v1/*` and is
+authenticated with the daemon's private token. The hosted console calls these
+endpoints directly from the browser; the hosted service does not proxy local
+traffic. Current endpoints include:
+
+- `GET /api/v1/health`
+- `GET /api/v1/status`
+- `GET /api/v1/servers`
+- `GET /api/v1/sessions`
+- `GET /api/v1/metrics`
+- `GET /api/v1/events`
+- `POST /api/v1/restart`
+
+The servers snapshot includes both configured MCP upstreams and OpenAPI
+adapters. OpenAPI entries expose their resolved base URL, tool count, loading
+or failure state, and last check timing; authentication configuration and
+generated tool details are never returned.
+
+Peer mutations and device pairing are intentionally not exposed in this phase;
+they will use a separately reviewed scoped-pairing contract later.
 
 ## Upstream Connection Management
 
@@ -172,7 +195,7 @@ When using tunnel commands, HTTP settings are automatically applied:
 
 ```bash
 routermcp tunnel --tunnel=cloudflare
-# Uses httpServer.port from config, defaults to 5151
+# Uses httpServer.port from config; this is separate from the managed daemon's default port
 ```
 
 Override with CLI:

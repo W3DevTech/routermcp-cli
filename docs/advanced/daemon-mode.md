@@ -5,7 +5,7 @@ description: Share gateway processes across multiple clients
 
 # Daemon Mode
 
-Daemon Mode allows multiple clients to share a single gateway process, reducing resource usage and startup time.
+Daemon Mode allows multiple clients to share a single gateway process, reducing resource usage and startup time. The CLI owns the local daemon and its authenticated management API; the browser UI for viewing stats and future peering controls is hosted separately at `https://cli.routermcp.com`.
 
 ## Overview
 
@@ -29,6 +29,8 @@ Client 3 ─┘
 2. **Subsequent clients** connect to the existing daemon via authenticated loopback HTTP
 3. **Persistent process** - the daemon remains available until explicitly stopped
 4. **Automatic restart** - if the daemon crashes or its health check fails, the next client starts it again
+
+The local control plane is exposed on the daemon's loopback endpoint under `/api/v1/*` and is authenticated with a private bearer token stored in the daemon runtime manifest. The hosted UI calls this local API directly from the browser using its explicit CORS policy; it does not proxy through the RouterMCP service or ship inside the CLI. The current API provides runtime snapshots, request metrics, event history, and daemon restart; peer mutations and device pairing are reserved for later phases.
 
 ## Using Daemon Mode
 
@@ -201,7 +203,7 @@ routermcp connect
 routermcp status
 
 # Check port availability
-lsof -i :5151
+lsof -i :7858
 
 # Force restart
 routermcp stop
@@ -225,6 +227,8 @@ routermcp connect --config ./new-config.jsonc
 - Endpoint metadata is in `runtime.json`; `mcpUrl` points to `/mcp`
 - A random local bearer token is generated per daemon and is not included in
   the public status manifest
+- The control surface for stats and future peering controls is hosted at `https://cli.routermcp.com`
+- No browser UI is bundled with the CLI binary
 
 ## Comparison: serve vs connect
 

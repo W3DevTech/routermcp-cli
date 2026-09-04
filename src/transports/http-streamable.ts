@@ -10,6 +10,14 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
 import { type ServerHandle, serve } from "../compat/index.js";
 import type { ServerConfig } from "../config/types.js";
+import {
+  CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
+  CONTROL_PLANE_HEALTH_PATH,
+  CONTROL_PLANE_MAX_EVENT_LIMIT,
+  CONTROL_PLANE_PATH,
+  sanitizeText,
+  type ControlPlane,
+} from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
 
 export interface HttpClientTransportOptions {
@@ -68,7 +76,7 @@ export interface HttpServerHandle {
   stop: () => Promise<void>;
 }
 
-export const DAEMON_HEALTH_PATH = "/api/v1/health";
+export const DAEMON_HEALTH_PATH = CONTROL_PLANE_HEALTH_PATH;
 /** Kept for clients built against the pre-control-plane daemon prototype. */
 export const DAEMON_HEALTH_PATH_LEGACY = "/__routermcp/health";
 /** Narrow lifecycle API used by the stdio bridge; not the management API. */
@@ -80,6 +88,7 @@ export interface BridgeLeaseTracker {
   acquire: () => ConnectionLease;
   heartbeat: (leaseId: string) => ConnectionLease | null;
   release: (leaseId: string) => void;
+  readonly leases?: readonly ConnectionLease[];
 }
 
 export interface HttpServerOptions {
@@ -90,7 +99,14 @@ export interface HttpServerOptions {
    */
   authToken?: string;
   health?: () => Record<string, unknown>;
+  /** Management API state for a managed loopback daemon. */
+  controlPlane?: ControlPlane;
   connectionTracker?: BridgeLeaseTracker;
+  /** Called after a successful MCP initialize response for one HTTP session. */
+  onSessionInitialize?: (
+    sessionId: string,
+    clientInfo?: { name: string; version?: string },
+  ) => Promise<void> | void;
   onSessionClose?: (sessionId: string) => Promise<void> | void;
   /** Exact browser origins allowed to call this HTTP server. */
   corsOrigins?: readonly string[];
@@ -109,6 +125,7 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   sessionId: string;
+  clientRequestId: string | number;
 }
 
 class BunHttpServerTransport implements SessionAwareTransport {
@@ -117,7 +134,13 @@ class BunHttpServerTransport implements SessionAwareTransport {
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
 
-  private pendingRequests = new Map<string | number, PendingRequest>();
+  /**
+   * The JSON-RPC request id is scoped to an MCP session. A shared daemon can
+   * therefore receive the same id from multiple clients at once. Replace the
+   * client id with an internal id before dispatching to the SDK so responses
+   * cannot overwrite or resolve another client's pending request.
+   */
+  private pendingRequests = new Map<string, PendingRequest>();
   private started = false;
   private readonly requestTimeout = 30000;
   private currentSessionId: string | null = null;
@@ -136,11 +159,12 @@ class BunHttpServerTransport implements SessionAwareTransport {
 
   async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     if ("id" in message && message.id !== undefined) {
-      const pending = this.pendingRequests.get(message.id);
+      const pending = this.pendingRequests.get(message.id.toString());
       if (pending) {
         clearTimeout(pending.timeout);
-        pending.resolve(message);
-        this.pendingRequests.delete(message.id);
+        const response = { ...message, id: pending.clientRequestId } as JSONRPCMessage;
+        pending.resolve(response);
+        this.pendingRequests.delete(message.id.toString());
       }
     }
   }
@@ -163,15 +187,28 @@ class BunHttpServerTransport implements SessionAwareTransport {
     }
 
     this.currentSessionId = sessionId;
+    // The MCP SDK reads `transport.sessionId` synchronously while dispatching
+    // a request and captures it in the request handler's `extra` object. Keep
+    // that value aligned with the HTTP session instead of leaving the random
+    // constructor ID shared by every browser/client connection.
+    this.sessionId = sessionId;
 
-    if ("method" in message && "id" in message && message.id !== undefined) {
+    if (
+      "method" in message &&
+      "id" in message &&
+      (typeof message.id === "string" || typeof message.id === "number")
+    ) {
+      const clientRequestId = message.id;
+      const internalRequestId = randomUUID();
+      const internalMessage = { ...message, id: internalRequestId } as JSONRPCMessage;
+
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-          this.pendingRequests.delete(message.id!);
+          this.pendingRequests.delete(internalRequestId);
           reject(new Error("Request timeout"));
         }, this.requestTimeout);
 
-        this.pendingRequests.set(message.id!, {
+        this.pendingRequests.set(internalRequestId, {
           resolve: (response) => {
             clearTimeout(timeout);
             resolve(response);
@@ -182,9 +219,16 @@ class BunHttpServerTransport implements SessionAwareTransport {
           },
           timeout,
           sessionId,
+          clientRequestId,
         });
 
-        this.onmessage?.(message);
+        try {
+          this.onmessage?.(internalMessage);
+        } catch (error) {
+          clearTimeout(timeout);
+          this.pendingRequests.delete(internalRequestId);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       });
     }
 
@@ -259,11 +303,31 @@ export function createHttpServerTransport(
                     status: 200,
                     headers: {
                       "Content-Type": "application/json",
+                      "Cache-Control": "no-store",
                       ...corsHeaders(request),
-                      ...(options.authToken ? {} : { "Cache-Control": "no-store" }),
                     },
                   },
                 );
+              }
+
+              const controlRoute = parseControlPlanePath(url);
+              if (controlRoute) {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+
+                if (!options.controlPlane) {
+                  return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                }
+
+                if (!isAuthorized(request, options.authToken)) {
+                  return new Response("Unauthorized", {
+                    status: 401,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                return handleControlPlaneRequest(request, controlRoute, options.controlPlane, corsHeaders);
               }
 
               const leaseRoute = parseBridgeLeasePath(url.pathname);
@@ -328,11 +392,37 @@ export function createHttpServerTransport(
               }
 
               if (request.method === "POST") {
+                const requestStartedAt = performance.now();
+                let requestMethod: string | undefined;
                 try {
                   const sessionId = request.headers.get("mcp-session-id") || randomUUID();
                   const body = (await request.json()) as JSONRPCMessage;
+                  requestMethod = getJsonRpcMethod(body);
 
                   const response = await transport.handleRequestWithSession(body, sessionId);
+
+                  const protocolError = isJsonRpcProtocolError(response);
+                  const resultError = isJsonRpcResultError(response);
+
+                  if (requestMethod === "initialize" && response && !protocolError) {
+                    await options.onSessionInitialize?.(sessionId, getInitializeClientInfo(body));
+                  }
+
+                  options.controlPlane?.recordRequest({
+                    durationMs: performance.now() - requestStartedAt,
+                    method: requestMethod,
+                    error: protocolError,
+                    resultError,
+                  });
+                  options.controlPlane?.recordEvent({
+                    level: protocolError || resultError ? "warn" : "debug",
+                    type: "mcp.request",
+                    message: `${requestMethod ?? "request"} completed`,
+                    metadata: {
+                      ...(requestMethod ? { method: requestMethod } : {}),
+                      latencyMs: Math.round(performance.now() - requestStartedAt),
+                    },
+                  });
 
                   if (response) {
                     return new Response(JSON.stringify(response), {
@@ -353,7 +443,23 @@ export function createHttpServerTransport(
                     },
                   });
                 } catch (err) {
-                  const message = err instanceof Error ? err.message : String(err);
+                  options.controlPlane?.recordRequest({
+                    durationMs: performance.now() - requestStartedAt,
+                    method: requestMethod,
+                    error: true,
+                  });
+                  options.controlPlane?.recordEvent({
+                    level: "error",
+                    type: "mcp.error",
+                    message: `${requestMethod ?? "request"} failed: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                    metadata: {
+                      ...(requestMethod ? { method: requestMethod } : {}),
+                      latencyMs: Math.round(performance.now() - requestStartedAt),
+                    },
+                  });
+                  const message = sanitizeControlError(err);
                   return new Response(
                     JSON.stringify({
                       jsonrpc: "2.0",
@@ -436,6 +542,121 @@ type BridgeLeaseRoute =
   | { kind: "acquire" }
   | { kind: "heartbeat" | "release"; leaseId: string };
 
+type ControlPlaneRoute =
+  | { kind: "status" }
+  | { kind: "servers" }
+  | { kind: "sessions" }
+  | { kind: "metrics" }
+  | { kind: "events"; limit: number }
+  | { kind: "restart" }
+  | { kind: "invalid"; message: string };
+
+function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
+  switch (url.pathname) {
+    case `${CONTROL_PLANE_PATH}/status`:
+      return url.search
+        ? { kind: "invalid", message: "The status endpoint does not accept query parameters" }
+        : { kind: "status" };
+    case `${CONTROL_PLANE_PATH}/servers`:
+      return url.search
+        ? { kind: "invalid", message: "The servers endpoint does not accept query parameters" }
+        : { kind: "servers" };
+    case `${CONTROL_PLANE_PATH}/sessions`:
+      return url.search
+        ? { kind: "invalid", message: "The sessions endpoint does not accept query parameters" }
+        : { kind: "sessions" };
+    case `${CONTROL_PLANE_PATH}/metrics`:
+      return url.search
+        ? { kind: "invalid", message: "The metrics endpoint does not accept query parameters" }
+        : { kind: "metrics" };
+    case `${CONTROL_PLANE_PATH}/restart`:
+      return url.search
+        ? { kind: "invalid", message: "The restart endpoint does not accept query parameters" }
+        : { kind: "restart" };
+    case `${CONTROL_PLANE_PATH}/events`: {
+      const rawLimit = url.searchParams.get("limit");
+      if (url.searchParams.size > (rawLimit === null ? 0 : 1)) {
+        return { kind: "invalid", message: "Only the limit query parameter is supported" };
+      }
+      if (rawLimit === null) {
+        return { kind: "events", limit: CONTROL_PLANE_DEFAULT_EVENT_LIMIT };
+      }
+      if (!/^\d+$/.test(rawLimit)) {
+        return { kind: "invalid", message: "The limit query parameter must be a positive integer" };
+      }
+      const parsed = Number(rawLimit);
+      if (!Number.isSafeInteger(parsed)) {
+        return { kind: "invalid", message: "The limit query parameter is too large" };
+      }
+      return {
+        kind: "events",
+        limit: Math.min(Math.max(parsed, 1), CONTROL_PLANE_MAX_EVENT_LIMIT),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+async function handleControlPlaneRequest(
+  request: Request,
+  route: ControlPlaneRoute,
+  controlPlane: ControlPlane,
+  headers: (request: Request) => Record<string, string>,
+): Promise<Response> {
+  const responseHeaders = headers(request);
+
+  if (route.kind === "invalid") {
+    return jsonResponse(
+      { error: "Invalid request", message: route.message },
+      400,
+      responseHeaders,
+    );
+  }
+
+  if (route.kind === "restart") {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+
+    try {
+      const result = await controlPlane.restart();
+      return jsonResponse(result, result.accepted ? 202 : 409, responseHeaders);
+    } catch (error) {
+      return jsonResponse(
+        {
+          error: "Restart failed",
+          message: sanitizeControlError(error),
+        },
+        500,
+        responseHeaders,
+      );
+    }
+  }
+
+  if (request.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+  }
+
+  switch (route.kind) {
+    case "status":
+      return jsonResponse({ status: controlPlane.getStatus() }, 200, responseHeaders);
+    case "servers":
+      return jsonResponse({ servers: controlPlane.getServers() }, 200, responseHeaders);
+    case "sessions":
+      return jsonResponse({ sessions: controlPlane.getSessions() }, 200, responseHeaders);
+    case "metrics":
+      return jsonResponse({ metrics: controlPlane.getMetrics() }, 200, responseHeaders);
+    case "events":
+      return jsonResponse({ events: controlPlane.getEvents(route.limit) }, 200, responseHeaders);
+  }
+}
+
+function sanitizeControlError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return sanitizeText(message);
+}
+
 function parseBridgeLeasePath(pathname: string): BridgeLeaseRoute | null {
   if (pathname === DAEMON_BRIDGE_LEASES_PATH) {
     return { kind: "acquire" };
@@ -463,6 +684,70 @@ function decodePathPart(value: string): string {
   }
 }
 
+function getJsonRpcMethod(message: JSONRPCMessage): string | undefined {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    "method" in message &&
+    typeof message.method === "string"
+  ) {
+    return message.method;
+  }
+  return undefined;
+}
+
+function getInitializeClientInfo(
+  message: JSONRPCMessage,
+): { name: string; version?: string } | undefined {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    !("method" in message) ||
+    message.method !== "initialize" ||
+    !("params" in message) ||
+    typeof message.params !== "object" ||
+    message.params === null ||
+    !("clientInfo" in message.params) ||
+    typeof message.params.clientInfo !== "object" ||
+    message.params.clientInfo === null ||
+    !("name" in message.params.clientInfo) ||
+    typeof message.params.clientInfo.name !== "string" ||
+    message.params.clientInfo.name.length === 0
+  ) {
+    return undefined;
+  }
+
+  const version =
+    "version" in message.params.clientInfo &&
+    typeof message.params.clientInfo.version === "string" &&
+    message.params.clientInfo.version.length > 0
+      ? message.params.clientInfo.version
+      : undefined;
+
+  return {
+    name: message.params.clientInfo.name,
+    ...(version ? { version } : {}),
+  };
+}
+
+function isJsonRpcProtocolError(message: JSONRPCMessage | null): boolean {
+  return typeof message === "object" && message !== null && "error" in message;
+}
+
+function isJsonRpcResultError(message: JSONRPCMessage | null): boolean {
+  if (typeof message !== "object" || message === null || !("result" in message)) {
+    return false;
+  }
+
+  const result = message.result;
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "isError" in result &&
+    result.isError === true
+  );
+}
+
 function isAuthorized(
   request: Request,
   authToken: string | undefined,
@@ -473,7 +758,7 @@ function isAuthorized(
 }
 
 function jsonResponse(
-  value: ConnectionLease,
+  value: unknown,
   status: number,
   headers: Record<string, string>,
 ): Response {
@@ -482,6 +767,7 @@ function jsonResponse(
     headers: {
       ...headers,
       "Content-Type": "application/json",
+      "Cache-Control": "no-store",
     },
   });
 }

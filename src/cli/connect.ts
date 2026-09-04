@@ -16,6 +16,7 @@ import { ConfigError, RouterMcpError } from "../utils/errors.js";
 export interface ConnectCommandOptions {
   config?: string;
   project?: string;
+  host?: string;
   preferredPort?: number;
   verbose?: boolean;
 }
@@ -35,11 +36,13 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
   try {
     let configPath: string;
+    let configuredHost: string | undefined;
     let configuredPort: number | undefined;
 
     if (options.config) {
       const resolved = await resolveConfigFromPath(options.config, projectPath);
       configPath = resolve(resolved.path);
+      configuredHost = resolved.config.httpServer?.host;
       configuredPort = resolved.config.httpServer?.port;
     } else {
       const resolved = await resolveConfig(projectPath);
@@ -47,6 +50,7 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
         throw new ConfigError("No config file found. Run 'routermcp config' to create one.");
       }
       configPath = resolve(resolved.path);
+      configuredHost = resolved.config.httpServer?.host;
       configuredPort = resolved.config.httpServer?.port;
       log(`Resolved config scope: ${resolved.scope}`);
     }
@@ -68,6 +72,7 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
     const status = await ensureRunning(paths, {
       projectPath,
+      host: options.host ?? configuredHost,
       preferredPort: options.preferredPort ?? configuredPort,
       verbose,
     });

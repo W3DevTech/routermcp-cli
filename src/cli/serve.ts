@@ -1,9 +1,19 @@
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
+import type { UpstreamServer } from "../core/upstream.js";
+import {
+  ControlPlane,
+  sanitizeText,
+  sanitizeUrl,
+  type ControlPlaneServer,
+  type ControlPlaneSession,
+  type ControlPlaneStatus,
+} from "../control-plane/index.js";
 import {
   type DaemonPaths,
   acquireProfileLock,
@@ -37,6 +47,7 @@ export interface ServeCommandOptions {
 }
 
 const DEFAULT_DAEMON_PORT = 7858;
+const MANAGED_RESTART_TIMEOUT_MS = 30_000;
 
 export async function serveCommand(options: ServeCommandOptions): Promise<void> {
   const verbose = options.verbose ?? false;
@@ -54,6 +65,8 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let daemonPaths: DaemonPaths | null = null;
   let runtimeManifest: RuntimeManifest | null = null;
   let gateway: Gateway | null = null;
+  let controlPlane: ControlPlane | null = null;
+  let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
   try {
@@ -72,8 +85,12 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     if (isDaemon) {
+      httpPort = options.http ?? config.httpServer?.port ?? DEFAULT_DAEMON_PORT;
+    }
+
+    if (isDaemon) {
       const projectPath = resolve(options.project ?? process.cwd());
-      const daemonHost = options.host ?? "127.0.0.1";
+      const daemonHost = options.host ?? config.httpServer?.host ?? "127.0.0.1";
       if (!isLoopbackHost(daemonHost)) {
         throw new RouterMcpError(
           `Daemon host must be loopback (received ${daemonHost})`,
@@ -134,13 +151,86 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           `[daemon] Runtime manifest: ${daemonPaths.runtimeManifest ?? daemonPaths.pid}`,
         );
       }
+
+      controlPlane = new ControlPlane({
+        getStatus: () =>
+          createControlPlaneStatus(runtimeManifest, gateway, daemonPaths, httpPort),
+        getServers: () => createControlPlaneServers(gateway),
+        getSessions: () => createControlPlaneSessions(gateway, runtimeManifest),
+        getLeases: () => gateway?.getConnectionLeases() ?? [],
+        restart: async () => {
+          if (!daemonPaths || !runtimeManifest) {
+            return {
+              accepted: false,
+              message: "Managed daemon restart is not available",
+            };
+          }
+          if (restartScheduled) {
+            return {
+              accepted: false,
+              message: "A daemon restart is already scheduled",
+              state: "stopping",
+            };
+          }
+
+          restartScheduled = true;
+          const stopping = transitionReadiness(readinessFromManifest(runtimeManifest), "stopping");
+          runtimeManifest = { ...runtimeManifest, ...stopping };
+          await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest).catch((error) => {
+            controlPlane?.recordEvent({
+              level: "warn",
+              type: "daemon.restart.manifest-error",
+              message: `Unable to publish restart state: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          });
+          controlPlane?.recordEvent({
+            level: "info",
+            type: "daemon.restart",
+            message: "Daemon restart scheduled",
+          });
+
+          const restartTimer = setTimeout(() => {
+            try {
+              launchManagedRestart(
+                daemonPaths as DaemonPaths,
+                runtimeManifest as RuntimeManifest,
+                verbose,
+                (error) => {
+                  restartScheduled = false;
+                  controlPlane?.recordEvent({
+                    level: "error",
+                    type: "daemon.restart.error",
+                    message: error?.message ?? "Unable to launch the daemon restart process",
+                  });
+                },
+              );
+            } catch (error) {
+              restartScheduled = false;
+              controlPlane?.recordEvent({
+                level: "error",
+                type: "daemon.restart.error",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }, 0);
+          unrefTimer(restartTimer);
+
+          return {
+            accepted: true,
+            message: "Daemon restart scheduled",
+            state: "stopping",
+          };
+        },
+      });
     }
 
     gateway = createGateway({
       config,
       mode,
       httpPort,
-      httpHost: isDaemon ? options.host ?? "127.0.0.1" : options.host,
+      httpHost: isDaemon
+        ? runtimeManifest?.host ?? options.host ?? config.httpServer?.host ?? "127.0.0.1"
+        : options.host,
       httpOptions:
         runtimeManifest === null
           ? undefined
@@ -158,12 +248,13 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
                 port: runtimeManifest?.port,
                 readyAt: runtimeManifest?.readyAt,
               }),
+              controlPlane: controlPlane ?? undefined,
             },
       verbose,
       clearOpenApiCache: clearCache,
     });
 
-    setupSignalHandlers(gateway, daemonPaths, () => runtimeManifest);
+    setupSignalHandlers(gateway, daemonPaths, () => runtimeManifest, () => controlPlane);
 
     await gateway.start();
 
@@ -188,6 +279,13 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       if (verbose) {
         console.error(`[daemon] Runtime manifest published as ready on port ${actualPort}`);
       }
+
+      controlPlane?.recordEvent({
+        level: "info",
+        type: "daemon.ready",
+        message: `Daemon ready on port ${actualPort}`,
+        metadata: { port: actualPort },
+      });
 
       if (startupLock) {
         await startupLock.release();
@@ -258,17 +356,296 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   }
 }
 
+function createControlPlaneStatus(
+  manifest: RuntimeManifest | null,
+  gateway: Gateway | null,
+  paths: DaemonPaths | null,
+  requestedPort: number | undefined,
+): ControlPlaneStatus {
+  const host = manifest?.host ?? "127.0.0.1";
+  const port = manifest?.port ?? gateway?.getHttpPort() ?? requestedPort ?? 0;
+  const fallbackBaseUrl = port > 0 ? `http://${formatHost(host)}:${port}` : "";
+  const startedAt = manifest?.startedAt ?? new Date().toISOString();
+  const startedAtMs = Date.parse(startedAt);
+  const uptimeSeconds = Number.isFinite(startedAtMs)
+    ? Math.max(0, Math.round(((Date.now() - startedAtMs) / 1_000) * 100) / 100)
+    : 0;
+
+  let state: ControlPlaneStatus["state"] = manifest?.state ?? "offline";
+  if (
+    state === "ready" &&
+    (gateway?.getUpstreamServers().some((server) => server.status === "error" || server.error) ||
+      gateway?.getOpenApiServerSnapshots().some((server) => server.status === "error"))
+  ) {
+    state = "degraded";
+  } else if (!manifest) {
+    state = gatewayStateToControlState(gateway?.getState());
+  }
+
+  return {
+    state,
+    instanceId: manifest?.instanceId ?? "unknown",
+    ...(manifest?.pid ? { pid: manifest.pid } : {}),
+    version: manifest?.cliVersion ?? "unknown",
+    protocolVersion: manifest?.protocolVersion ?? "unknown",
+    profile: manifest?.profileId ?? paths?.profileId ?? "unknown",
+    configDigest: manifest?.configFingerprint ?? "unknown",
+    host,
+    port,
+    mcpUrl: manifest?.mcpUrl ?? (fallbackBaseUrl ? `${fallbackBaseUrl}/mcp` : ""),
+    controlUrl: manifest?.controlUrl ?? fallbackBaseUrl,
+    startedAt,
+    uptimeSeconds,
+  };
+}
+
+function createControlPlaneServers(gateway: Gateway | null): ControlPlaneServer[] {
+  if (!gateway) return [];
+
+  const upstreamServers = gateway.getUpstreamServers().map((server) => {
+    const state = upstreamStateToControlState(server);
+    const url = sanitizeUrl(server.config.url);
+    const lastError = server.error ? sanitizeText(server.error.message) : undefined;
+
+    return {
+      id: sanitizeText(server.name),
+      name: sanitizeText(server.name),
+      ...(url ? { url } : {}),
+      transport: server.config.transport,
+      state,
+      toolCount: server.cachedTools.length || server.tools.length,
+      ...(server.lastLatencyMs !== undefined && server.lastLatencyMs !== null
+        ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
+        : {}),
+      ...(server.lastCheckedAt !== undefined && server.lastCheckedAt !== null
+        ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
+        : {}),
+      ...(lastError ? { lastError } : {}),
+    };
+  });
+
+  const openApiServers = gateway.getOpenApiServerSnapshots().map((server) => ({
+    id: `openapi:${sanitizeText(server.name)}`,
+    name: sanitizeText(server.name),
+    ...(server.baseUrl ? { url: sanitizeUrl(server.baseUrl) } : {}),
+    transport: "openapi",
+    state: openApiStateToControlState(server),
+    toolCount: Math.max(0, Math.floor(server.toolCount)),
+    ...(server.lastLatencyMs !== undefined
+      ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
+      : {}),
+    ...(server.lastCheckedAt !== undefined
+      ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
+      : {}),
+    ...(server.lastError ? { lastError: sanitizeText(server.lastError) } : {}),
+  } satisfies ControlPlaneServer));
+
+  return [...upstreamServers, ...openApiServers];
+}
+
+function openApiStateToControlState(
+  server: ReturnType<Gateway["getOpenApiServerSnapshots"]>[number],
+): ControlPlaneServer["state"] {
+  switch (server.status) {
+    case "pending":
+    case "loading":
+      return "starting";
+    case "ready":
+      return "online";
+    case "error":
+      return server.toolCount > 0 ? "degraded" : "offline";
+  }
+}
+
+function createControlPlaneSessions(
+  gateway: Gateway | null,
+  manifest: RuntimeManifest | null,
+): ControlPlaneSession[] {
+  if (!gateway) return [];
+
+  const profile = manifest?.profileId;
+  const sessions: ControlPlaneSession[] = gateway.getSessionSnapshots().map((session) => ({
+    id: `mcp:${session.id}`,
+    kind: "mcp",
+    clientName: session.clientName ?? "MCP client",
+    ...(session.clientVersion ? { clientVersion: session.clientVersion } : {}),
+    ...(profile ? { profile } : {}),
+    state: session.state,
+    connectedAt: new Date(session.createdAt).toISOString(),
+    lastSeenAt: new Date(session.lastSeenAt).toISOString(),
+  }));
+
+  const now = Date.now();
+  for (const lease of gateway.getConnectionLeases()) {
+    sessions.push({
+      id: `bridge:${lease.leaseId}`,
+      kind: "bridge",
+      clientName: "stdio bridge",
+      ...(profile ? { profile } : {}),
+      state: Date.parse(lease.leaseExpiresAt) > now ? "active" : "expired",
+      connectedAt: lease.connectedAt,
+      lastSeenAt: lease.lastSeenAt,
+      leaseExpiresAt: lease.leaseExpiresAt,
+    });
+  }
+
+  return sessions.sort((left, right) => {
+    return Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt);
+  });
+}
+
+function upstreamStateToControlState(
+  server: UpstreamServer,
+): ControlPlaneServer["state"] {
+  switch (server.status) {
+    case "connected":
+    case "discovered":
+      return "online";
+    case "connecting":
+      return "starting";
+    case "error":
+      return hasCachedCapabilities(server) ? "degraded" : "offline";
+    case "disabled":
+    case "disconnected":
+      return "offline";
+  }
+}
+
+function hasCachedCapabilities(server: UpstreamServer): boolean {
+  return (
+    server.cachedTools.length > 0 ||
+    server.cachedResources.length > 0 ||
+    server.cachedPrompts.length > 0
+  );
+}
+
+function gatewayStateToControlState(
+  state: ReturnType<Gateway["getState"]> | undefined,
+): ControlPlaneStatus["state"] {
+  switch (state) {
+    case "starting":
+      return "starting";
+    case "running":
+      return "ready";
+    case "stopping":
+      return "stopping";
+    case "error":
+      return "failed";
+    default:
+      return "offline";
+  }
+}
+
+interface CliRuntimeCommand {
+  command: string;
+  args: string[];
+}
+
+function launchManagedRestart(
+  paths: DaemonPaths,
+  manifest: RuntimeManifest,
+  verbose: boolean,
+  onError: (error?: Error) => void,
+): void {
+  const script = process.argv[1] ? resolve(process.argv[1]) : undefined;
+  if (!script) throw new Error("Unable to determine the RouterMCP CLI entrypoint for restart");
+
+  const runtime = getCliRuntimeCommand(script);
+  const args = [
+    ...runtime.args,
+    script,
+    "restart",
+    "--config",
+    manifest.configPath,
+    "--project",
+    paths.projectPath,
+    "--host",
+    manifest.host,
+  ];
+  if (manifest.port) args.push("--port", String(manifest.port));
+  if (verbose) args.push("--verbose");
+
+  const env = { ...process.env };
+  delete env.ROUTERMCP_DAEMON;
+  delete env.ROUTERMCP_DAEMON_LOCK_HELD;
+
+  const child = spawn(runtime.command, args, {
+    cwd: paths.projectPath,
+    detached: true,
+    stdio: "ignore",
+    env,
+  });
+  let finished = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const finish = (error?: Error): void => {
+    if (finished) return;
+    finished = true;
+    if (watchdog) clearTimeout(watchdog);
+    if (error) onError(error);
+  };
+
+  child.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+  child.once("exit", (code, signal) => {
+    if (code === 0) {
+      finish();
+      return;
+    }
+    finish(
+      new Error(
+        `Managed daemon restart exited unsuccessfully${code === null ? ` from ${signal ?? "a signal"}` : ` with code ${code}`}`,
+      ),
+    );
+  });
+  watchdog = setTimeout(() => {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // The child may have exited between the watchdog firing and signal delivery.
+    }
+    finish(new Error(`Managed daemon restart did not complete within ${MANAGED_RESTART_TIMEOUT_MS}ms`));
+  }, MANAGED_RESTART_TIMEOUT_MS);
+  unrefTimer(watchdog);
+  child.unref();
+}
+
+function getCliRuntimeCommand(script: string): CliRuntimeCommand {
+  if (extname(script) === ".ts" && !isBunRuntime()) {
+    return { command: "bun", args: [] };
+  }
+  return { command: process.execPath, args: [] };
+}
+
+function isBunRuntime(): boolean {
+  return typeof globalThis.Bun !== "undefined" || /(?:^|[\\/])bun(?:\.exe)?$/i.test(process.execPath);
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  const maybeTimer = timer as unknown as { unref?: () => void };
+  maybeTimer.unref?.();
+}
+
 function setupSignalHandlers(
   gateway: Gateway,
   daemonPaths: DaemonPaths | null,
   getRuntimeManifest: () => RuntimeManifest | null,
+  getControlPlane: () => ControlPlane | null,
 ): void {
+  let shutdownStarted = false;
   const shutdown = async (signal: string) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.error(`\nReceived ${signal}, shutting down...`);
     try {
       const manifest = getRuntimeManifest();
       if (manifest && daemonPaths?.runtimeManifest) {
         await markManifestStopping(daemonPaths, manifest);
+      }
+      if (manifest) {
+        getControlPlane()?.recordEvent({
+          level: "info",
+          type: "daemon.stopping",
+          message: `Daemon stopping after ${signal}`,
+        });
       }
       await gateway.stop();
       if (manifest && daemonPaths?.runtimeManifest) {
