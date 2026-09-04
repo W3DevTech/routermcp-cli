@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { extname, resolve } from "node:path";
+import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
@@ -32,6 +32,7 @@ import {
   transitionReadiness,
   writeRuntimeManifest,
 } from "../daemon/index.js";
+import { buildRuntimeInvocation } from "../daemon/lifecycle.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 import { configCommand } from "./config.js";
 
@@ -540,9 +541,29 @@ function gatewayStateToControlState(
   }
 }
 
-interface CliRuntimeCommand {
+export interface ManagedRestartInvocation {
   command: string;
   args: string[];
+}
+
+export function buildManagedRestartInvocation(
+  script: string,
+  paths: Pick<DaemonPaths, "projectPath">,
+  manifest: Pick<RuntimeManifest, "configPath" | "host" | "port">,
+  verbose: boolean,
+): ManagedRestartInvocation {
+  const args = [
+    "restart",
+    "--config",
+    manifest.configPath,
+    "--project",
+    paths.projectPath,
+    "--host",
+    manifest.host,
+  ];
+  if (manifest.port) args.push("--port", String(manifest.port));
+  if (verbose) args.push("--verbose");
+  return buildRuntimeInvocation(script, args);
 }
 
 function launchManagedRestart(
@@ -554,26 +575,13 @@ function launchManagedRestart(
   const script = process.argv[1] ? resolve(process.argv[1]) : undefined;
   if (!script) throw new Error("Unable to determine the RouterMCP CLI entrypoint for restart");
 
-  const runtime = getCliRuntimeCommand(script);
-  const args = [
-    ...runtime.args,
-    script,
-    "restart",
-    "--config",
-    manifest.configPath,
-    "--project",
-    paths.projectPath,
-    "--host",
-    manifest.host,
-  ];
-  if (manifest.port) args.push("--port", String(manifest.port));
-  if (verbose) args.push("--verbose");
+  const invocation = buildManagedRestartInvocation(script, paths, manifest, verbose);
 
   const env = { ...process.env };
   delete env.ROUTERMCP_DAEMON;
   delete env.ROUTERMCP_DAEMON_LOCK_HELD;
 
-  const child = spawn(runtime.command, args, {
+  const child = spawn(invocation.command, invocation.args, {
     cwd: paths.projectPath,
     detached: true,
     stdio: "ignore",
@@ -610,17 +618,6 @@ function launchManagedRestart(
   }, MANAGED_RESTART_TIMEOUT_MS);
   unrefTimer(watchdog);
   child.unref();
-}
-
-function getCliRuntimeCommand(script: string): CliRuntimeCommand {
-  if (extname(script) === ".ts" && !isBunRuntime()) {
-    return { command: "bun", args: [] };
-  }
-  return { command: process.execPath, args: [] };
-}
-
-function isBunRuntime(): boolean {
-  return typeof globalThis.Bun !== "undefined" || /(?:^|[\\/])bun(?:\.exe)?$/i.test(process.execPath);
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {

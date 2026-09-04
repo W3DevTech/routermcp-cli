@@ -397,7 +397,6 @@ async function spawnAndWaitForDaemon(
   const host = options.host ?? DEFAULT_DAEMON_HOST;
   const projectPath = options.projectPath ?? paths.projectPath ?? process.cwd();
   const args = [
-    script,
     "serve",
     "--config",
     paths.configPath,
@@ -413,10 +412,10 @@ async function spawnAndWaitForDaemon(
     args.push("--verbose");
   }
 
-  const runtime = getRuntimeCommand(script);
+  const invocation = buildRuntimeInvocation(script, args);
   let child: ChildProcess;
   try {
-    child = spawn(runtime.command, [...runtime.args, ...args], {
+    child = spawn(invocation.command, invocation.args, {
       cwd: projectPath,
       detached: true,
       stdio: ["ignore", "ignore", logFd],
@@ -730,21 +729,45 @@ function isValidPort(port: number | undefined): port is number {
   return port !== undefined && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
-interface RuntimeCommand {
+export interface RuntimeInvocation {
   command: string;
   args: string[];
+}
+
+interface RuntimeCommand extends RuntimeInvocation {
+  includeScript: boolean;
 }
 
 /**
  * Vitest executes this package with Node while the source entrypoint is a
  * TypeScript module. Use Bun for that source-only case; built CLI artifacts
- * continue to use the executable that launched RouterMCP.
+ * continue to use the executable that launched RouterMCP. A Bun-compiled
+ * executable reports a virtual `/$bunfs/...` entrypoint, which is not an
+ * application script and must not be forwarded as one of the CLI arguments.
  */
 function getRuntimeCommand(script: string): RuntimeCommand {
+  const includeScript = !isCompiledBunEntrypoint(script);
   if (extname(script) === ".ts" && !isBunRuntime()) {
-    return { command: "bun", args: [] };
+    return { command: "bun", args: [], includeScript };
   }
-  return { command: process.execPath, args: [] };
+  return { command: process.execPath, args: [], includeScript };
+}
+
+/** Return true for the virtual entrypoint exposed by `bun --compile`. */
+export function isCompiledBunEntrypoint(script: string): boolean {
+  return /(?:^|[\\/])\$bunfs(?:[\\/]|$)/.test(script);
+}
+
+/** Build a runtime command while keeping bundled virtual paths out of argv. */
+export function buildRuntimeInvocation(
+  script: string,
+  commandArgs: readonly string[],
+): RuntimeInvocation {
+  const runtime = getRuntimeCommand(script);
+  return {
+    command: runtime.command,
+    args: [...runtime.args, ...(runtime.includeScript ? [script] : []), ...commandArgs],
+  };
 }
 
 function isBunRuntime(): boolean {
