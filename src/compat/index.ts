@@ -214,10 +214,17 @@ export function serve(options: ServeOptions): ServerHandle {
       hostname: options.host,
       fetch: options.fetch,
     });
+    const boundPort = server.port ?? options.port;
+
+    // Bun's Server methods may be non-enumerable and may depend on the
+    // original receiver. Do not spread the server object: expose an explicit
+    // wrapper so lifecycle callers can always invoke stop() safely.
     return {
-      ...server,
-      port: server.port ?? options.port,
-      ready: Promise.resolve(server.port ?? options.port),
+      port: boundPort,
+      ready: Promise.resolve(boundPort),
+      stop: () => {
+        server.stop();
+      },
     };
   }
 
