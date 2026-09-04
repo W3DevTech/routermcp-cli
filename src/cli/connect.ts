@@ -71,7 +71,8 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
       } else {
         info(`Daemon started at ${projectPath} (pid: ${status.pid}, port: ${status.port})`);
       }
-      await proxyStdioToHttp(`http://127.0.0.1:${status.port}/mcp`, log);
+      const mcpUrl = status.mcpUrl ?? `http://${formatHost(status.host ?? "127.0.0.1")}:${status.port}/mcp`;
+      await proxyStdioToHttp(mcpUrl, log);
     } else {
       throw new Error("Daemon did not report socket or HTTP port");
     }
@@ -89,49 +90,67 @@ async function proxyStdioToHttp(url: string, log: (msg: string) => void): Promis
   log(`HTTP proxy to: ${url} (session: ${sessionId})`);
 
   const rl = createInterface({ input: process.stdin });
+  let requestQueue = Promise.resolve();
+  let bridgeError: Error | null = null;
 
-  rl.on("line", async (line) => {
+  rl.on("line", (line) => {
     if (!line.trim()) return;
 
-    try {
-      const message = JSON.parse(line);
-      log(`stdin -> daemon: ${JSON.stringify(message).substring(0, 100)}...`);
+    requestQueue = requestQueue
+      .then(async () => {
+        const message = JSON.parse(line);
+        log(`stdin -> daemon: ${JSON.stringify(message).substring(0, 100)}...`);
 
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Mcp-Session-Id": sessionId,
-        },
-        body: JSON.stringify(message),
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": sessionId,
+          },
+          body: JSON.stringify(message),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error: ${response.status}${errorText ? ` ${errorText}` : ""}`);
+        }
+
+        const responseText = await response.text();
+        if (responseText) {
+          log(`daemon -> stdout: ${responseText.substring(0, 100)}...`);
+          process.stdout.write(`${responseText}\n`);
+        }
+      })
+      .catch((err: unknown) => {
+        bridgeError ??= err instanceof Error ? err : new Error(String(err));
+        console.error(`Error processing message: ${bridgeError.message}`);
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`HTTP error: ${response.status} ${errorText}`);
-        return;
-      }
-
-      const responseText = await response.text();
-      if (responseText) {
-        log(`daemon -> stdout: ${responseText.substring(0, 100)}...`);
-        process.stdout.write(`${responseText}\n`);
-      }
-    } catch (err) {
-      console.error(`Error processing message: ${err}`);
-    }
   });
 
-  rl.on("close", () => {
-    log("stdin closed");
-    process.exit(0);
+  await new Promise<void>((resolveBridge) => {
+    const shutdown = () => {
+      rl.close();
+    };
+    const finish = () => {
+      process.removeListener("SIGINT", shutdown);
+      process.removeListener("SIGTERM", shutdown);
+      void requestQueue.finally(() => {
+        resolveBridge();
+      });
+    };
+
+    rl.once("close", finish);
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
   });
 
-  process.on("SIGINT", () => {
-    process.exit(0);
-  });
+  if (bridgeError) {
+    throw bridgeError;
+  }
 
-  process.on("SIGTERM", () => {
-    process.exit(0);
-  });
+  log("stdin closed");
+}
+
+function formatHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }

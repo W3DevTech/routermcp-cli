@@ -13,6 +13,7 @@ import {
   getDaemonStatus,
   getDaemonPaths,
   getProjectId,
+  isLoopbackHost,
   matchesProcessIdentity,
   readRuntimeManifest,
   removeRuntimeManifest,
@@ -88,12 +89,22 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       if (process.env.ROUTERMCP_DAEMON_LOCK_HELD !== "1") {
         startupLock = await acquireProfileLock(daemonPaths.lock);
         const incumbent = await getDaemonStatus(daemonPaths);
-        if (incumbent.running) {
+        const incumbentManifest = daemonPaths.runtimeManifest
+          ? await readRuntimeManifest(daemonPaths.runtimeManifest)
+          : null;
+        const incumbentAlive = incumbentManifest
+          ? await matchesProcessIdentity(incumbentManifest.processIdentity)
+          : incumbent.running;
+        if (incumbentAlive) {
           await startupLock.release();
           startupLock = null;
           throw new Error(
-            `RouterMCP daemon is already running for this profile (pid ${incumbent.pid ?? "unknown"})`,
+            `RouterMCP daemon is already running for this profile (pid ${incumbentManifest?.pid ?? incumbent.pid ?? "unknown"})`,
           );
+        }
+
+        if (incumbentManifest && daemonPaths.runtimeManifest) {
+          await removeRuntimeManifest(daemonPaths.runtimeManifest);
         }
       }
 
@@ -322,15 +333,6 @@ async function removeRuntimeManifestIfCurrent(
   if (current?.instanceId === manifest.instanceId) {
     await removeRuntimeManifest(paths.runtimeManifest);
   }
-}
-
-function isLoopbackHost(host: string): boolean {
-  return (
-    host === "localhost" ||
-    host === "::1" ||
-    host === "127.0.0.1" ||
-    host.startsWith("127.")
-  );
 }
 
 function formatHost(host: string): string {

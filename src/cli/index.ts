@@ -550,6 +550,8 @@ SERVE OPTIONS:
 DAEMON OPTIONS:
   -c, --config <path>   Path to config file
   --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
   --json                Print machine-readable status
   --verbose             Enable verbose logging
 
@@ -812,6 +814,8 @@ function daemonCommandOptions(options: CliOptions): DaemonCommandOptions {
   return {
     config: options.config,
     project: options.project,
+    host: options.host,
+    preferredPort: options.port,
     verbose: options.verbose,
     json: options.json,
   };

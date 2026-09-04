@@ -28,8 +28,12 @@ vi.mock("../../../src/core/gateway.js", () => ({
 
 vi.mock("../../../src/daemon/index.js", () => ({
   getProjectId: vi.fn(() => "test-project-id"),
+  isLoopbackHost: vi.fn(() => true),
   acquireProfileLock: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
   getDaemonStatus: vi.fn(async () => ({ running: false })),
+  readRuntimeManifest: vi.fn(async () => null),
+  removeRuntimeManifest: vi.fn(async () => undefined),
+  matchesProcessIdentity: vi.fn(async () => false),
   getDaemonPaths: vi.fn(() => ({
     dir: "/tmp/daemon",
     pid: "/tmp/daemon/daemon.pid",

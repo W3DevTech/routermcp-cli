@@ -14,6 +14,8 @@ import {
 export interface DaemonCommandOptions {
   config?: string;
   project?: string;
+  host?: string;
+  preferredPort?: number;
   verbose?: boolean;
   json?: boolean;
 }
@@ -23,6 +25,8 @@ export async function startCommand(options: DaemonCommandOptions): Promise<void>
   const status = await ensureRunning(context.paths, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
+    host: options.host,
+    preferredPort: options.preferredPort,
     verbose: options.verbose,
   });
   printStatus(status, options.json);
@@ -52,6 +56,8 @@ export async function restartCommand(options: DaemonCommandOptions): Promise<voi
   const status = await restartDaemon(context.paths, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
+    host: options.host,
+    preferredPort: options.preferredPort,
     verbose: options.verbose,
   });
   printStatus(status, options.json);

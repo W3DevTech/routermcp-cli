@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, isIP } from "node:net";
 import { extname, resolve } from "node:path";
 import { VERSION } from "../version.js";
 import { DAEMON_HEALTH_PATH } from "../transports/http-streamable.js";
@@ -610,13 +610,13 @@ async function probeHealth(
   }
 }
 
-function isLoopbackHost(host: string): boolean {
-  return (
-    host === "localhost" ||
-    host === "::1" ||
-    host === "127.0.0.1" ||
-    host.startsWith("127.")
-  );
+export function isLoopbackHost(host: string): boolean {
+  const addressType = isIP(host);
+  if (addressType === 6) return host === "::1";
+  if (addressType !== 4) return false;
+
+  const octets = host.split(".");
+  return octets.length === 4 && octets[0] === "127";
 }
 
 function isValidPort(port: number | undefined): port is number {

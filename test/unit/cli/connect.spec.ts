@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("node:readline", () => ({
   createInterface: vi.fn(() => ({
     on: vi.fn(),
+    once: vi.fn(),
     close: vi.fn(),
   })),
 }));
@@ -38,7 +39,11 @@ import {
 
 describe("connectCommand", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-  let mockRl: { on: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+  let mockRl: {
+    on: ReturnType<typeof vi.fn>;
+    once: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  };
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -46,6 +51,7 @@ describe("connectCommand", () => {
 
     mockRl = {
       on: vi.fn().mockReturnThis(),
+      once: vi.fn().mockReturnThis(),
       close: vi.fn(),
     };
     vi.mocked(createInterface).mockReturnValue(mockRl as never);

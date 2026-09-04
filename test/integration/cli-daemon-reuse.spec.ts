@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cleanupTempDir,
   createTempDir,
+  getAvailablePort,
   writeConfigFile,
 } from "../helpers/test-utils.js";
 
@@ -41,7 +42,18 @@ describe("CLI daemon reuse", () => {
       // Avoid writing a user telemetry config while the child CLI is tested.
       ROUTERMCP_TELEMETRY: "0",
     };
-    const common = ["--config", configPath, "--project", projectDir, "--json"];
+    const preferredPort = await getAvailablePort();
+    const common = [
+      "--config",
+      configPath,
+      "--project",
+      projectDir,
+      "--host",
+      "127.0.0.2",
+      "--port",
+      String(preferredPort),
+      "--json",
+    ];
 
     const started = await runCli(entrypoint, ["start", ...common], env);
     expect(started.code, `${started.stdout}\n${started.stderr}`).toBe(0);
@@ -64,19 +76,28 @@ describe("CLI daemon reuse", () => {
     expect(statusManifest.instanceId).toBe(startedStatus.instanceId);
     expect(statusManifest.state).toBe("ready");
 
+    const mcpRequest = '{"jsonrpc":"2.0","id":1,"method":"ping"}\n';
     const connected = await runCli(
       entrypoint,
       ["connect", "--config", configPath, "--project", projectDir],
       env,
+      mcpRequest,
     );
     expect(connected.code).toBe(0);
     expect(connected.stderr).toContain(`pid: ${startedStatus.pid}`);
     expect(connected.stderr).toContain("Connected to daemon");
+    expect(connected.stdout).toContain('"jsonrpc"');
 
-    const bare = await runCli(entrypoint, ["--config", configPath, "--project", projectDir], env);
+    const bare = await runCli(
+      entrypoint,
+      ["--config", configPath, "--project", projectDir],
+      env,
+      mcpRequest,
+    );
     expect(bare.code).toBe(0);
     expect(bare.stderr).toContain(`pid: ${startedStatus.pid}`);
     expect(bare.stderr).toContain("Connected to daemon");
+    expect(bare.stdout).toContain('"jsonrpc"');
 
     const stopped = await runCli(entrypoint, ["stop", ...common], env);
     expect(stopped.code).toBe(0);
@@ -95,6 +116,7 @@ async function runCli(
   entrypoint: string,
   args: string[],
   env: NodeJS.ProcessEnv,
+  input?: string,
 ): Promise<CliResult> {
   const runtime = /(?:^|[\\/])bun(?:\.exe)?$/i.test(process.execPath) ? process.execPath : "bun";
   const child = spawn(runtime, [entrypoint, ...args], {
@@ -103,7 +125,12 @@ async function runCli(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  child.stdin.end();
+  if (input) {
+    child.stdin.write(input);
+    setTimeout(() => child.stdin.end(), 100);
+  } else {
+    child.stdin.end();
+  }
 
   let stdout = "";
   let stderr = "";

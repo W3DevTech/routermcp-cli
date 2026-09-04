@@ -34,6 +34,7 @@ export {
   DaemonStopTimeoutError,
   ensureRunning,
   getDaemonStatus,
+  isLoopbackHost,
   type EnsureRunningOptions,
   restartDaemon,
   startDaemon,
