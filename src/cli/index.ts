@@ -107,13 +107,18 @@ export function parseArgs(args: string[]): {
   options: CliOptions;
 } {
   const options: CliOptions = {};
-  let command: Command = "serve";
+  // A bare invocation is an MCP client launch and should reuse the managed
+  // daemon. Foreground ownership remains available through an explicit
+  // `serve` command (or the explicit HTTP/daemon flags below).
+  let command: Command = "connect";
+  let explicitCommand = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     switch (arg) {
       case "config": {
+        explicitCommand = true;
         command = "config";
         // Check for subcommands: add, remove, list
         const nextArg = args[i + 1];
@@ -238,42 +243,52 @@ export function parseArgs(args: string[]): {
       }
 
       case "serve":
+        explicitCommand = true;
         command = "serve";
         break;
 
       case "tunnel":
+        explicitCommand = true;
         command = "tunnel";
         break;
 
       case "proxy":
+        explicitCommand = true;
         command = "proxy";
         break;
 
       case "connect":
+        explicitCommand = true;
         command = "connect";
         break;
 
       case "start":
+        explicitCommand = true;
         command = "start";
         break;
 
       case "status":
+        explicitCommand = true;
         command = "status";
         break;
 
       case "stop":
+        explicitCommand = true;
         command = "stop";
         break;
 
       case "restart":
+        explicitCommand = true;
         command = "restart";
         break;
 
       case "doctor":
+        explicitCommand = true;
         command = "doctor";
         break;
 
       case "tools": {
+        explicitCommand = true;
         command = "tools";
         while (i + 1 < args.length) {
           const opt = args[i + 1];
@@ -288,6 +303,7 @@ export function parseArgs(args: string[]): {
       }
 
       case "oauth": {
+        explicitCommand = true;
         command = "oauth";
         const subAction = args[++i];
         if (subAction === "status") {
@@ -309,6 +325,7 @@ export function parseArgs(args: string[]): {
       }
 
       case "telemetry": {
+        explicitCommand = true;
         command = "telemetry";
         const telemetryAction = args[++i];
         if (
@@ -328,11 +345,13 @@ export function parseArgs(args: string[]): {
       case "help":
       case "--help":
       case "-h":
+        explicitCommand = true;
         command = "help";
         break;
 
       case "version":
       case "--version":
+        explicitCommand = true;
         command = "version";
         break;
 
@@ -358,13 +377,24 @@ export function parseArgs(args: string[]): {
           options.proxyStdio = args[++i];
         } else {
           options.stdio = true;
+          if (!explicitCommand) command = "serve";
         }
         break;
 
       case "--http":
         options.http = Number.parseInt(args[++i], 10);
+        if (!explicitCommand) command = "serve";
         if (Number.isNaN(options.http)) {
           console.error("Error: --http requires a port number");
+          process.exit(1);
+        }
+        break;
+
+      case "--host":
+        options.host = args[++i];
+        if (!explicitCommand) command = "serve";
+        if (!options.host) {
+          console.error("Error: --host requires a host name");
           process.exit(1);
         }
         break;
@@ -446,10 +476,12 @@ export function parseArgs(args: string[]): {
 
       case "--daemon-mode":
         options.daemonMode = true;
+        if (!explicitCommand) command = "serve";
         break;
 
       case "--socket":
         options.socket = args[++i];
+        if (!explicitCommand) command = "serve";
         break;
 
       case "--clear":
@@ -486,7 +518,7 @@ USAGE:
   routermcp -v, --version    Print version and exit
 
 COMMANDS:
-  serve     Start the MCP gateway (default)
+  serve     Start the MCP gateway in the foreground
   connect   Connect to gateway daemon (auto-starts if needed)
   start     Start or reuse the profile daemon
   status    Show daemon status
@@ -505,8 +537,8 @@ SERVE OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --stdio               Use stdio transport (default)
   --http <port>         Use HTTP streamable transport on specified port
+  --host <host>         HTTP bind host (managed daemon must use loopback)
   --daemon-mode         Run as background daemon (for connect command)
-  --socket <path>       Unix socket path (daemon mode, non-Windows)
   --clear               Clear OpenAPI cache before starting (force re-parse)
   --verbose             Enable verbose logging
 
@@ -576,7 +608,7 @@ TOOLS OPTIONS:
 
 EXAMPLES:
   # Serve (gateway mode)
-  routermcp                           Start gateway with default config (stdio mode)
+  routermcp                           Connect via the reusable daemon (auto-starts if needed)
   routermcp --http 3000               Start gateway with HTTP transport on port 3000
 
   # Connect (daemon mode - for multiple MCP clients)
@@ -654,6 +686,7 @@ export async function main(args: string[]): Promise<void> {
         config: options.config,
         stdio: options.stdio,
         http: options.http,
+        host: options.host,
         verbose: options.verbose,
         daemonMode: options.daemonMode,
         project: options.project,

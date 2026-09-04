@@ -33,7 +33,7 @@ export const DEFAULT_DAEMON_HOST = "127.0.0.1";
 
 export interface DaemonStatus {
   running: boolean;
-  state?: RuntimeManifest["state"];
+  state?: RuntimeManifest["state"] | "stopped";
   pid?: number;
   port?: number;
   host?: string;
@@ -343,6 +343,7 @@ async function spawnAndWaitForDaemon(
   }
 
   const preferredPort = options.preferredPort ?? DEFAULT_DAEMON_PORT;
+  const host = options.host ?? DEFAULT_DAEMON_HOST;
   const projectPath = options.projectPath ?? paths.projectPath ?? process.cwd();
   const args = [
     script,
@@ -354,6 +355,8 @@ async function spawnAndWaitForDaemon(
     "--daemon-mode",
     "--http",
     String(preferredPort),
+    "--host",
+    host,
   ];
   if (options.verbose) {
     args.push("--verbose");
@@ -366,7 +369,14 @@ async function spawnAndWaitForDaemon(
       cwd: projectPath,
       detached: true,
       stdio: ["ignore", "ignore", logFd],
-      env: { ...process.env, ROUTERMCP_DAEMON: "1" },
+      env: {
+        ...process.env,
+        ROUTERMCP_DAEMON: "1",
+        // The supervisor owns the profile lock while this child reaches ready.
+        // This prevents the child from deadlocking against its starter while
+        // still allowing a manually launched daemon to acquire the lock.
+        ROUTERMCP_DAEMON_LOCK_HELD: "1",
+      },
     });
   } catch (error) {
     closeSync(logFd);
@@ -424,11 +434,25 @@ async function waitForDaemonReady(
 
   if (child.pid && isProcessRunning(child.pid)) {
     killProcess(child.pid, "SIGTERM");
+    await waitForPidExit(child.pid, DAEMON_SHUTDOWN_TIMEOUT_MS);
+  }
+  if (child.pid && isProcessRunning(child.pid)) {
+    killProcess(child.pid, "SIGKILL");
+    await waitForPidExit(child.pid, DAEMON_FORCE_SHUTDOWN_TIMEOUT_MS);
   }
   await cleanupFailedStartup(paths, child.pid);
   throw new DaemonStartupError(
     `Daemon failed to become ready within ${timeoutMs}ms; see ${paths.log}`,
   );
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!isProcessRunning(pid)) return true;
+    await sleep(100);
+  }
+  return !isProcessRunning(pid);
 }
 
 /**

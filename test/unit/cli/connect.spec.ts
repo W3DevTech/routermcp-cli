@@ -7,14 +7,6 @@ vi.mock("node:readline", () => ({
   })),
 }));
 
-vi.mock("node:net", () => ({
-  createConnection: vi.fn(() => ({
-    on: vi.fn(),
-    write: vi.fn(),
-    destroy: vi.fn(),
-  })),
-}));
-
 vi.mock("../../../src/config/loader.js", () => ({
   resolveConfig: vi.fn(),
 }));
@@ -29,11 +21,11 @@ vi.mock("../../../src/daemon/index.js", () => ({
     configPath: "/path/to/config.jsonc",
   })),
   getDaemonStatus: vi.fn(),
+  ensureRunning: vi.fn(),
   startDaemon: vi.fn(),
   isWindows: vi.fn(() => false),
 }));
 
-import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import { type ConnectCommandOptions, connectCommand } from "../../../src/cli/connect.js";
 import { resolveConfig } from "../../../src/config/loader.js";
@@ -41,19 +33,12 @@ import {
   getDaemonPaths,
   getDaemonStatus,
   getProjectId,
-  isWindows,
-  startDaemon,
+  ensureRunning,
 } from "../../../src/daemon/index.js";
 
 describe("connectCommand", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let mockRl: { on: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
-  let mockSocket: {
-    on: ReturnType<typeof vi.fn>;
-    write: ReturnType<typeof vi.fn>;
-    destroy: ReturnType<typeof vi.fn>;
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -65,17 +50,15 @@ describe("connectCommand", () => {
     };
     vi.mocked(createInterface).mockReturnValue(mockRl as never);
 
-    mockSocket = {
-      on: vi.fn().mockReturnThis(),
-      write: vi.fn(),
-      destroy: vi.fn(),
-    };
-    vi.mocked(createConnection).mockReturnValue(mockSocket as never);
-
     vi.mocked(resolveConfig).mockResolvedValue({
       config: { mcpServers: {} },
       path: "/path/to/routermcp.jsonc",
       scope: "project-local",
+    });
+    vi.mocked(ensureRunning).mockResolvedValue({
+      running: true,
+      pid: 12345,
+      port: 5151,
     });
   });
 
@@ -144,12 +127,12 @@ describe("connectCommand", () => {
         expect(getDaemonStatus).toHaveBeenCalled();
       });
 
-      expect(startDaemon).not.toHaveBeenCalled();
+      expect(ensureRunning).toHaveBeenCalled();
     });
 
     it("starts daemon when not running", async () => {
       vi.mocked(getDaemonStatus).mockResolvedValue({ running: false });
-      vi.mocked(startDaemon).mockResolvedValue({
+      vi.mocked(ensureRunning).mockResolvedValue({
         running: true,
         pid: 12345,
         port: 5151,
@@ -158,13 +141,13 @@ describe("connectCommand", () => {
       connectCommand({});
 
       await vi.waitFor(() => {
-        expect(startDaemon).toHaveBeenCalled();
+        expect(ensureRunning).toHaveBeenCalled();
       });
     });
 
     it("passes verbose flag to startDaemon", async () => {
       vi.mocked(getDaemonStatus).mockResolvedValue({ running: false });
-      vi.mocked(startDaemon).mockResolvedValue({
+      vi.mocked(ensureRunning).mockResolvedValue({
         running: true,
         pid: 12345,
         port: 5151,
@@ -173,31 +156,23 @@ describe("connectCommand", () => {
       connectCommand({ verbose: true });
 
       await vi.waitFor(() => {
-        expect(startDaemon).toHaveBeenCalledWith(expect.any(Object), true);
+        expect(ensureRunning).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining({ verbose: true }),
+        );
       });
     });
   });
 
-  describe("socket proxy mode", () => {
-    it("uses socket proxy when socket is available and not Windows", async () => {
-      vi.mocked(isWindows).mockReturnValue(false);
+  describe("legacy socket manifests", () => {
+    it("uses HTTP when a legacy socket and port are both present", async () => {
       vi.mocked(getDaemonStatus).mockResolvedValue({
         running: true,
         pid: 12345,
         port: 5151,
         socket: "/tmp/daemon/daemon.sock",
       });
-
-      connectCommand({});
-
-      await vi.waitFor(() => {
-        expect(createConnection).toHaveBeenCalledWith("/tmp/daemon/daemon.sock");
-      });
-    });
-
-    it("falls back to HTTP proxy on Windows even if socket exists", async () => {
-      vi.mocked(isWindows).mockReturnValue(true);
-      vi.mocked(getDaemonStatus).mockResolvedValue({
+      vi.mocked(ensureRunning).mockResolvedValue({
         running: true,
         pid: 12345,
         port: 5151,
@@ -209,15 +184,32 @@ describe("connectCommand", () => {
       await vi.waitFor(() => {
         expect(createInterface).toHaveBeenCalled();
       });
+    });
 
-      expect(createConnection).not.toHaveBeenCalled();
+    it("does not use a legacy socket when no port is available", async () => {
+      vi.mocked(getDaemonStatus).mockResolvedValue({
+        running: true,
+        pid: 12345,
+        socket: "/tmp/daemon/daemon.sock",
+      });
+      vi.mocked(ensureRunning).mockResolvedValue({
+        running: true,
+        pid: 12345,
+        socket: "/tmp/daemon/daemon.sock",
+      });
+
+      await expect(connectCommand({})).rejects.toThrow("Daemon did not report socket or HTTP port");
     });
   });
 
   describe("HTTP proxy mode", () => {
     it("uses HTTP proxy when only port is available", async () => {
-      vi.mocked(isWindows).mockReturnValue(false);
       vi.mocked(getDaemonStatus).mockResolvedValue({
+        running: true,
+        pid: 12345,
+        port: 5151,
+      });
+      vi.mocked(ensureRunning).mockResolvedValue({
         running: true,
         pid: 12345,
         port: 5151,
@@ -229,12 +221,11 @@ describe("connectCommand", () => {
         expect(createInterface).toHaveBeenCalled();
       });
 
-      expect(createConnection).not.toHaveBeenCalled();
     });
 
     it("throws error when daemon has no socket or port", async () => {
       vi.mocked(getDaemonStatus).mockResolvedValue({ running: false });
-      vi.mocked(startDaemon).mockResolvedValue({
+      vi.mocked(ensureRunning).mockResolvedValue({
         running: true,
         pid: 12345,
       });

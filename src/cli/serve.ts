@@ -6,9 +6,11 @@ import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
 import {
   type DaemonPaths,
+  acquireProfileLock,
   createRuntimeManifest,
   createReadinessSnapshot,
   fingerprintConfigFile,
+  getDaemonStatus,
   getDaemonPaths,
   getProjectId,
   matchesProcessIdentity,
@@ -25,6 +27,7 @@ export interface ServeCommandOptions {
   config?: string;
   stdio?: boolean;
   http?: number;
+  host?: string;
   verbose?: boolean;
   daemonMode?: boolean;
   project?: string;
@@ -50,8 +53,16 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let daemonPaths: DaemonPaths | null = null;
   let runtimeManifest: RuntimeManifest | null = null;
   let gateway: Gateway | null = null;
+  let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
   try {
+    if (options.socket) {
+      throw new RouterMcpError(
+        "Unix socket transport is not available; use the managed loopback HTTP transport",
+        "UNSUPPORTED_SOCKET_TRANSPORT",
+      );
+    }
+
     const { config, path: configPath, scope } = await resolveConfigFromPath(options.config);
 
     if (verbose) {
@@ -61,8 +72,30 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
 
     if (isDaemon) {
       const projectPath = resolve(options.project ?? process.cwd());
+      const daemonHost = options.host ?? "127.0.0.1";
+      if (!isLoopbackHost(daemonHost)) {
+        throw new RouterMcpError(
+          `Daemon host must be loopback (received ${daemonHost})`,
+          "INVALID_DAEMON_HOST",
+        );
+      }
       const projectId = getProjectId(projectPath);
       daemonPaths = getDaemonPaths(projectId, resolve(configPath), projectPath);
+
+      // The supervisor keeps this lock while the child reaches ready. A
+      // manually launched daemon must acquire it itself so two direct
+      // `serve --daemon-mode` invocations cannot overwrite one profile.
+      if (process.env.ROUTERMCP_DAEMON_LOCK_HELD !== "1") {
+        startupLock = await acquireProfileLock(daemonPaths.lock);
+        const incumbent = await getDaemonStatus(daemonPaths);
+        if (incumbent.running) {
+          await startupLock.release();
+          startupLock = null;
+          throw new Error(
+            `RouterMCP daemon is already running for this profile (pid ${incumbent.pid ?? "unknown"})`,
+          );
+        }
+      }
 
       if (daemonPaths.runtimeManifest) {
         const configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
@@ -72,9 +105,8 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           configPath: daemonPaths.configPath,
           configFingerprint,
           pid: process.pid,
-          host: "127.0.0.1",
+          host: daemonHost,
           port: httpPort,
-          socketPath: daemonPaths.socket,
           localAuthToken: randomBytes(32).toString("base64url"),
         });
         await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
@@ -97,7 +129,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       config,
       mode,
       httpPort,
-      httpHost: isDaemon ? "127.0.0.1" : undefined,
+      httpHost: isDaemon ? options.host ?? "127.0.0.1" : options.host,
       httpOptions:
         runtimeManifest === null
           ? undefined
@@ -138,12 +170,17 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         ...runtimeManifest,
         ...ready,
         port: actualPort,
-        mcpUrl: `http://127.0.0.1:${actualPort}/mcp`,
-        controlUrl: `http://127.0.0.1:${actualPort}`,
+        mcpUrl: `http://${formatHost(runtimeManifest.host)}:${actualPort}/mcp`,
+        controlUrl: `http://${formatHost(runtimeManifest.host)}:${actualPort}`,
       };
       await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
       if (verbose) {
         console.error(`[daemon] Runtime manifest published as ready on port ${actualPort}`);
+      }
+
+      if (startupLock) {
+        await startupLock.release();
+        startupLock = null;
       }
     } else if (isDaemon && daemonPaths) {
       // Compatibility path for callers with a pre-contract DaemonPaths
@@ -155,6 +192,10 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       await new Promise(() => {});
     }
   } catch (err) {
+    if (startupLock) {
+      await startupLock.release().catch(() => undefined);
+      startupLock = null;
+    }
     if (gateway) {
       await gateway.stop().catch(() => undefined);
     }
@@ -281,4 +322,17 @@ async function removeRuntimeManifestIfCurrent(
   if (current?.instanceId === manifest.instanceId) {
     await removeRuntimeManifest(paths.runtimeManifest);
   }
+}
+
+function isLoopbackHost(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "127.0.0.1" ||
+    host.startsWith("127.")
+  );
+}
+
+function formatHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }

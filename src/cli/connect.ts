@@ -5,8 +5,7 @@ import {
   getDaemonPaths,
   getDaemonStatus,
   getProjectId,
-  isWindows,
-  startDaemon,
+  ensureRunning,
 } from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 
@@ -53,26 +52,20 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     const paths = getDaemonPaths(projectId, configPath, resolve(projectPath));
     log(`Daemon dir: ${paths.dir}`);
 
-    let status = await getDaemonStatus(paths);
-    log(`Daemon status: ${status.running ? "running" : "stopped"}`);
+    const previousStatus = await getDaemonStatus(paths);
+    log(`Daemon status: ${previousStatus.running ? "running" : "stopped"}`);
+    const wasRunning = previousStatus.running;
+    if (!wasRunning) info("Starting daemon...");
+    const status = await ensureRunning(paths, {
+      verbose,
+      projectPath: resolve(projectPath),
+    });
 
-    const wasRunning = status.running;
-
-    if (!status.running) {
-      info("Starting daemon...");
-      status = await startDaemon(paths, verbose);
-    }
-
-    if (status.socket && !isWindows()) {
-      if (wasRunning) {
-        info(
-          `Connected to daemon at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`,
-        );
-      } else {
-        info(`Daemon started at ${projectPath} (pid: ${status.pid}, socket: ${status.socket})`);
-      }
-      await proxyStdioToSocket(status.socket, log);
-    } else if (status.port) {
+    // The managed daemon uses authenticated loopback HTTP as its single
+    // transport. Unix socket support was previously advertised without a
+    // corresponding server listener, so do not route clients through a
+    // stale/legacy socket path.
+    if (status.port) {
       if (wasRunning) {
         info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, port: ${status.port})`);
       } else {
@@ -89,47 +82,6 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     }
     throw err;
   }
-}
-
-async function proxyStdioToSocket(socketPath: string, log: (msg: string) => void): Promise<void> {
-  const { createConnection } = await import("node:net");
-  const socket = createConnection(socketPath);
-
-  log(`Connected to socket: ${socketPath}`);
-
-  const rl = createInterface({ input: process.stdin });
-
-  rl.on("line", (line) => {
-    if (!line.trim()) return;
-    log(`stdin -> daemon: ${line.substring(0, 100)}...`);
-    socket.write(`${line}\n`);
-  });
-
-  socket.on("data", (data) => {
-    const str = data.toString();
-    log(`daemon -> stdout: ${str.substring(0, 100)}...`);
-    process.stdout.write(str);
-  });
-
-  socket.on("close", () => {
-    log("Socket closed");
-    process.exit(0);
-  });
-
-  socket.on("error", (err) => {
-    console.error(`Socket error: ${err.message}`);
-    process.exit(1);
-  });
-
-  process.on("SIGINT", () => {
-    socket.destroy();
-    process.exit(0);
-  });
-
-  process.on("SIGTERM", () => {
-    socket.destroy();
-    process.exit(0);
-  });
 }
 
 async function proxyStdioToHttp(url: string, log: (msg: string) => void): Promise<void> {

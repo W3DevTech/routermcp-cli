@@ -41,7 +41,7 @@ export async function stopCommand(options: DaemonCommandOptions): Promise<void> 
   await stopDaemon(context.paths);
   const status: DaemonStatus = {
     running: false,
-    state: "stopping",
+    state: "stopped",
     profileId: context.paths.profileId,
   };
   printStatus(status, options.json);

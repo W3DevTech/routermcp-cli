@@ -157,6 +157,8 @@ async function tryCreateLock(lockPath: string, owner: LockOwner): Promise<boolea
 async function removeStaleLock(lockPath: string, staleAfterMs: number): Promise<boolean> {
   let owner: LockOwner | null = null;
   let modifiedAt: number;
+  let inode: number;
+  let size: number;
 
   try {
     const [content, metadata] = await Promise.all([
@@ -164,6 +166,8 @@ async function removeStaleLock(lockPath: string, staleAfterMs: number): Promise<
       stat(lockPath),
     ]);
     modifiedAt = metadata.mtimeMs;
+    inode = metadata.ino;
+    size = metadata.size;
     owner = parseLockOwner(content);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -186,6 +190,13 @@ async function removeStaleLock(lockPath: string, staleAfterMs: number): Promise<
   }
 
   try {
+    // The lock may have been replaced while the owner identity was being
+    // checked. Re-stat the same pathname before unlinking so a stale-owner
+    // cleanup cannot remove a newer contender's lock.
+    const current = await stat(lockPath);
+    if (current.ino !== inode || current.mtimeMs !== modifiedAt || current.size !== size) {
+      return false;
+    }
     await unlink(lockPath);
     return true;
   } catch (error) {

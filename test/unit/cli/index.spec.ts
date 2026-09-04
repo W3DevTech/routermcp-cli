@@ -3,9 +3,9 @@ import { getCurrentArgs, getCurrentCommand, main, parseArgs } from "../../../src
 
 describe("parseArgs", () => {
   describe("command detection", () => {
-    it("defaults to 'serve' when no command provided", () => {
+    it("defaults to 'connect' when no command provided", () => {
       const { command } = parseArgs([]);
-      expect(command).toBe("serve");
+      expect(command).toBe("connect");
     });
 
     it("parses 'serve' command", () => {
@@ -331,7 +331,7 @@ describe("parseArgs", () => {
 
     it("handles empty args array", () => {
       const { command, options } = parseArgs([]);
-      expect(command).toBe("serve");
+      expect(command).toBe("connect");
       expect(options).toEqual({});
     });
 
@@ -340,6 +340,12 @@ describe("parseArgs", () => {
       expect(command).toBe("serve");
       expect(options.http).toBe(5000);
       expect(options.verbose).toBe(true);
+    });
+
+    it("uses the reusable bridge for a bare config selection", () => {
+      const { command, options } = parseArgs(["--config", "routermcp.jsonc"]);
+      expect(command).toBe("connect");
+      expect(options.config).toBe("routermcp.jsonc");
     });
   });
 });
