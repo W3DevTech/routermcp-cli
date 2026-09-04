@@ -8,6 +8,7 @@ import { createGateway, type Gateway } from "../core/gateway.js";
 import type { UpstreamServer } from "../core/upstream.js";
 import {
   ControlPlane,
+  ManagementCredentialStore,
   sanitizeText,
   sanitizeUrl,
   type ControlPlaneServer,
@@ -66,6 +67,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let runtimeManifest: RuntimeManifest | null = null;
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
+  let managementCredentials: ManagementCredentialStore | null = null;
   let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
@@ -222,6 +224,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           };
         },
       });
+      managementCredentials = new ManagementCredentialStore();
     }
 
     gateway = createGateway({
@@ -249,6 +252,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
                 readyAt: runtimeManifest?.readyAt,
               }),
               controlPlane: controlPlane ?? undefined,
+              managementCredentials: managementCredentials ?? undefined,
             },
       verbose,
       clearOpenApiCache: clearCache,

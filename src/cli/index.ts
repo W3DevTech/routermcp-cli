@@ -9,6 +9,7 @@ import {
   configRemoveCommand,
 } from "./config.js";
 import { type ConnectCommandOptions, connectCommand } from "./connect.js";
+import { consoleCommand } from "./console.js";
 import {
   type DaemonCommandOptions,
   restartCommand,
@@ -48,6 +49,7 @@ interface CliOptions extends ServeCommandOptions {
   configSubcommand?: ConfigSubcommand;
   toolsJson?: boolean;
   json?: boolean;
+  open?: boolean;
 }
 
 type Command =
@@ -56,6 +58,7 @@ type Command =
   | "tunnel"
   | "proxy"
   | "connect"
+  | "console"
   | "start"
   | "status"
   | "stop"
@@ -260,6 +263,11 @@ export function parseArgs(args: string[]): {
       case "connect":
         explicitCommand = true;
         command = "connect";
+        break;
+
+      case "console":
+        explicitCommand = true;
+        command = "console";
         break;
 
       case "start":
@@ -488,6 +496,10 @@ export function parseArgs(args: string[]): {
         options.clearCache = true;
         break;
 
+      case "--open":
+        options.open = true;
+        break;
+
       default:
         if (arg.startsWith("--tunnel=")) {
           const provider = arg.slice("--tunnel=".length) as TunnelProvider;
@@ -520,6 +532,7 @@ USAGE:
 COMMANDS:
   serve     Start the MCP gateway in the foreground
   connect   Connect to gateway daemon (auto-starts if needed)
+  console   Open the hosted management console with a short-lived handoff
   start     Start or reuse the profile daemon
   status    Show daemon status
   stop      Stop the profile daemon
@@ -547,6 +560,15 @@ SERVE OPTIONS:
   --project <path>      Project directory (default: current directory)
   --host <host>         HTTP bind host (managed daemon must use loopback)
   --port <port>         Preferred daemon port (falls back when occupied)
+  --verbose             Enable verbose logging
+
+  CONSOLE OPTIONS:
+  -c, --config <path>   Path to config file
+  --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
+  --open                Open the hosted console in the default browser
+  --json                Print the handoff as JSON
   --verbose             Enable verbose logging
 
 DAEMON OPTIONS:
@@ -734,6 +756,13 @@ export async function main(args: string[]): Promise<void> {
         host: options.host,
         preferredPort: options.port,
         verbose: options.verbose,
+      });
+      break;
+
+    case "console":
+      await consoleCommand({
+        ...daemonCommandOptions(options),
+        open: options.open,
       });
       break;
 

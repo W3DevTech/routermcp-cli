@@ -63,7 +63,7 @@ export async function restartCommand(options: DaemonCommandOptions): Promise<voi
   printStatus(status, options.json);
 }
 
-interface DaemonContext {
+export interface DaemonContext {
   configFingerprint: string;
   configPath: string;
   configuredHost?: string;
@@ -72,7 +72,7 @@ interface DaemonContext {
   projectPath: string;
 }
 
-async function resolveDaemonContext(options: DaemonCommandOptions): Promise<DaemonContext> {
+export async function resolveDaemonContext(options: DaemonCommandOptions): Promise<DaemonContext> {
   const projectPath = resolve(options.project ?? process.cwd());
   const resolved = await resolveConfigFromPath(options.config, projectPath);
   const configPath = resolve(resolved.path);

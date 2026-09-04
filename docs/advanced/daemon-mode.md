@@ -30,7 +30,7 @@ Client 3 ─┘
 3. **Persistent process** - the daemon remains available until explicitly stopped
 4. **Automatic restart** - if the daemon crashes or its health check fails, the next client starts it again
 
-The local control plane is exposed on the daemon's loopback endpoint under `/api/v1/*` and is authenticated with a private bearer token stored in the daemon runtime manifest. The hosted UI calls this local API directly from the browser using its explicit CORS policy; it does not proxy through the RouterMCP service or ship inside the CLI. Authenticated daemon CORS permits only the hosted origin (`https://cli.routermcp.com`) and the two exact origins used by the local Next.js app (`http://localhost:7953` and `http://127.0.0.1:7953`); it never reflects arbitrary origins or uses a wildcard. The current API provides runtime snapshots, request metrics, event history, and daemon restart; peer mutations and device pairing are reserved for later phases.
+The local control plane is exposed on the daemon's loopback endpoint under `/api/v1/*` and is authenticated with a private bearer token stored in the daemon runtime manifest. The daemon issues a separate, short-lived management credential for the hosted console; the private daemon token is never printed or sent to the browser. The hosted UI calls this local API directly from the browser using its explicit CORS policy; it does not proxy through the RouterMCP service or ship inside the CLI. Authenticated daemon CORS permits only the hosted origin (`https://cli.routermcp.com`) and the two exact origins used by the local Next.js app (`http://localhost:7953` and `http://127.0.0.1:7953`); it never reflects arbitrary origins or uses a wildcard. The current API provides runtime snapshots, request metrics, event history, and daemon restart; peer mutations and device pairing are reserved for later phases.
 
 ## Using Daemon Mode
 
@@ -61,6 +61,34 @@ routermcp stop
 # Force restart
 routermcp restart
 ```
+
+### Hosted management console
+
+Create a short-lived handoff to the hosted console for the current project and
+configuration profile:
+
+```bash
+# Print the handoff URL
+routermcp console
+
+# Print and open the URL in the default browser
+routermcp console --open
+
+# Print handoff metadata as JSON for integrations
+routermcp console --json
+```
+
+`console` starts the daemon if needed and reuses the existing process on later
+runs. The CLI exchanges the daemon's private local token for a separate
+management credential through `POST /api/v1/management/handoff`. That grant is
+valid for five minutes by default (never more than fifteen minutes), is kept in
+daemon memory, and authorizes only control-plane routes. It cannot be used for
+MCP traffic, health checks, bridge leases, or another handoff.
+
+The grant is encoded in the URL fragment, which browsers do not send to
+`cli.routermcp.com`. Treat the complete URL as sensitive until it expires. The
+hosted console is a separately deployed website and no UI assets are included
+in the CLI package.
 
 ## Configuration
 
@@ -242,4 +270,4 @@ routermcp connect --config ./new-config.jsonc
 
 ---
 
-**Up**: [Advanced](../advanced/) | **See Also**: [Connect Command](../commands/connect.md), [Serve Command](../commands/serve.md)
+**Up**: [Advanced](../advanced/) | **See Also**: [Connect Command](../commands/connect.md), [Console Command](../commands/console.md), [Serve Command](../commands/serve.md)

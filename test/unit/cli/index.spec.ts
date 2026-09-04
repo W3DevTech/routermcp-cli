@@ -18,6 +18,11 @@ describe("parseArgs", () => {
       expect(command).toBe("connect");
     });
 
+    it("parses 'console' command", () => {
+      const { command } = parseArgs(["console"]);
+      expect(command).toBe("console");
+    });
+
     it("parses 'config' command", () => {
       const { command } = parseArgs(["config"]);
       expect(command).toBe("config");
@@ -134,6 +139,22 @@ describe("parseArgs", () => {
       expect(command).toBe("connect");
       expect(options.config).toBe("config.jsonc");
       expect(options.verbose).toBe(true);
+    });
+  });
+
+  describe("console options", () => {
+    it("parses console handoff options", () => {
+      const { command, options } = parseArgs([
+        "console",
+        "--project",
+        "/tmp/project",
+        "--open",
+        "--json",
+      ]);
+      expect(command).toBe("console");
+      expect(options.project).toBe("/tmp/project");
+      expect(options.open).toBe(true);
+      expect(options.json).toBe(true);
     });
   });
 

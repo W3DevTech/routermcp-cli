@@ -6,7 +6,11 @@ vi.mock("../../../src/compat/index.js", () => ({
 
 import { serve, type ServeOptions } from "../../../src/compat/index.js";
 import { ConnectionTracker } from "../../../src/daemon/connection-tracker.js";
-import { ControlPlane } from "../../../src/control-plane/index.js";
+import {
+  ControlPlane,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  ManagementCredentialStore,
+} from "../../../src/control-plane/index.js";
 import {
   DAEMON_BRIDGE_LEASES_PATH,
   createHttpServerTransport,
@@ -629,6 +633,147 @@ describe("createHttpServerTransport control-plane routes", () => {
       errorRate: 100,
       toolCallsTotal: 1,
     });
+
+    await handle.stop();
+  });
+});
+
+describe("createHttpServerTransport management handoff route", () => {
+  let fetchHandler: (request: Request) => Promise<Response>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(serve).mockImplementation((options: ServeOptions) => {
+      fetchHandler = options.fetch;
+      return {
+        port: options.port,
+        ready: Promise.resolve(options.port),
+        stop: vi.fn(),
+      };
+    });
+  });
+
+  afterEach(() => {
+    fetchHandler = undefined as never;
+  });
+
+  it("mints a separate browser credential and limits it to control-plane routes", async () => {
+    const controlPlane = new ControlPlane({
+      getStatus: () => ({
+        state: "ready",
+        instanceId: "instance",
+        version: "0.2.1",
+        protocolVersion: "1",
+        profile: "profile",
+        configDigest: "digest",
+        host: "127.0.0.1",
+        port: 7858,
+        mcpUrl: "http://127.0.0.1:7858/mcp",
+        controlUrl: "http://127.0.0.1:7858",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        uptimeSeconds: 1,
+      }),
+      getServers: () => [],
+      getSessions: () => [],
+    });
+    const credentials = new ManagementCredentialStore({
+      generateToken: () => "management-token",
+      now: () => Date.parse("2026-01-01T00:00:00.000Z"),
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "local-token",
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const handoffUrl = `http://127.0.0.1${MANAGEMENT_CREDENTIAL_HANDOFF_PATH}`;
+    const unauthorized = await fetchHandler(new Request(handoffUrl, { method: "POST" }));
+    expect(unauthorized.status).toBe(401);
+
+    const handoff = await fetchHandler(
+      new Request(handoffUrl, {
+        method: "POST",
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+    expect(handoff.status).toBe(201);
+    const grant = await handoff.json();
+    expect(grant).toMatchObject({
+      token: "management-token",
+      scope: "management",
+      expiresAt: expect.any(String),
+    });
+    expect(JSON.stringify(grant)).not.toContain("local-token");
+
+    const managementHeaders = { Authorization: "Bearer management-token" };
+    const status = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/status", { headers: managementHeaders }),
+    );
+    expect(status.status).toBe(200);
+
+    const health = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/health", { headers: managementHeaders }),
+    );
+    expect(health.status).toBe(401);
+
+    const mcp = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: { ...managementHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      }),
+    );
+    expect(mcp.status).toBe(401);
+
+    const cannotMint = await fetchHandler(
+      new Request(handoffUrl, { method: "POST", headers: managementHeaders }),
+    );
+    expect(cannotMint.status).toBe(401);
+
+    const queryHandoff = await fetchHandler(
+      new Request(`${handoffUrl}?unexpected=true`, {
+        method: "POST",
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+    expect(queryHandoff.status).toBe(400);
+    expect(credentials.size).toBe(1);
+
+    await handle.stop();
+    expect(credentials.size).toBe(0);
+  });
+
+  it("does not expose a handoff route when no local root credential is configured", async () => {
+    const credentials = new ManagementCredentialStore({ generateToken: () => "management-token" });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      controlPlane: new ControlPlane({
+        getStatus: () => ({
+          state: "ready",
+          instanceId: "instance",
+          version: "0.2.1",
+          protocolVersion: "1",
+          profile: "profile",
+          configDigest: "digest",
+          host: "127.0.0.1",
+          port: 7858,
+          mcpUrl: "http://127.0.0.1:7858/mcp",
+          controlUrl: "http://127.0.0.1:7858",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          uptimeSeconds: 1,
+        }),
+        getServers: () => [],
+        getSessions: () => [],
+      }),
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const response = await fetchHandler(
+      new Request(`http://127.0.0.1${MANAGEMENT_CREDENTIAL_HANDOFF_PATH}`, { method: "POST" }),
+    );
+    expect(response.status).toBe(404);
+    expect(credentials.size).toBe(0);
 
     await handle.stop();
   });

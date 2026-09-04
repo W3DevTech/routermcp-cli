@@ -8,6 +8,7 @@ import {
   getProjectId,
   stopDaemon,
 } from "../../src/daemon/index.js";
+import { MANAGEMENT_CREDENTIAL_HANDOFF_PATH } from "../../src/control-plane/index.js";
 import {
   cleanupTempDir,
   createTempDir,
@@ -64,6 +65,52 @@ describe("managed daemon control plane", () => {
         headers.set("Authorization", `Bearer ${authToken}`);
         return fetch(new URL(path, `${controlUrl}/`), { ...init, headers });
       };
+
+      const handoffResponse = await fetch(
+        new URL(MANAGEMENT_CREDENTIAL_HANDOFF_PATH, `${controlUrl}/`),
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authToken}` },
+        },
+      );
+      expect(handoffResponse.status).toBe(201);
+      const handoffPayload = (await handoffResponse.json()) as {
+        token?: string;
+        expiresAt?: string;
+        scope?: string;
+      };
+      expect(handoffPayload).toMatchObject({
+        token: expect.any(String),
+        expiresAt: expect.any(String),
+        scope: "management",
+      });
+      expect(JSON.stringify(handoffPayload)).not.toContain(authToken);
+      expect(handoffPayload).not.toHaveProperty("localAuthToken");
+
+      const managementRequest = async (path: string, init: RequestInit = {}): Promise<Response> => {
+        const headers = new Headers(init.headers);
+        headers.set("Authorization", `Bearer ${handoffPayload.token}`);
+        return fetch(new URL(path, `${controlUrl}/`), { ...init, headers });
+      };
+
+      const managementStatus = await managementRequest("/api/v1/status");
+      expect(managementStatus.status).toBe(200);
+      expect((await managementStatus.json()).status).toMatchObject({ profile: paths.profileId });
+
+      const managementHealth = await managementRequest("/api/v1/health");
+      expect(managementHealth.status).toBe(401);
+
+      const managementMcp = await managementRequest("/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      });
+      expect(managementMcp.status).toBe(401);
+
+      const managementHandoff = await managementRequest(MANAGEMENT_CREDENTIAL_HANDOFF_PATH, {
+        method: "POST",
+      });
+      expect(managementHandoff.status).toBe(401);
 
       const unauthenticated = await fetch(new URL("/api/v1/status", `${controlUrl}/`));
       expect(unauthenticated.status).toBe(401);

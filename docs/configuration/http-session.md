@@ -80,8 +80,9 @@ as an active connection.
 The managed daemon publishes `mcpUrl`, `controlUrl`, and a private local bearer
 token in its per-profile runtime state. The token protects health, bridge lease,
 and MCP requests; it is not included in `status --json` output. Browser-based
-management should use a separately designed pairing/control API rather than
-reading this private token from the filesystem.
+management must not read this private token from the filesystem. Use
+`routermcp console` to have the CLI exchange it locally for a separate,
+short-lived browser credential.
 
 The local management API is served on loopback under `/api/v1/*` and is
 authenticated with the daemon's private token. The hosted console calls these
@@ -95,6 +96,28 @@ traffic. Current endpoints include:
 - `GET /api/v1/metrics`
 - `GET /api/v1/events`
 - `POST /api/v1/restart`
+
+The CLI-only handoff endpoint is separate from those management routes:
+
+- `POST /api/v1/management/handoff` — mint a short-lived management credential
+  using the private local token
+
+The handoff endpoint requires the private local token and never accepts a
+management credential. A management credential can read the control-plane
+snapshots and request a restart, but cannot access `/mcp`, health, or bridge
+leases. Credentials are kept in daemon memory, expire after five minutes by
+default (maximum fifteen minutes), and are discarded when the daemon stops.
+
+Run:
+
+```bash
+routermcp console       # print a hosted-console handoff URL
+routermcp console --open
+```
+
+The URL carries the credential in its `#rmcp=...` fragment. Browsers do not
+send fragments to the hosted website, but the complete URL is still sensitive
+until it expires and should not be shared or logged.
 
 The servers snapshot includes both configured MCP upstreams and OpenAPI
 adapters. OpenAPI entries expose their resolved base URL, tool count, loading

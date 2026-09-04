@@ -19,6 +19,7 @@ routermcp [command] [options]
 |---------|-------------|
 | `serve` | Start the MCP gateway in foreground/debug mode |
 | `connect` | Connect to the managed gateway daemon (default) |
+| `console` | Open the hosted management console with a short-lived handoff |
 | `start` | Start or reuse the profile daemon |
 | `status` | Show profile daemon status |
 | `stop` | Stop the profile daemon |
@@ -106,6 +107,34 @@ routermcp connect --project /path/to/project
 # With verbose output
 routermcp connect -v
 ```
+
+## console Command
+
+Open the hosted management console, starting or reusing the managed daemon for
+the selected project and configuration profile.
+
+```bash
+routermcp console [options]
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--config <path>` | string | `./routermcp.jsonc` | Path to config file |
+| `--project <path>` | string | `.` | Project directory |
+| `--host <host>` | string | `127.0.0.1` | Loopback bind host for a newly started daemon |
+| `--port <port>` | number | `7858` | Preferred loopback port for a newly started daemon |
+| `--open` | flag | false | Open the hosted console in the default browser |
+| `--json` | flag | false | Print handoff metadata as JSON |
+| `--verbose` | flag | false | Enable verbose logging |
+
+The output URL contains an opaque, short-lived management credential in its
+fragment. The fragment is not sent to `cli.routermcp.com`, but the complete URL
+must still be treated as sensitive. The credential expires after five minutes
+by default (maximum fifteen minutes), is held only in daemon memory, and is
+limited to control-plane management routes. It cannot access MCP, health, or
+bridge-lease routes. The hosted UI is not included in the CLI package.
 
 ## proxy Command
 

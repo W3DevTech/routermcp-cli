@@ -15,10 +15,14 @@ import {
   CONTROL_PLANE_HEALTH_PATH,
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   sanitizeText,
   type ControlPlane,
+  type ManagementCredentialStore,
 } from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
+
+export { MANAGEMENT_CREDENTIAL_HANDOFF_PATH } from "../control-plane/index.js";
 
 export interface HttpClientTransportOptions {
   authProvider?: OAuthClientProvider;
@@ -111,6 +115,8 @@ export interface HttpServerOptions {
   health?: () => Record<string, unknown>;
   /** Management API state for a managed loopback daemon. */
   controlPlane?: ControlPlane;
+  /** Short-lived browser credentials for the hosted management console. */
+  managementCredentials?: ManagementCredentialStore;
   connectionTracker?: BridgeLeaseTracker;
   /** Called after a successful MCP initialize response for one HTTP session. */
   onSessionInitialize?: (
@@ -320,6 +326,34 @@ export function createHttpServerTransport(
                 );
               }
 
+              const managementRoute = parseManagementCredentialPath(url);
+              if (managementRoute) {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+
+                // A handoff is a privileged local operation. Do not make it
+                // available on an unauthenticated standalone HTTP server or
+                // let an already-issued browser token mint more credentials.
+                if (!options.managementCredentials || !options.authToken) {
+                  return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                }
+
+                if (!isLocalAuthorized(request, options.authToken)) {
+                  return new Response("Unauthorized", {
+                    status: 401,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                return handleManagementCredentialRequest(
+                  request,
+                  managementRoute,
+                  options.managementCredentials,
+                  corsHeaders,
+                );
+              }
+
               const controlRoute = parseControlPlanePath(url);
               if (controlRoute) {
                 if (request.method === "OPTIONS") {
@@ -330,7 +364,7 @@ export function createHttpServerTransport(
                   return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
                 }
 
-                if (!isAuthorized(request, options.authToken)) {
+                if (!isControlPlaneAuthorized(request, options)) {
                   return new Response("Unauthorized", {
                     status: 401,
                     headers: corsHeaders(request),
@@ -541,6 +575,7 @@ export function createHttpServerTransport(
         handle.server = null;
       }
       boundPort = null;
+      options.managementCredentials?.clear();
       await transport.close();
     },
   };
@@ -560,6 +595,17 @@ type ControlPlaneRoute =
   | { kind: "events"; limit: number }
   | { kind: "restart" }
   | { kind: "invalid"; message: string };
+
+type ManagementCredentialRoute =
+  | { kind: "handoff" }
+  | { kind: "invalid"; message: string };
+
+function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | null {
+  if (url.pathname !== MANAGEMENT_CREDENTIAL_HANDOFF_PATH) return null;
+  return url.search
+    ? { kind: "invalid", message: "The management handoff does not accept query parameters" }
+    : { kind: "handoff" };
+}
 
 function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
   switch (url.pathname) {
@@ -662,6 +708,27 @@ async function handleControlPlaneRequest(
   }
 }
 
+async function handleManagementCredentialRequest(
+  request: Request,
+  route: ManagementCredentialRoute,
+  credentials: ManagementCredentialStore,
+  headers: (request: Request) => Record<string, string>,
+): Promise<Response> {
+  if (route.kind === "invalid") {
+    return jsonResponse(
+      { error: "Invalid request", message: route.message },
+      400,
+      headers(request),
+    );
+  }
+
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: headers(request) });
+  }
+
+  return jsonResponse(credentials.issue(), 201, headers(request));
+}
+
 function sanitizeControlError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return sanitizeText(message);
@@ -758,6 +825,10 @@ function isJsonRpcResultError(message: JSONRPCMessage | null): boolean {
   );
 }
 
+function isLocalAuthorized(request: Request, authToken: string | undefined): boolean {
+  return isAuthorized(request, authToken);
+}
+
 function isAuthorized(
   request: Request,
   authToken: string | undefined,
@@ -765,6 +836,18 @@ function isAuthorized(
 ): boolean {
   if (!authToken) return !requireToken;
   return request.headers.get("authorization") === `Bearer ${authToken}`;
+}
+
+function isControlPlaneAuthorized(request: Request, options: HttpServerOptions): boolean {
+  if (isLocalAuthorized(request, options.authToken)) return true;
+  return options.managementCredentials?.authorize(getBearerToken(request)) ?? false;
+}
+
+function getBearerToken(request: Request): string | undefined {
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) return undefined;
+  const token = authorization.slice("Bearer ".length);
+  return token.length > 0 ? token : undefined;
 }
 
 function jsonResponse(

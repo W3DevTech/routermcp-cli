@@ -47,6 +47,7 @@ Full documentation is available in the [docs/](./docs/) folder:
 - **Commands**
   - [serve](./docs/commands/serve.md) - Start the gateway
   - [connect](./docs/commands/connect.md) - Daemon mode
+  - [console](./docs/commands/console.md) - Hosted management console
   - [proxy](./docs/commands/proxy.md) - Stdio-to-HTTP proxy
   - [tunnel](./docs/commands/tunnel.md) - Public tunnels
   - [config](./docs/commands/config.md) - Interactive wizard

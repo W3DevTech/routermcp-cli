@@ -1,5 +1,16 @@
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
 
+export {
+  DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS,
+  DEFAULT_MAX_MANAGEMENT_CREDENTIALS,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  MANAGEMENT_CREDENTIAL_SCOPE,
+  MAX_MANAGEMENT_CREDENTIAL_TTL_MS,
+  ManagementCredentialStore,
+  type ManagementCredentialGrant,
+  type ManagementCredentialStoreOptions,
+} from "./management-credentials.js";
+
 export const CONTROL_PLANE_PATH = "/api/v1" as const;
 export const CONTROL_PLANE_HEALTH_PATH = `${CONTROL_PLANE_PATH}/health` as const;
 export const CONTROL_PLANE_DEFAULT_EVENT_LIMIT = 40;

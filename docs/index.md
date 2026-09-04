@@ -45,6 +45,7 @@ Complete reference for all CLI commands.
 
 - [serve](commands/serve.md) - Start the MCP gateway in foreground/debug mode
 - [connect](commands/connect.md) - Connect to the managed daemon (default)
+- [console](commands/console.md) - Open the hosted management console
 - [daemon lifecycle](advanced/daemon-mode.md) - Start, inspect, stop, or restart the managed daemon
 - [proxy](commands/proxy.md) - Proxy stdio server over HTTP
 - [tunnel](commands/tunnel.md) - Expose via public tunnel
