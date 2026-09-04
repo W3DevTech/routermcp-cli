@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { resolveConfig } from "../config/loader.js";
+import { resolveConfig, resolveConfigFromPath } from "../config/loader.js";
 import {
   ensureRunning,
   getDaemonPaths,
@@ -16,6 +16,7 @@ import { ConfigError, RouterMcpError } from "../utils/errors.js";
 export interface ConnectCommandOptions {
   config?: string;
   project?: string;
+  preferredPort?: number;
   verbose?: boolean;
 }
 
@@ -34,15 +35,19 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
   try {
     let configPath: string;
+    let configuredPort: number | undefined;
 
     if (options.config) {
-      configPath = resolve(options.config);
+      const resolved = await resolveConfigFromPath(options.config, projectPath);
+      configPath = resolve(resolved.path);
+      configuredPort = resolved.config.httpServer?.port;
     } else {
       const resolved = await resolveConfig(projectPath);
       if (!resolved) {
         throw new ConfigError("No config file found. Run 'routermcp config' to create one.");
       }
       configPath = resolve(resolved.path);
+      configuredPort = resolved.config.httpServer?.port;
       log(`Resolved config scope: ${resolved.scope}`);
     }
 
@@ -63,6 +68,7 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
     const status = await ensureRunning(paths, {
       projectPath,
+      preferredPort: options.preferredPort ?? configuredPort,
       verbose,
     });
     if (!status.running) {

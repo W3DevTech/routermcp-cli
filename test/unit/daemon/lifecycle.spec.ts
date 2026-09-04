@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -147,5 +148,54 @@ describe("daemon lifecycle", () => {
     const status = await getDaemonStatus(paths);
     expect(status.running).toBe(false);
     expect(status.reason).toContain("CLI version mismatch");
+  });
+
+  it("rejects manifest endpoints that do not match the bound loopback address", async () => {
+    const configPath = await writeConfigFile(projectDir, {
+      mcpServers: { test: { transport: "stdio", command: "true" } },
+    });
+    const paths = getDaemonPaths(getProjectId(projectDir), configPath, projectDir);
+    const manifest = await createRuntimeManifest({
+      projectId: getProjectId(projectDir),
+      profileId: paths.profileId,
+      configPath,
+      configFingerprint: "a".repeat(64),
+      pid: process.pid,
+      processIdentity: { pid: process.pid, source: "pid" },
+      state: "ready",
+      host: "127.0.0.1",
+      port: 7858,
+      localAuthToken: "unused",
+      mcpUrl: "http://127.0.0.1:9999/mcp",
+    });
+
+    await writeRuntimeManifest(paths.runtimeManifest, manifest);
+
+    const status = await getDaemonStatus(paths);
+    expect(status.running).toBe(false);
+    expect(status.reason).toContain("invalid MCP or control endpoints");
+  });
+
+  it("does not start a second daemon when legacy pid state is still alive", async () => {
+    const configPath = await writeConfigFile(projectDir, {
+      mcpServers: { test: { transport: "stdio", command: "true" } },
+    });
+    const paths = getDaemonPaths(getProjectId(projectDir), configPath, projectDir);
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.pid, String(process.pid));
+    await writeFile(paths.port, "7858");
+
+    const status = await getDaemonStatus(paths);
+    expect(status.running).toBe(false);
+    expect(status.pid).toBe(process.pid);
+    expect(status.reason).toContain("legacy RouterMCP daemon");
+
+    await expect(
+      ensureRunning(paths, {
+        entrypoint: resolve(process.cwd(), "src/index.ts"),
+        projectPath: projectDir,
+        lockTimeoutMs: 1_000,
+      }),
+    ).rejects.toThrow("legacy RouterMCP daemon");
   });
 });

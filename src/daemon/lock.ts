@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   captureProcessIdentity,
   isProcessRunning,
@@ -42,7 +42,7 @@ export class ProfileLockTimeoutError extends Error {
 /**
  * Acquire an exclusive lock for one profile. Lock acquisition is safe for
  * concurrent CLI processes because creation uses the filesystem's exclusive
- * `wx` flag. A dead owner's lock can be recovered after identity checks.
+ * directory creation. A dead owner's lock can be recovered after identity checks.
  */
 export async function acquireProfileLock(
   lockPath: string,
@@ -126,24 +126,31 @@ async function createLockOwner(): Promise<LockOwner> {
 }
 
 async function tryCreateLock(lockPath: string, owner: LockOwner): Promise<boolean> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  /**
+   * A directory is the ownership primitive. `mkdir` is atomic and stale
+   * recovery uses `rmdir`, which can only remove the exact empty directory it
+   * observed; a replacement owner cannot be deleted by a later pathname
+   * unlink. The owner record lives inside the directory and is never used as
+   * the lock primitive itself.
+   */
   try {
-    handle = await open(lockPath, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await chmod(lockPath, 0o600);
+    await mkdir(lockPath, 0o700);
+    await writeFile(ownerPath(lockPath), `${JSON.stringify(owner)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await chmod(lockPath, 0o700);
     return true;
   } catch (error) {
-    if (handle) {
-      await handle.close().catch(() => undefined);
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") {
+      // Leave a pre-directory lock untouched. The caller will wait for it to
+      // disappear rather than risking a pathname replacement race.
+      return false;
     }
-
-    // If writing or flushing a newly-created lock failed, do not leave an
-    // orphaned file that would unnecessarily block every future contender.
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      await unlink(lockPath).catch(() => undefined);
+      await unlink(ownerPath(lockPath)).catch(() => undefined);
+      await rmdir(lockPath).catch(() => undefined);
     }
 
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -157,18 +164,25 @@ async function tryCreateLock(lockPath: string, owner: LockOwner): Promise<boolea
 async function removeStaleLock(lockPath: string, staleAfterMs: number): Promise<boolean> {
   let owner: LockOwner | null = null;
   let modifiedAt: number;
-  let inode: number;
-  let size: number;
+  let isDirectory = false;
+  let isLegacyFile = false;
 
   try {
-    const [content, metadata] = await Promise.all([
-      readFile(lockPath, "utf8"),
-      stat(lockPath),
-    ]);
-    modifiedAt = metadata.mtimeMs;
-    inode = metadata.ino;
-    size = metadata.size;
-    owner = parseLockOwner(content);
+    const metadata = await stat(lockPath);
+    isDirectory = metadata.isDirectory();
+    if (isDirectory) {
+      const ownerMetadata = await stat(ownerPath(lockPath)).catch(() => null);
+      modifiedAt = ownerMetadata?.mtimeMs ?? metadata.mtimeMs;
+      if (ownerMetadata) {
+        owner = parseLockOwner(await readFile(ownerPath(lockPath), "utf8"));
+      }
+    } else {
+      // A file here is a pre-directory RouterMCP lock. Read it only to detect
+      // a dead legacy owner; a live legacy process remains authoritative.
+      isLegacyFile = true;
+      modifiedAt = metadata.mtimeMs;
+      owner = parseLockOwner(await readFile(lockPath, "utf8"));
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return true;
@@ -190,18 +204,31 @@ async function removeStaleLock(lockPath: string, staleAfterMs: number): Promise<
   }
 
   try {
-    // The lock may have been replaced while the owner identity was being
-    // checked. Re-stat the same pathname before unlinking so a stale-owner
-    // cleanup cannot remove a newer contender's lock.
-    const current = await stat(lockPath);
-    if (current.ino !== inode || current.mtimeMs !== modifiedAt || current.size !== size) {
-      return false;
+    if (isLegacyFile) {
+      // New contenders use the directory primitive below, so quarantine the
+      // old file before creating the directory. The old process identity was
+      // checked above; retaining the file as a uniquely named artifact keeps
+      // recovery auditable without leaving the profile wedged.
+      await rename(lockPath, `${lockPath}.legacy-${randomUUID()}`);
+      return true;
     }
-    await unlink(lockPath);
+
+    if (!isDirectory) return false;
+
+    // Remove the owner record first, then rmdir the lock directory. A new
+    // owner cannot create the directory until rmdir has completed, so this
+    // sequence cannot unlink a replacement lock.
+    await unlink(ownerPath(lockPath)).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    });
+    await rmdir(lockPath);
     return true;
   } catch (error) {
     // Another contender may have recovered the lock first.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (
+      (error as NodeJS.ErrnoException).code === "ENOENT" ||
+      (error as NodeJS.ErrnoException).code === "ENOTEMPTY"
+    ) {
       return true;
     }
     return false;
@@ -246,10 +273,11 @@ function createProfileLock(lockPath: string, owner: LockOwner): ProfileLock {
       released = true;
 
       try {
-        const content = await readFile(lockPath, "utf8");
+        const content = await readFile(ownerPath(lockPath), "utf8");
         const current = parseLockOwner(content);
         if (current?.lockId === owner.lockId) {
-          await unlink(lockPath);
+          await unlink(ownerPath(lockPath));
+          await rmdir(lockPath);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -258,6 +286,10 @@ function createProfileLock(lockPath: string, owner: LockOwner): ProfileLock {
       }
     },
   };
+}
+
+function ownerPath(lockPath: string): string {
+  return join(lockPath, "owner.json");
 }
 
 function sleep(ms: number): Promise<void> {

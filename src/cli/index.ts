@@ -729,6 +729,7 @@ export async function main(args: string[]): Promise<void> {
       await connectCommand({
         config: options.config,
         project: options.project,
+        preferredPort: options.port,
         verbose: options.verbose,
       });
       break;

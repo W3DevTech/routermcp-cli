@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { extname, resolve } from "node:path";
 import { VERSION } from "../version.js";
@@ -93,6 +94,9 @@ export class DaemonStopTimeoutError extends Error {
   }
 }
 
+const LEGACY_DAEMON_STATE_REASON =
+  "A legacy RouterMCP daemon appears to be running; stop it before starting the managed daemon";
+
 /**
  * Inspect one profile's runtime manifest and verify the daemon over its
  * authenticated loopback health endpoint. A PID file alone is never treated
@@ -104,7 +108,7 @@ export async function getDaemonStatus(
 ): Promise<DaemonStatus> {
   const manifest = await readRuntimeManifest(paths.runtimeManifest);
   if (!manifest) {
-    return { running: false, reason: "No valid runtime manifest" };
+    return readLegacyDaemonStatus(paths);
   }
 
   const baseStatus = toDaemonStatus(manifest, false);
@@ -147,6 +151,10 @@ export async function getDaemonStatus(
 
   if (!isLoopbackHost(manifest.host) || !isValidPort(manifest.port)) {
     return { ...baseStatus, reason: "Daemon manifest has an invalid loopback host or port" };
+  }
+
+  if (!manifestEndpointsMatch(manifest)) {
+    return { ...baseStatus, reason: "Daemon manifest has invalid MCP or control endpoints" };
   }
 
   if (!(await matchesProcessIdentity(manifest.processIdentity))) {
@@ -201,6 +209,10 @@ export async function ensureRunning(
       return status;
     }
 
+    if (status.reason === LEGACY_DAEMON_STATE_REASON && status.pid) {
+      throw new DaemonStartupError(`${status.reason} (pid ${status.pid})`);
+    }
+
     const existing = await readRuntimeManifest(paths.runtimeManifest);
     if (existing) {
       if (belongsToPaths(existing, paths)) {
@@ -242,6 +254,10 @@ export async function stopDaemon(
   try {
     const manifest = await readRuntimeManifest(paths.runtimeManifest);
     if (!manifest) {
+      const legacy = await readLegacyDaemonStatus(paths);
+      if (legacy.reason === LEGACY_DAEMON_STATE_REASON && legacy.pid) {
+        throw new DaemonStartupError(`${legacy.reason} (pid ${legacy.pid})`);
+      }
       cleanupDaemonFiles(paths);
       return;
     }
@@ -255,6 +271,32 @@ export async function stopDaemon(
     await stopKnownDaemon(paths, manifest, options);
   } finally {
     await lock.release();
+  }
+}
+
+async function readLegacyDaemonStatus(paths: DaemonPaths): Promise<DaemonStatus> {
+  const pid = await readPositiveInteger(paths.pid);
+  const port = await readPositiveInteger(paths.port);
+  if (pid && isProcessRunning(pid)) {
+    return {
+      running: false,
+      state: "stopped",
+      pid,
+      ...(port ? { port } : {}),
+      reason: LEGACY_DAEMON_STATE_REASON,
+    };
+  }
+
+  cleanupDaemonFiles(paths);
+  return { running: false, reason: "No valid runtime manifest" };
+}
+
+async function readPositiveInteger(path: string): Promise<number | undefined> {
+  try {
+    const value = Number.parseInt((await readFile(path, "utf8")).trim(), 10);
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -557,6 +599,7 @@ function belongsToPaths(manifest: RuntimeManifest, paths: DaemonPaths): boolean 
 }
 
 function toDaemonStatus(manifest: RuntimeManifest, running: boolean): DaemonStatus {
+  const endpoints = daemonEndpoints(manifest.host, manifest.port);
   return {
     running,
     state: manifest.state,
@@ -570,11 +613,62 @@ function toDaemonStatus(manifest: RuntimeManifest, running: boolean): DaemonStat
     protocolVersion: manifest.protocolVersion,
     configPath: manifest.configPath,
     configFingerprint: manifest.configFingerprint,
-    mcpUrl: manifest.mcpUrl,
-    controlUrl: manifest.controlUrl,
+    ...(endpoints.mcpUrl ? { mcpUrl: endpoints.mcpUrl } : {}),
+    ...(endpoints.controlUrl ? { controlUrl: endpoints.controlUrl } : {}),
     ...(manifest.localAuthToken ? { authToken: manifest.localAuthToken } : {}),
     manifest: redactRuntimeManifest(manifest),
   };
+}
+
+function manifestEndpointsMatch(manifest: RuntimeManifest): boolean {
+  const endpoints = daemonEndpoints(manifest.host, manifest.port);
+  if (!endpoints.mcpUrl || !endpoints.controlUrl) return false;
+
+  return (
+    (!manifest.mcpUrl || endpointMatches(manifest.mcpUrl, endpoints.mcpUrl, "/mcp")) &&
+    (!manifest.controlUrl || endpointMatches(manifest.controlUrl, endpoints.controlUrl, ""))
+  );
+}
+
+function endpointMatches(value: string, expected: string, expectedPath: string): boolean {
+  try {
+    const actual = new URL(value);
+    const target = new URL(expected);
+    return (
+      actual.protocol === "http:" &&
+      actual.hostname === target.hostname &&
+      effectivePort(actual) === effectivePort(target) &&
+      actual.username === "" &&
+      actual.password === "" &&
+      actual.search === "" &&
+      actual.hash === "" &&
+      trimTrailingSlash(actual.pathname) === expectedPath
+    );
+  } catch {
+    return false;
+  }
+}
+
+function daemonEndpoints(host: string, port: number | undefined): {
+  mcpUrl?: string;
+  controlUrl?: string;
+} {
+  if (!isLoopbackHost(host) || !isValidPort(port)) return {};
+  const formattedHost = formatHost(host);
+  return {
+    mcpUrl: `http://${formattedHost}:${port}/mcp`,
+    controlUrl: `http://${formattedHost}:${port}`,
+  };
+}
+
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === "https:" ? "443" : "80";
+}
+
+function trimTrailingSlash(pathname: string): string {
+  if (pathname === "/") return "";
+  return pathname.replace(/\/+$/, "");
 }
 
 async function probeHealth(

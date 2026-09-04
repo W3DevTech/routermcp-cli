@@ -10,6 +10,7 @@ vi.mock("node:readline", () => ({
 
 vi.mock("../../../src/config/loader.js", () => ({
   resolveConfig: vi.fn(),
+  resolveConfigFromPath: vi.fn(),
 }));
 
 vi.mock("../../../src/daemon/index.js", () => ({
@@ -29,7 +30,7 @@ vi.mock("../../../src/daemon/index.js", () => ({
 
 import { createInterface } from "node:readline";
 import { type ConnectCommandOptions, connectCommand } from "../../../src/cli/connect.js";
-import { resolveConfig } from "../../../src/config/loader.js";
+import { resolveConfig, resolveConfigFromPath } from "../../../src/config/loader.js";
 import {
   getDaemonPaths,
   getDaemonStatus,
@@ -47,11 +48,33 @@ describe("connectCommand", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              leaseId: "test-lease",
+              connectedAt: new Date(0).toISOString(),
+              lastSeenAt: new Date(0).toISOString(),
+              leaseExpiresAt: new Date(30_000).toISOString(),
+              leaseTtlMs: 30_000,
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(null, { status: 204 });
+      }),
+    );
+
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     mockRl = {
       on: vi.fn().mockReturnThis(),
-      once: vi.fn().mockReturnThis(),
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === "close") queueMicrotask(callback);
+        return mockRl;
+      }),
       close: vi.fn(),
     };
     vi.mocked(createInterface).mockReturnValue(mockRl as never);
@@ -61,6 +84,11 @@ describe("connectCommand", () => {
       path: "/path/to/routermcp.jsonc",
       scope: "project-local",
     });
+    vi.mocked(resolveConfigFromPath).mockImplementation(async (path) => ({
+      config: { mcpServers: {} },
+      path: path ?? "/path/to/routermcp.jsonc",
+      scope: "project-local",
+    }));
     vi.mocked(ensureRunning).mockResolvedValue({
       running: true,
       pid: 12345,
@@ -70,6 +98,7 @@ describe("connectCommand", () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   describe("config file handling", () => {
@@ -120,6 +149,24 @@ describe("connectCommand", () => {
   });
 
   describe("daemon lifecycle", () => {
+    it("uses the configured HTTP port when auto-starting", async () => {
+      vi.mocked(resolveConfig).mockResolvedValue({
+        config: { mcpServers: {}, httpServer: { port: 9123 } },
+        path: "/path/to/routermcp.jsonc",
+        scope: "project-local",
+      });
+      vi.mocked(getDaemonStatus).mockResolvedValue({ running: false });
+
+      connectCommand({});
+
+      await vi.waitFor(() => {
+        expect(ensureRunning).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining({ preferredPort: 9123 }),
+        );
+      });
+    });
+
     it("connects to existing running daemon", async () => {
       vi.mocked(getDaemonStatus).mockResolvedValue({
         running: true,
@@ -204,7 +251,7 @@ describe("connectCommand", () => {
         socket: "/tmp/daemon/daemon.sock",
       });
 
-      await expect(connectCommand({})).rejects.toThrow("Daemon did not report socket or HTTP port");
+      await expect(connectCommand({})).rejects.toThrow("Daemon did not report an MCP URL or HTTP port");
     });
   });
 
@@ -236,7 +283,7 @@ describe("connectCommand", () => {
         pid: 12345,
       });
 
-      await expect(connectCommand({})).rejects.toThrow("Daemon did not report socket or HTTP port");
+      await expect(connectCommand({})).rejects.toThrow("Daemon did not report an MCP URL or HTTP port");
     });
   });
 
