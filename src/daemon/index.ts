@@ -29,9 +29,16 @@ export {
   cleanupDaemonFiles,
   connectToSocket,
   type DaemonStatus,
+  type DaemonStatusOptions,
+  DaemonStartupError,
+  DaemonStopTimeoutError,
+  ensureRunning,
   getDaemonStatus,
+  type EnsureRunningOptions,
+  restartDaemon,
   startDaemon,
   stopDaemon,
+  type StopDaemonOptions,
 } from "./lifecycle.js";
 export { type DaemonPaths, getDaemonPaths, isWindows } from "./paths.js";
 export {

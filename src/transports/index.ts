@@ -7,13 +7,17 @@ import {
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,
+  type HttpServerOptions,
 } from "./http-streamable.js";
 import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 
 export {
+  DAEMON_HEALTH_PATH,
+  DAEMON_HEALTH_PATH_LEGACY,
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,
+  type HttpServerOptions,
 } from "./http-streamable.js";
 export { createStdioServerTransport } from "./stdio.js";
 
@@ -45,6 +49,7 @@ export interface ServerTransportHandle {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   getCurrentSessionId?: () => string | null;
+  getPort?: () => number | null;
 }
 
 /**
@@ -54,6 +59,7 @@ export function createServerTransport(
   mode: "stdio" | "http-streamable",
   httpPort?: number,
   httpHost?: string,
+  httpOptions?: HttpServerOptions,
 ): ServerTransportHandle {
   if (mode === "stdio") {
     const transport = createStdioServerTransport();
@@ -72,12 +78,13 @@ export function createServerTransport(
     if (!httpPort) {
       throw new TransportError("http-streamable", "Port is required for http-streamable transport");
     }
-    const handle = createHttpServerTransport(httpPort, httpHost);
+    const handle = createHttpServerTransport(httpPort, httpHost, httpOptions);
     return {
       transport: handle.transport,
       start: handle.start,
       stop: handle.stop,
       getCurrentSessionId: () => handle.transport.getCurrentSessionId(),
+      getPort: handle.getPort,
     };
   }
 

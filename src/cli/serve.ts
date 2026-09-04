@@ -1,9 +1,23 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
-import { type DaemonPaths, getDaemonPaths, getProjectId } from "../daemon/index.js";
+import {
+  type DaemonPaths,
+  createRuntimeManifest,
+  createReadinessSnapshot,
+  fingerprintConfigFile,
+  getDaemonPaths,
+  getProjectId,
+  matchesProcessIdentity,
+  readRuntimeManifest,
+  removeRuntimeManifest,
+  type RuntimeManifest,
+  transitionReadiness,
+  writeRuntimeManifest,
+} from "../daemon/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 import { configCommand } from "./config.js";
 
@@ -13,13 +27,12 @@ export interface ServeCommandOptions {
   http?: number;
   verbose?: boolean;
   daemonMode?: boolean;
+  project?: string;
   socket?: string;
   clearCache?: boolean;
 }
 
 const DEFAULT_DAEMON_PORT = 7858;
-const DAEMON_IDLE_TIMEOUT = 10000;
-const DAEMON_IDLE_CHECK_INTERVAL = 2000;
 
 export async function serveCommand(options: ServeCommandOptions): Promise<void> {
   const verbose = options.verbose ?? false;
@@ -35,6 +48,8 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   }
 
   let daemonPaths: DaemonPaths | null = null;
+  let runtimeManifest: RuntimeManifest | null = null;
+  let gateway: Gateway | null = null;
 
   try {
     const { config, path: configPath, scope } = await resolveConfigFromPath(options.config);
@@ -45,44 +60,109 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     if (isDaemon) {
-      // Use cwd for project ID - this matches what connect.ts uses
-      const projectId = getProjectId(process.cwd());
-      daemonPaths = getDaemonPaths(projectId, resolve(configPath));
+      const projectPath = resolve(options.project ?? process.cwd());
+      const projectId = getProjectId(projectPath);
+      daemonPaths = getDaemonPaths(projectId, resolve(configPath), projectPath);
 
-      mkdirSync(daemonPaths.dir, { recursive: true });
-      writeFileSync(daemonPaths.pid, String(process.pid));
+      if (daemonPaths.runtimeManifest) {
+        const configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
+        runtimeManifest = await createRuntimeManifest({
+          projectId,
+          profileId: daemonPaths.profileId,
+          configPath: daemonPaths.configPath,
+          configFingerprint,
+          pid: process.pid,
+          host: "127.0.0.1",
+          port: httpPort,
+          socketPath: daemonPaths.socket,
+          localAuthToken: randomBytes(32).toString("base64url"),
+        });
+        await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
+      } else {
+        // Compatibility path for callers with a pre-contract DaemonPaths
+        // object. Production paths always use runtime.json.
+        mkdirSync(daemonPaths.dir, { recursive: true });
+        writeFileSync(daemonPaths.pid, String(process.pid));
+      }
 
       if (verbose) {
         console.error(`[daemon] Project ID: ${projectId}`);
-        console.error(`[daemon] PID file: ${daemonPaths.pid}`);
+        console.error(
+          `[daemon] Runtime manifest: ${daemonPaths.runtimeManifest ?? daemonPaths.pid}`,
+        );
       }
     }
 
-    const gateway = createGateway({
+    gateway = createGateway({
       config,
       mode,
       httpPort,
+      httpHost: isDaemon ? "127.0.0.1" : undefined,
+      httpOptions:
+        runtimeManifest === null
+          ? undefined
+          : {
+              authToken: runtimeManifest.localAuthToken,
+              health: () => ({
+                instanceId: runtimeManifest?.instanceId,
+                profileId: runtimeManifest?.profileId,
+                pid: runtimeManifest?.pid,
+                state: runtimeManifest?.state,
+                cliVersion: runtimeManifest?.cliVersion,
+                protocolVersion: runtimeManifest?.protocolVersion,
+                configFingerprint: runtimeManifest?.configFingerprint,
+                host: runtimeManifest?.host,
+                port: runtimeManifest?.port,
+                readyAt: runtimeManifest?.readyAt,
+              }),
+            },
       verbose,
       clearOpenApiCache: clearCache,
     });
 
-    setupSignalHandlers(gateway, daemonPaths);
+    setupSignalHandlers(gateway, daemonPaths, () => runtimeManifest);
 
     await gateway.start();
 
-    if (isDaemon && daemonPaths) {
-      writeFileSync(daemonPaths.port, String(httpPort));
-      if (verbose) {
-        console.error(`[daemon] Port file written: ${daemonPaths.port}`);
+    if (isDaemon && daemonPaths && runtimeManifest) {
+      const actualPort = gateway.getHttpPort() ?? httpPort;
+      if (!actualPort) {
+        throw new Error("Daemon HTTP transport did not report a bound port");
       }
 
-      startIdleShutdownMonitor(gateway, daemonPaths, verbose);
+      const ready = transitionReadiness(
+        readinessFromManifest(runtimeManifest),
+        "ready",
+      );
+      runtimeManifest = {
+        ...runtimeManifest,
+        ...ready,
+        port: actualPort,
+        mcpUrl: `http://127.0.0.1:${actualPort}/mcp`,
+        controlUrl: `http://127.0.0.1:${actualPort}`,
+      };
+      await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
+      if (verbose) {
+        console.error(`[daemon] Runtime manifest published as ready on port ${actualPort}`);
+      }
+    } else if (isDaemon && daemonPaths) {
+      // Compatibility path for callers with a pre-contract DaemonPaths
+      // object. Production paths use the manifest's actual bound port.
+      writeFileSync(daemonPaths.port, String(httpPort));
     }
 
     if (mode === "stdio") {
       await new Promise(() => {});
     }
   } catch (err) {
+    if (gateway) {
+      await gateway.stop().catch(() => undefined);
+    }
+    if (runtimeManifest && daemonPaths?.runtimeManifest) {
+      await removeRuntimeManifestIfCurrent(daemonPaths, runtimeManifest);
+      runtimeManifest = null;
+    }
+
     // Handle missing config file with interactive prompt
     if (err instanceof ConfigError && err.message.includes("No config file found")) {
       console.error(`Error: ${err.message}`);
@@ -126,16 +206,27 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   }
 }
 
-function setupSignalHandlers(gateway: Gateway, daemonPaths: DaemonPaths | null): void {
+function setupSignalHandlers(
+  gateway: Gateway,
+  daemonPaths: DaemonPaths | null,
+  getRuntimeManifest: () => RuntimeManifest | null,
+): void {
   const shutdown = async (signal: string) => {
     console.error(`\nReceived ${signal}, shutting down...`);
     try {
+      const manifest = getRuntimeManifest();
+      if (manifest && daemonPaths?.runtimeManifest) {
+        await markManifestStopping(daemonPaths, manifest);
+      }
       await gateway.stop();
-      cleanupDaemonFiles(daemonPaths);
+      if (manifest && daemonPaths?.runtimeManifest) {
+        await removeRuntimeManifestIfCurrent(daemonPaths, manifest);
+      }
+      cleanupLegacyDaemonFiles(daemonPaths);
       process.exit(0);
     } catch (err) {
       console.error("Error during shutdown:", err);
-      cleanupDaemonFiles(daemonPaths);
+      cleanupLegacyDaemonFiles(daemonPaths);
       process.exit(1);
     }
   };
@@ -144,7 +235,7 @@ function setupSignalHandlers(gateway: Gateway, daemonPaths: DaemonPaths | null):
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-function cleanupDaemonFiles(paths: DaemonPaths | null): void {
+function cleanupLegacyDaemonFiles(paths: DaemonPaths | null): void {
   if (!paths) return;
 
   for (const file of [paths.pid, paths.port, paths.socket]) {
@@ -153,49 +244,41 @@ function cleanupDaemonFiles(paths: DaemonPaths | null): void {
         unlinkSync(file);
       }
     } catch {
-      // Ignore cleanup errors
+      // Ignore cleanup errors after the process has stopped.
     }
   }
 }
 
-function startIdleShutdownMonitor(
-  gateway: Gateway,
-  daemonPaths: DaemonPaths,
-  verbose: boolean,
-): void {
-  let idleStart: number | null = null;
-
-  const checkIdle = () => {
-    const stats = gateway.getSessionStats();
-    const activeSessions = stats?.activeSessions ?? 0;
-
-    if (activeSessions === 0) {
-      if (idleStart === null) {
-        idleStart = Date.now();
-        if (verbose) {
-          console.error("[daemon] No active sessions, starting idle timer");
-        }
-      } else if (Date.now() - idleStart >= DAEMON_IDLE_TIMEOUT) {
-        if (verbose) {
-          console.error("[daemon] Idle timeout reached, shutting down");
-        }
-        gateway.stop().then(() => {
-          cleanupDaemonFiles(daemonPaths);
-          process.exit(0);
-        });
-        return;
-      }
-    } else {
-      if (idleStart !== null && verbose) {
-        console.error(
-          `[daemon] Activity detected (${activeSessions} sessions), resetting idle timer`,
-        );
-      }
-      idleStart = null;
-    }
-
-    setTimeout(checkIdle, DAEMON_IDLE_CHECK_INTERVAL);
+function readinessFromManifest(manifest: RuntimeManifest): ReturnType<typeof createReadinessSnapshot> {
+  return {
+    state: manifest.state,
+    startedAt: manifest.startedAt,
+    updatedAt: manifest.updatedAt,
+    ...(manifest.readyAt ? { readyAt: manifest.readyAt } : {}),
+    ...(manifest.failedAt ? { failedAt: manifest.failedAt } : {}),
+    ...(manifest.stoppingAt ? { stoppingAt: manifest.stoppingAt } : {}),
+    ...(manifest.error ? { error: manifest.error } : {}),
   };
+}
 
-  setTimeout(checkIdle, DAEMON_IDLE_CHECK_INTERVAL);
+async function markManifestStopping(paths: DaemonPaths, manifest: RuntimeManifest): Promise<void> {
+  const current = await readRuntimeManifest(paths.runtimeManifest);
+  if (!current || current.instanceId !== manifest.instanceId) return;
+  if (!(await matchesProcessIdentity(current.processIdentity))) return;
+
+  const stopping =
+    current.state === "stopping"
+      ? readinessFromManifest(current)
+      : transitionReadiness(readinessFromManifest(current), "stopping");
+  await writeRuntimeManifest(paths.runtimeManifest, { ...current, ...stopping });
+}
+
+async function removeRuntimeManifestIfCurrent(
+  paths: DaemonPaths,
+  manifest: RuntimeManifest,
+): Promise<void> {
+  const current = await readRuntimeManifest(paths.runtimeManifest);
+  if (current?.instanceId === manifest.instanceId) {
+    await removeRuntimeManifest(paths.runtimeManifest);
+  }
 }

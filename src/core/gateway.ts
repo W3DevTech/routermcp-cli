@@ -10,7 +10,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
 import { OpenApiHandler } from "../openapi/index.js";
-import { createServerTransport, type ServerTransportHandle } from "../transports/index.js";
+import {
+  createServerTransport,
+  type HttpServerOptions,
+  type ServerTransportHandle,
+} from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
 import {
@@ -32,6 +36,7 @@ export interface GatewayOptions {
   mode: "stdio" | "http-streamable";
   httpPort?: number;
   httpHost?: string;
+  httpOptions?: HttpServerOptions;
   verbose?: boolean;
   clearOpenApiCache?: boolean;
 }
@@ -251,6 +256,7 @@ export class Gateway {
         this.options.mode,
         this.options.httpPort,
         this.options.httpHost,
+        this.options.httpOptions,
       );
 
       await this.server.connect(this.serverTransport.transport);
@@ -304,7 +310,7 @@ export class Gateway {
   }
 
   async stop(): Promise<void> {
-    if (this.state !== "running") {
+    if (this.state === "stopped" || this.state === "stopping") {
       return;
     }
 
@@ -321,6 +327,11 @@ export class Gateway {
       this.sessionManager = null;
     }
 
+    // Startup can fail before the transport or session manager is created.
+    // Always release any upstream clients opened during discovery as part of
+    // teardown so a failed daemon cannot keep subprocesses or sockets alive.
+    await this.discoveryManager.disconnectAll();
+
     this.stdioSession = null;
 
     this.state = "stopped";
@@ -333,6 +344,10 @@ export class Gateway {
 
   getSessionStats(): { activeSessions: number; maxSessions: number } | null {
     return this.sessionManager?.getStats() ?? null;
+  }
+
+  getHttpPort(): number | null {
+    return this.serverTransport?.getPort?.() ?? this.options.httpPort ?? null;
   }
 
   private log(message: string): void {

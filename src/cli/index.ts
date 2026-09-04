@@ -9,6 +9,13 @@ import {
   configRemoveCommand,
 } from "./config.js";
 import { type ConnectCommandOptions, connectCommand } from "./connect.js";
+import {
+  type DaemonCommandOptions,
+  restartCommand,
+  startCommand,
+  statusCommand,
+  stopCommand,
+} from "./daemon.js";
 import { doctorCommand } from "./doctor.js";
 import { oauthLoginCommand, oauthLogoutCommand, oauthStatusCommand } from "./oauth.js";
 import { type ProxyCommandOptions, proxyCommand } from "./proxy.js";
@@ -40,6 +47,7 @@ interface CliOptions extends ServeCommandOptions {
   telemetryAction?: TelemetryAction;
   configSubcommand?: ConfigSubcommand;
   toolsJson?: boolean;
+  json?: boolean;
 }
 
 type Command =
@@ -48,6 +56,10 @@ type Command =
   | "tunnel"
   | "proxy"
   | "connect"
+  | "start"
+  | "status"
+  | "stop"
+  | "restart"
   | "doctor"
   | "oauth"
   | "telemetry"
@@ -241,6 +253,22 @@ export function parseArgs(args: string[]): {
         command = "connect";
         break;
 
+      case "start":
+        command = "start";
+        break;
+
+      case "status":
+        command = "status";
+        break;
+
+      case "stop":
+        command = "stop";
+        break;
+
+      case "restart":
+        command = "restart";
+        break;
+
       case "doctor":
         command = "doctor";
         break;
@@ -315,6 +343,8 @@ export function parseArgs(args: string[]): {
       case "--json":
         if (command === "tools") {
           options.toolsJson = true;
+        } else {
+          options.json = true;
         }
         break;
 
@@ -458,6 +488,10 @@ USAGE:
 COMMANDS:
   serve     Start the MCP gateway (default)
   connect   Connect to gateway daemon (auto-starts if needed)
+  start     Start or reuse the profile daemon
+  status    Show daemon status
+  stop      Stop the profile daemon
+  restart   Restart the profile daemon
   proxy     Proxy a stdio MCP server over HTTP (SSE or Streamable HTTP)
   tunnel    Expose gateway via tunnel (Cloudflare, ngrok)
   config    Configuration management (wizard, add, remove, list)
@@ -476,9 +510,15 @@ SERVE OPTIONS:
   --clear               Clear OpenAPI cache before starting (force re-parse)
   --verbose             Enable verbose logging
 
-CONNECT OPTIONS:
+  CONNECT OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --project <path>      Project directory (default: current directory)
+  --verbose             Enable verbose logging
+
+DAEMON OPTIONS:
+  -c, --config <path>   Path to config file
+  --project <path>      Project directory (default: current directory)
+  --json                Print machine-readable status
   --verbose             Enable verbose logging
 
 PROXY OPTIONS:
@@ -616,6 +656,7 @@ export async function main(args: string[]): Promise<void> {
         http: options.http,
         verbose: options.verbose,
         daemonMode: options.daemonMode,
+        project: options.project,
         socket: options.socket,
         clearCache: options.clearCache,
       });
@@ -655,6 +696,22 @@ export async function main(args: string[]): Promise<void> {
         project: options.project,
         verbose: options.verbose,
       });
+      break;
+
+    case "start":
+      await startCommand(daemonCommandOptions(options));
+      break;
+
+    case "status":
+      await statusCommand(daemonCommandOptions(options));
+      break;
+
+    case "stop":
+      await stopCommand(daemonCommandOptions(options));
+      break;
+
+    case "restart":
+      await restartCommand(daemonCommandOptions(options));
       break;
 
     case "config": {
@@ -716,4 +773,13 @@ export async function main(args: string[]): Promise<void> {
       });
       break;
   }
+}
+
+function daemonCommandOptions(options: CliOptions): DaemonCommandOptions {
+  return {
+    config: options.config,
+    project: options.project,
+    verbose: options.verbose,
+    json: options.json,
+  };
 }

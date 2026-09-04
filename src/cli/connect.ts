@@ -50,7 +50,7 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     const projectId = getProjectId(projectPath);
     log(`Project ID: ${projectId}`);
 
-    const paths = getDaemonPaths(projectId, configPath);
+    const paths = getDaemonPaths(projectId, configPath, resolve(projectPath));
     log(`Daemon dir: ${paths.dir}`);
 
     let status = await getDaemonStatus(paths);

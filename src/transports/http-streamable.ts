@@ -62,8 +62,18 @@ export async function createHttpClientTransport(
 export interface HttpServerHandle {
   transport: SessionAwareTransport;
   server: ServerHandle | null;
+  getPort: () => number | null;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+}
+
+export const DAEMON_HEALTH_PATH = "/api/v1/health";
+/** Kept for clients built against the pre-control-plane daemon prototype. */
+export const DAEMON_HEALTH_PATH_LEGACY = "/__routermcp/health";
+
+export interface HttpServerOptions {
+  authToken?: string;
+  health?: () => Record<string, unknown>;
 }
 
 export interface SessionAwareTransport extends Transport {
@@ -163,9 +173,14 @@ class BunHttpServerTransport implements SessionAwareTransport {
   }
 }
 
-export function createHttpServerTransport(port: number, host = "127.0.0.1"): HttpServerHandle {
+export function createHttpServerTransport(
+  port: number,
+  host = "127.0.0.1",
+  options: HttpServerOptions = {},
+): HttpServerHandle {
   const transport = new BunHttpServerTransport();
   let server: ServerHandle | null = null;
+  let boundPort: number | null = null;
 
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -177,74 +192,131 @@ export function createHttpServerTransport(port: number, host = "127.0.0.1"): Htt
   const handle: HttpServerHandle = {
     transport,
     server: null,
+    getPort: () => boundPort,
 
     start: async () => {
-      server = serve({
-        port,
-        fetch: async (request: Request) => {
-          const url = new URL(request.url);
+      let candidatePort = port;
+      let lastError: unknown;
 
-          if (url.pathname !== "/mcp") {
-            return new Response("Not Found", { status: 404 });
-          }
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try {
+          server = serve({
+            port: candidatePort,
+            host,
+            fetch: async (request: Request) => {
+              const url = new URL(request.url);
 
-          if (request.method === "OPTIONS") {
-            return new Response(null, { status: 204, headers: corsHeaders });
-          }
+          if (url.pathname === DAEMON_HEALTH_PATH || url.pathname === DAEMON_HEALTH_PATH_LEGACY) {
+                if (request.method !== "GET") {
+                  return new Response("Method Not Allowed", { status: 405 });
+                }
 
-          if (request.method === "POST") {
-            try {
-              const sessionId = request.headers.get("mcp-session-id") || randomUUID();
-              const body = (await request.json()) as JSONRPCMessage;
+                if (options.authToken) {
+                  const authorization = request.headers.get("authorization");
+                  if (authorization !== `Bearer ${options.authToken}`) {
+                    return new Response("Unauthorized", { status: 401 });
+                  }
+                }
 
-              const response = await transport.handleRequestWithSession(body, sessionId);
-
-              if (response) {
-                return new Response(JSON.stringify(response), {
-                  status: 200,
-                  headers: {
-                    "Content-Type": "application/json",
-                    "Mcp-Session-Id": sessionId,
-                    ...corsHeaders,
+                return new Response(
+                  JSON.stringify({
+                    ok: true,
+                    ...(options.health ? options.health() : {}),
+                  }),
+                  {
+                    status: 200,
+                    headers: {
+                      "Content-Type": "application/json",
+                      ...(options.authToken ? {} : { "Cache-Control": "no-store" }),
+                    },
                   },
-                });
+                );
               }
 
-              return new Response(null, {
-                status: 202,
-                headers: {
-                  "Mcp-Session-Id": sessionId,
-                  ...corsHeaders,
-                },
+              if (url.pathname !== "/mcp") {
+                return new Response("Not Found", { status: 404 });
+              }
+
+              if (request.method === "OPTIONS") {
+                return new Response(null, { status: 204, headers: corsHeaders });
+              }
+
+              if (request.method === "POST") {
+                try {
+                  const sessionId = request.headers.get("mcp-session-id") || randomUUID();
+                  const body = (await request.json()) as JSONRPCMessage;
+
+                  const response = await transport.handleRequestWithSession(body, sessionId);
+
+                  if (response) {
+                    return new Response(JSON.stringify(response), {
+                      status: 200,
+                      headers: {
+                        "Content-Type": "application/json",
+                        "Mcp-Session-Id": sessionId,
+                        ...corsHeaders,
+                      },
+                    });
+                  }
+
+                  return new Response(null, {
+                    status: 202,
+                    headers: {
+                      "Mcp-Session-Id": sessionId,
+                      ...corsHeaders,
+                    },
+                  });
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : String(err);
+                  return new Response(
+                    JSON.stringify({
+                      jsonrpc: "2.0",
+                      error: { code: -32603, message },
+                      id: null,
+                    }),
+                    {
+                      status: 500,
+                      headers: {
+                        "Content-Type": "application/json",
+                        ...corsHeaders,
+                      },
+                    },
+                  );
+                }
+              }
+
+              return new Response("Method Not Allowed", {
+                status: 405,
+                headers: corsHeaders,
               });
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              return new Response(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  error: { code: -32603, message },
-                  id: null,
-                }),
-                {
-                  status: 500,
-                  headers: {
-                    "Content-Type": "application/json",
-                    ...corsHeaders,
-                  },
-                },
-              );
-            }
-          }
-
-          return new Response("Method Not Allowed", {
-            status: 405,
-            headers: corsHeaders,
+            },
           });
-        },
-      });
 
-      handle.server = server;
-      console.error(`HTTP MCP server listening on http://${host}:${port}/mcp`);
+          if (server.ready) {
+            boundPort = await server.ready;
+          } else {
+            boundPort = server.port;
+          }
+          handle.server = server;
+          await transport.start();
+          console.error(`HTTP MCP server listening on http://${host}:${boundPort}/mcp`);
+          return;
+        } catch (error) {
+          lastError = error;
+          server?.stop();
+          server = null;
+          handle.server = null;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EADDRINUSE") {
+            throw error;
+          }
+          candidatePort++;
+        }
+      }
+
+      throw lastError instanceof Error
+        ? lastError
+        : new Error(`Unable to bind HTTP server near port ${port}`);
     },
 
     stop: async () => {
@@ -253,6 +325,7 @@ export function createHttpServerTransport(port: number, host = "127.0.0.1"): Htt
         server = null;
         handle.server = null;
       }
+      boundPort = null;
       await transport.close();
     },
   };
