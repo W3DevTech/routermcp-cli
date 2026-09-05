@@ -133,6 +133,13 @@ export interface HttpRequestContext {
   leaseId?: string;
 }
 
+/** Dispatch hook used by a host that owns one listener and many runtimes. */
+export type HttpMcpRequestHandler = (
+  message: JSONRPCMessage,
+  sessionId: string,
+  context?: HttpRequestContext,
+) => Promise<JSONRPCMessage | null>;
+
 export interface HttpServerOptions {
   /**
    * Bearer token for the daemon control surface. A connection tracker makes
@@ -146,6 +153,8 @@ export interface HttpServerOptions {
   /** Short-lived browser credentials for the hosted management console. */
   managementCredentials?: ManagementCredentialStore;
   connectionTracker?: BridgeLeaseTracker;
+  /** Route MCP requests into an embedded workspace runtime. */
+  dispatchMcp?: HttpMcpRequestHandler;
   /** Called after a successful MCP initialize response for one HTTP session. */
   onSessionInitialize?: (
     sessionId: string,
@@ -529,7 +538,9 @@ export function createHttpServerTransport(
                   )) as JSONRPCMessage;
                   requestMethod = getJsonRpcMethod(body);
 
-                  const response = await transport.handleRequestWithSession(body, sessionId);
+                  const response = options.dispatchMcp
+                    ? await options.dispatchMcp(body, sessionId, requestContext)
+                    : await transport.handleRequestWithSession(body, sessionId);
 
                   const protocolError = isJsonRpcProtocolError(response);
                   const resultError = isJsonRpcResultError(response);
@@ -1505,6 +1516,7 @@ function resolveRequestContext(
   tracker: BridgeLeaseTracker | undefined,
   sessionContexts: ReadonlyMap<string, HttpRequestContext>,
 ): HttpRequestContext | undefined {
+  const sessionContext = sessionContexts.get(sessionId);
   const leaseId = readContextHeader(request, DAEMON_BRIDGE_LEASE_HEADER);
   const requestedWorkspaceId = (() => {
     const value = readContextHeader(request, DAEMON_WORKSPACE_HEADER);
@@ -1512,7 +1524,7 @@ function resolveRequestContext(
   })();
 
   if (!leaseId && !requestedWorkspaceId) {
-    return sessionContexts.get(sessionId);
+    return sessionContext;
   }
 
   // When the tracker exposes its public lease list, use the server-owned
@@ -1522,11 +1534,11 @@ function resolveRequestContext(
   // compatibility, since their tracker may resolve claims out of process.
   if (leaseId && tracker?.leases) {
     const lease = tracker.leases.find((candidate) => candidate.leaseId === leaseId);
-    if (!lease) return sessionContexts.get(sessionId);
-    return {
+    if (!lease) return sessionContext;
+    return enforceSessionWorkspace(sessionContext, {
       leaseId,
       ...(lease.workspaceId ? { workspaceId: lease.workspaceId } : {}),
-    };
+    });
   }
 
   // A direct HTTP caller must not be able to invent a workspace attribution by
@@ -1534,12 +1546,35 @@ function resolveRequestContext(
   // a server-issued lease; custom embedders without a lease list retain the
   // header-only compatibility path below.
   if (requestedWorkspaceId && tracker?.leases) {
-    return sessionContexts.get(sessionId);
+    return sessionContext;
+  }
+
+  return enforceSessionWorkspace(sessionContext, {
+    ...(leaseId ? { leaseId } : {}),
+    ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
+  });
+}
+
+function enforceSessionWorkspace(
+  sessionContext: HttpRequestContext | undefined,
+  requestContext: HttpRequestContext,
+): HttpRequestContext {
+  if (
+    sessionContext?.workspaceId &&
+    requestContext.workspaceId &&
+    sessionContext.workspaceId !== requestContext.workspaceId
+  ) {
+    throw new Error("MCP session is already bound to another workspace");
   }
 
   return {
-    ...(leaseId ? { leaseId } : {}),
-    ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
+    ...sessionContext,
+    ...requestContext,
+    ...(sessionContext?.workspaceId
+      ? { workspaceId: sessionContext.workspaceId }
+      : requestContext.workspaceId
+        ? { workspaceId: requestContext.workspaceId }
+        : {}),
   };
 }
 

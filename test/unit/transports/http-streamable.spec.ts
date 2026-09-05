@@ -364,6 +364,88 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
 
     await handle.stop();
   });
+
+  it("dispatches MCP requests through a host-provided workspace handler", async () => {
+    const dispatchMcp = vi.fn(async (message, sessionId, context) => ({
+      jsonrpc: "2.0" as const,
+      id: "id" in message ? message.id : null,
+      result: {
+        sessionId,
+        workspaceId: context?.workspaceId ?? null,
+      },
+    }));
+    const handle = createHttpServerTransport(7858, "127.0.0.1", { dispatchMcp });
+    await handle.start();
+
+    const response = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Mcp-Session-Id": "session-a" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      result: { sessionId: "session-a", workspaceId: null },
+    });
+    expect(dispatchMcp).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "tools/list" }),
+      "session-a",
+      undefined,
+    );
+
+    await handle.stop();
+  });
+
+  it("rejects a session when a later lease claims another workspace", async () => {
+    const tracker = new ConnectionTracker();
+    const firstLease = tracker.acquire("lease-a", { workspaceId: "workspace-a" });
+    const secondLease = tracker.acquire("lease-b", { workspaceId: "workspace-b" });
+    const dispatchMcp = vi.fn(async (message) => ({
+      jsonrpc: "2.0" as const,
+      id: "id" in message ? message.id : null,
+      result: {},
+    }));
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      connectionTracker: tracker,
+      dispatchMcp,
+    });
+    await handle.start();
+
+    const first = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Mcp-Session-Id": "session-a",
+          [DAEMON_BRIDGE_LEASE_HEADER]: firstLease.leaseId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+      }),
+    );
+    expect(first.status).toBe(200);
+
+    const conflicting = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Mcp-Session-Id": "session-a",
+          [DAEMON_BRIDGE_LEASE_HEADER]: secondLease.leaseId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+      }),
+    );
+    expect(conflicting.status).toBe(500);
+    expect((await conflicting.json()).error.message).toContain("already bound");
+    expect(dispatchMcp).toHaveBeenCalledTimes(1);
+
+    await handle.stop();
+    tracker.destroy();
+  });
 });
 
 describe("createHttpServerTransport control-plane routes", () => {

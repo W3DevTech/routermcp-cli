@@ -91,3 +91,76 @@ describe("mergeUpstreamServerHealth", () => {
     await sessions.cleanupAll();
   });
 });
+
+describe("embedded gateway transport", () => {
+  it("dispatches requests without binding stdio or an HTTP listener", async () => {
+    const gateway = createGateway({ config: { mcpServers: {} }, mode: "embedded" });
+
+    await gateway.start();
+    try {
+      const response = await gateway.handleRequestWithSession(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+                clientInfo: { name: "embedded-test", version: "1.0.0" },
+          },
+        },
+        "session-a",
+      );
+
+      expect(response).toMatchObject({ jsonrpc: "2.0", id: 1 });
+      expect(response && "result" in response).toBe(true);
+    } finally {
+      await gateway.stop();
+    }
+  });
+
+  it("keeps duplicate request IDs isolated across sessions", async () => {
+    const gateway = createGateway({ config: { mcpServers: {} }, mode: "embedded" });
+
+    await gateway.start();
+    try {
+      const responses = await Promise.all(
+        ["session-a", "session-b"].map((sessionId) =>
+          gateway.handleRequestWithSession(
+            {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                clientInfo: { name: sessionId, version: "1.0.0" },
+              },
+            },
+            sessionId,
+          ),
+        ),
+      );
+
+      expect(responses).toHaveLength(2);
+      expect(responses.map((response) => response && "id" in response && response.id)).toEqual([
+        1,
+        1,
+      ]);
+
+      const listResponses = await Promise.all(
+        ["session-a", "session-b"].map((sessionId) =>
+          gateway.handleRequestWithSession(
+            { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+            sessionId,
+          ),
+        ),
+      );
+      expect(listResponses).toHaveLength(2);
+      expect(listResponses.every((response) => response && "result" in response)).toBe(true);
+      expect(gateway.getSessionStats()?.activeSessions).toBe(2);
+    } finally {
+      await gateway.stop();
+    }
+  });
+});

@@ -157,6 +157,13 @@ export class WorkspaceRuntimeManager {
     }
 
     if (entry?.state === "ready" || entry?.state === "idle") {
+      if (
+        context.configDigest !== undefined &&
+        entry.context.configDigest !== undefined &&
+        context.configDigest !== entry.context.configDigest
+      ) {
+        return this.reload(input);
+      }
       this.cancelIdleDisposal(entry);
       entry.state = "ready";
       return this.requireRuntime(entry);
@@ -443,9 +450,9 @@ export class WorkspaceRuntimeManager {
     const gateway = createGateway({
       ...this.gatewayOptions,
       config: context.config,
-      // Context gateways are request handlers owned by the host. The host
-      // supplies the actual listener/dispatch transport in its integration.
-      mode: this.gatewayOptions.mode ?? "stdio",
+      // Context gateways are request handlers owned by the host. The shared
+      // daemon listener dispatches into this embedded transport.
+      mode: "embedded",
       executionContext: context.execution,
     });
     try {
