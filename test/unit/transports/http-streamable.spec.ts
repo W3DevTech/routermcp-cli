@@ -51,6 +51,32 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     fetchHandler = undefined as never;
   });
 
+  it("serves an informational root page without exposing control credentials", async () => {
+    const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
+    await handle.start();
+
+    const response = await fetchHandler(new Request("http://127.0.0.1/"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const body = await response.text();
+    expect(body).toContain("The local RouterMCP gateway is running.");
+    expect(body).toContain("workspace URL printed by");
+    expect(body).not.toContain("secret");
+
+    const head = await fetchHandler(new Request("http://127.0.0.1/", { method: "HEAD" }));
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+
+    const unsupported = await fetchHandler(
+      new Request("http://127.0.0.1/", { method: "POST" }),
+    );
+    expect(unsupported.status).toBe(405);
+    expect(unsupported.headers.get("Allow")).toBe("GET, HEAD");
+
+    await handle.stop();
+  });
+
   it("protects lease acquisition and supports heartbeat and release", async () => {
     const tracker = new ConnectionTracker(1000, () => undefined, 10_000);
     const handle = createHttpServerTransport(7858, "127.0.0.1", {

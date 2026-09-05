@@ -114,6 +114,38 @@ export const DAEMON_WORKSPACE_HEADER = "X-RouterMCP-Workspace-Id";
 export const WORKSPACE_MCP_CREDENTIAL_PATH = "/api/v1/management/mcp-credential";
 /** Default hosted management origin for a token-protected local daemon. */
 export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
+
+const DAEMON_INFO_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RouterMCP daemon</title>
+</head>
+<body>
+  <main>
+    <h1>RouterMCP daemon</h1>
+    <p>The local RouterMCP gateway is running.</p>
+    <p>Connect MCP clients to the workspace URL printed by <code>routermcp mcp-config</code> with its credential.</p>
+    <p>Manage this daemon from <a href="https://cli.routermcp.com/cli">cli.routermcp.com</a> or an authenticated <code>/api/v1</code> request.</p>
+  </main>
+</body>
+</html>`;
+
+function daemonInfoResponse(request: Request, headers: Record<string, string>): Response {
+  const responseHeaders = {
+    ...headers,
+    Allow: "GET, HEAD",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+    "Content-Type": "text/html; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+  };
+  return new Response(request.method === "HEAD" ? null : DAEMON_INFO_PAGE, {
+    status: 200,
+    headers: responseHeaders,
+  });
+}
 /**
  * Exact browser origins used by the hosted console in production and by the
  * RouterMCP Next.js app during local development. Keep this list finite: the
@@ -357,6 +389,19 @@ export function createHttpServerTransport(
             host,
             fetch: async (request: Request) => {
               const url = new URL(request.url);
+
+              if (url.pathname === "/") {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+                if (request.method !== "GET" && request.method !== "HEAD") {
+                  return new Response("Method Not Allowed", {
+                    status: 405,
+                    headers: { ...corsHeaders(request), Allow: "GET, HEAD" },
+                  });
+                }
+                return daemonInfoResponse(request, corsHeaders(request));
+              }
 
               if (
                 url.pathname === DAEMON_HEALTH_PATH ||
