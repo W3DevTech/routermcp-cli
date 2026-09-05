@@ -68,4 +68,51 @@ describe("ManagementCredentialStore", () => {
       () => new ManagementCredentialStore({ ttlMs: MAX_MANAGEMENT_CREDENTIAL_TTL_MS + 1 }),
     ).toThrow(/no greater than/);
   });
+
+  it("binds grants to workspace claims and rejects a mismatched authorization scope", () => {
+    let sequence = 0;
+    const store = new ManagementCredentialStore({
+      workspaceId: "workspace-a",
+      allowedWorkspaceIds: ["workspace-b"],
+      generateToken: () => `management-token-${++sequence}`,
+    });
+
+    const first = store.issue();
+    const second = store.issue("workspace-b");
+
+    expect(first.workspaceId).toBe("workspace-a");
+    expect(second.workspaceId).toBe("workspace-b");
+    expect(store.authorize(first.token, "workspace-a")).toBe(true);
+    expect(store.authorize(first.token, "workspace-b")).toBe(false);
+    expect(store.authorize(second.token, "workspace-b")).toBe(true);
+    expect(store.authorize(second.token, "workspace-a")).toBe(false);
+    expect(store.authorize(first.token, "workspace/other")).toBe(false);
+  });
+
+  it("uses a live claim gate for reused hosts without allowing arbitrary claims", () => {
+    const allowed = new Set(["workspace-a", "workspace-b"]);
+    const store = new ManagementCredentialStore({
+      workspaceId: "workspace-a",
+      canIssueWorkspace: (workspaceId) => allowed.has(workspaceId),
+      generateToken: () => "management-token",
+    });
+
+    expect(store.canIssueForWorkspace("workspace-b")).toBe(true);
+    expect(store.issue("workspace-b").workspaceId).toBe("workspace-b");
+    expect(store.canIssueForWorkspace("workspace-c")).toBe(false);
+    expect(() => store.issue("workspace-c")).toThrow(/not allowed/);
+
+    allowed.delete("workspace-b");
+    expect(store.canIssueForWorkspace("workspace-b")).toBe(false);
+  });
+
+  it("rejects malformed workspace claims at construction and issuance", () => {
+    expect(() => new ManagementCredentialStore({ workspaceId: "workspace/a" })).toThrow(/invalid/);
+    expect(() => new ManagementCredentialStore({ allowedWorkspaceIds: ["workspace/a"] })).toThrow(
+      /invalid/,
+    );
+
+    const store = new ManagementCredentialStore({ generateToken: () => "management-token" });
+    expect(() => store.issue("workspace/a")).toThrow(/invalid/);
+  });
 });

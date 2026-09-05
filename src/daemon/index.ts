@@ -3,6 +3,8 @@ export {
   DEFAULT_BRIDGE_LEASE_TTL_MS,
   DEFAULT_CONNECTION_IDLE_TIMEOUT_MS,
   type ConnectionLease,
+  type ConnectionLeaseMetadata,
+  type ConnectionLeaseRemovalReason,
 } from "./connection-tracker.js";
 export {
   fingerprintConfig,
@@ -31,6 +33,32 @@ export {
   type ProcessIdentitySource,
 } from "./identity.js";
 export {
+  DAEMON_HOST_DEFAULT,
+  DAEMON_HOST_MANIFEST_PROTOCOL_VERSION,
+  DAEMON_HOST_MANIFEST_SCHEMA_VERSION,
+  createDaemonHostManifest,
+  type CreateDaemonHostManifestOptions,
+  isDaemonHostManifest,
+  readDaemonHostManifest,
+  redactDaemonHostManifest,
+  removeDaemonHostManifest,
+  serializeDaemonHostManifest,
+  type DaemonHostManifest,
+  type PublicDaemonHostManifest,
+  writeDaemonHostManifest,
+  writeDaemonHostManifestAtomic,
+} from "./host-manifest.js";
+export {
+  DaemonHostBusyError,
+  DaemonHostProfileConflictError,
+  ensureWorkspaceRunning,
+  getWorkspaceDaemonStatus,
+  restartWorkspaceDaemon,
+  stopWorkspaceDaemon,
+  type EnsureWorkspaceDaemonOptions,
+  type WorkspaceDaemonStatus,
+} from "./host.js";
+export {
   cleanupDaemonFiles,
   connectToSocket,
   type DaemonStatus,
@@ -46,8 +74,16 @@ export {
   stopDaemon,
   type StopDaemonOptions,
 } from "./lifecycle.js";
-export { type DaemonPaths, getDaemonPaths, isWindows } from "./paths.js";
 export {
+  type DaemonHostPaths,
+  type DaemonPaths,
+  getDaemonHostPaths,
+  getDaemonPaths,
+  isWindows,
+} from "./paths.js";
+export {
+  getDaemonHostDir,
+  getDaemonHostId,
   getDaemonDir,
   getLegacyProjectId,
   getProjectId,
@@ -86,3 +122,19 @@ export {
   type ReadinessSnapshot,
   transitionReadiness,
 } from "./readiness.js";
+export {
+  DEFAULT_WORKSPACE_RETENTION_MS,
+  MAX_WORKSPACE_RECORDS,
+  MAX_WORKSPACE_RETENTION_MS,
+  createWorkspaceDescriptor,
+  getWorkspaceId,
+  WorkspaceLeaseTracker,
+  type WorkspaceDescriptor,
+  type WorkspaceRegistrationInput,
+  type WorkspaceRegistryOptions,
+  WorkspaceRegistry,
+  WorkspaceRegistryError,
+  type WorkspaceSnapshot,
+  type WorkspaceState,
+  WORKSPACE_REGISTRY_SCHEMA_VERSION,
+} from "./workspace-registry.js";

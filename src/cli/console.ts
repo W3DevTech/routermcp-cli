@@ -2,9 +2,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import {
   CONTROL_PLANE_PATH,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  isValidWorkspaceId,
   type ManagementCredentialGrant,
 } from "../control-plane/index.js";
-import { isLoopbackHost, type DaemonStatus, ensureRunning } from "../daemon/index.js";
+import {
+  ensureWorkspaceRunning,
+  isLoopbackHost,
+  type DaemonStatus,
+} from "../daemon/index.js";
 import { type DaemonCommandOptions, resolveDaemonContext } from "./daemon.js";
 
 export const CLI_CONSOLE_URL = "https://cli.routermcp.com/cli" as const;
@@ -19,6 +24,7 @@ export interface ConsoleHandoff {
   expiresAt: string;
   profile?: string;
   scope: ManagementCredentialGrant["scope"];
+  workspaceId?: string;
   url: string;
 }
 
@@ -28,7 +34,7 @@ export interface ConsoleHandoff {
  */
 export async function consoleCommand(options: ConsoleCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  const status = await ensureRunning(context.paths, {
+  const status = await ensureWorkspaceRunning(context.workspace, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
     host: options.host ?? context.configuredHost,
@@ -40,7 +46,11 @@ export async function consoleCommand(options: ConsoleCommandOptions): Promise<vo
     throw new Error(status.reason ?? "RouterMCP daemon did not become ready for console access");
   }
 
-  const grant = await requestManagementCredential(status);
+  // The status returned by ensureWorkspaceRunning carries the workspace that
+  // this invocation requested, even when another directory owns the shared
+  // daemon host. Include that claim in the handoff so a browser credential can
+  // never silently fall back to the host's primary workspace.
+  const grant = await requestManagementCredential(status, fetch, status.workspaceId);
   const handoff = createConsoleHandoff(status, grant);
 
   if (options.json) {
@@ -60,6 +70,7 @@ export async function consoleCommand(options: ConsoleCommandOptions): Promise<vo
 export async function requestManagementCredential(
   status: Pick<DaemonStatus, "controlUrl" | "authToken">,
   fetcher: typeof fetch = fetch,
+  workspaceId?: string,
 ): Promise<ManagementCredentialGrant> {
   if (!status.controlUrl || !status.authToken) {
     throw new Error("The managed daemon did not provide private console credentials");
@@ -68,6 +79,11 @@ export async function requestManagementCredential(
   const endpoint = new URL(normalizeControlEndpoint(status.controlUrl));
   endpoint.pathname = MANAGEMENT_CREDENTIAL_HANDOFF_PATH;
 
+  if (workspaceId !== undefined && !isValidWorkspaceId(workspaceId)) {
+    throw new Error("The managed daemon returned an invalid workspace claim");
+  }
+
+  const requestBody = workspaceId === undefined ? undefined : JSON.stringify({ workspaceId });
   let response: Response;
   try {
     response = await fetcher(endpoint.toString(), {
@@ -75,16 +91,18 @@ export async function requestManagementCredential(
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${status.authToken}`,
+        ...(requestBody ? { "Content-Type": "application/json" } : {}),
       },
       cache: "no-store",
+      ...(requestBody ? { body: requestBody } : {}),
     });
   } catch {
     throw new Error("The local daemon could not mint a console handoff");
   }
 
-  let body: unknown = null;
+  let responseBody: unknown = null;
   try {
-    body = await response.json();
+    responseBody = await response.json();
   } catch {
     // The generic response below avoids echoing any server-side credential data.
   }
@@ -93,11 +111,11 @@ export async function requestManagementCredential(
     throw new Error(`The local daemon rejected the console handoff (HTTP ${response.status})`);
   }
 
-  if (!isManagementCredentialGrant(body)) {
+  if (!isManagementCredentialGrant(responseBody)) {
     throw new Error("The local daemon returned an invalid console handoff");
   }
 
-  return body;
+  return responseBody;
 }
 
 /** Build the fragment format consumed by the hosted console without URL query credentials. */
@@ -110,6 +128,7 @@ export function createConsoleHandoff(
     endpoint,
     managementToken: grant.token,
     ...(status.profileId ? { profile: status.profileId } : {}),
+    ...(grant.workspaceId ? { workspace: grant.workspaceId } : {}),
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const url = `${CLI_CONSOLE_URL}#rmcp=${encodedPayload}`;
@@ -119,6 +138,7 @@ export function createConsoleHandoff(
     expiresAt: grant.expiresAt,
     ...(status.profileId ? { profile: status.profileId } : {}),
     scope: grant.scope,
+    ...(grant.workspaceId ? { workspaceId: grant.workspaceId } : {}),
     url,
   };
 }
@@ -179,6 +199,7 @@ function isManagementCredentialGrant(value: unknown): value is ManagementCredent
     grant.token.length > 0 &&
     typeof grant.expiresAt === "string" &&
     Number.isFinite(Date.parse(grant.expiresAt)) &&
-    grant.scope === "management"
+    grant.scope === "management" &&
+    (grant.workspaceId === undefined || isValidWorkspaceId(grant.workspaceId))
   );
 }

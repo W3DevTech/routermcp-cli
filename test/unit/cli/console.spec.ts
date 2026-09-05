@@ -66,6 +66,38 @@ describe("console handoff", () => {
     );
   });
 
+  it("includes the selected workspace claim in the local handoff request", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token: "management-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: MANAGEMENT_CREDENTIAL_SCOPE,
+          workspaceId: "workspace-other",
+        }),
+        { status: 201 },
+      ),
+    );
+
+    const grant = await requestManagementCredential(
+      {
+        controlUrl: "http://127.0.0.1:7858",
+        authToken: "local-root-token",
+      },
+      fetcher,
+      "workspace-other",
+    );
+
+    expect(grant.workspaceId).toBe("workspace-other");
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://127.0.0.1:7858/api/v1/management/handoff",
+      expect.objectContaining({
+        body: JSON.stringify({ workspaceId: "workspace-other" }),
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
+    );
+  });
+
   it("normalizes a canonical control-plane endpoint before requesting a handoff", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

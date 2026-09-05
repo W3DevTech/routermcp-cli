@@ -15,6 +15,7 @@ import type { OpenApiServerSnapshot } from "../openapi/index.js";
 import {
   createServerTransport,
   type BridgeLeaseTracker,
+  type HttpRequestContext,
   type HttpServerOptions,
   type ServerTransportHandle,
 } from "../transports/index.js";
@@ -285,13 +286,13 @@ export class Gateway {
           ? {
               ...this.options.httpOptions,
               connectionTracker: this.connectionTracker,
-              onSessionInitialize: async (sessionId, clientInfo) => {
+              onSessionInitialize: async (sessionId, clientInfo, context) => {
                 this.sessionManager?.getOrCreate(sessionId, clientInfo);
-                await this.options.httpOptions?.onSessionInitialize?.(sessionId, clientInfo);
+                await this.options.httpOptions?.onSessionInitialize?.(sessionId, clientInfo, context);
               },
-              onSessionClose: async (sessionId) => {
+              onSessionClose: async (sessionId, context) => {
                 await this.sessionManager?.cleanup(sessionId);
-                await this.options.httpOptions?.onSessionClose?.(sessionId);
+                await this.options.httpOptions?.onSessionClose?.(sessionId, context);
               },
             }
           : this.options.httpOptions;

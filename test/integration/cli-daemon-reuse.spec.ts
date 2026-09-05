@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -7,6 +8,7 @@ import {
   getAvailablePort,
   writeConfigFile,
 } from "../helpers/test-utils.js";
+import { getWorkspaceId } from "../../src/daemon/workspace-registry.js";
 
 interface CliResult {
   code: number | null;
@@ -110,6 +112,77 @@ describe("CLI daemon reuse", () => {
     const finalManifest = JSON.parse(finalStatus.stdout) as { running?: boolean };
     expect(finalManifest.running).toBe(false);
   }, 45_000);
+
+  it("reuses one host across directories for the same config and rejects a conflicting profile", async () => {
+    const secondProjectDir = await createTempDir();
+    const secondConfigPath = await writeConfigFile(secondProjectDir, {
+      mcpServers: { second: { transport: "stdio", command: "true" } },
+    });
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
+
+    try {
+      const first = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+      const firstStatus = JSON.parse(first.stdout) as { pid?: number; instanceId?: string };
+
+      const second = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(second.code, `${second.stdout}\n${second.stderr}`).toBe(0);
+      const secondStatus = JSON.parse(second.stdout) as { pid?: number; instanceId?: string };
+      expect(secondStatus.pid).toBe(firstStatus.pid);
+      expect(secondStatus.instanceId).toBe(firstStatus.instanceId);
+
+      const connected = await runCli(
+        entrypoint,
+        ["connect", "--config", configPath, "--project", secondProjectDir],
+        env,
+        '{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
+      );
+      expect(connected.code, `${connected.stdout}\n${connected.stderr}`).toBe(0);
+      expect(connected.stderr).toContain(`pid: ${firstStatus.pid}`);
+
+      const registryPath = resolve(stateDir, "routermcp", "host", "workspaces.json");
+      const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+        workspaces: Array<{ id: string; directory: string; activeConnections: number }>;
+      };
+      expect(registry.workspaces).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: getWorkspaceId(projectDir, configPath), directory: projectDir }),
+          expect.objectContaining({ id: getWorkspaceId(secondProjectDir, configPath), directory: secondProjectDir }),
+        ]),
+      );
+
+      const conflict = await runCli(
+        entrypoint,
+        ["start", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(conflict.code).not.toBe(0);
+      expect(conflict.stderr).toContain("already serving another config profile");
+    } finally {
+      const stopped = await runCli(
+        entrypoint,
+        ["stop", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
+      await cleanupTempDir(secondProjectDir);
+    }
+  }, 45_000);
+
 });
 
 async function runCli(

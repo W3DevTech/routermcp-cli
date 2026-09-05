@@ -4,11 +4,15 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
+import type { RouterMcpConfig } from "../config/types.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
 import type { UpstreamServer } from "../core/upstream.js";
+import type { HttpRequestContext } from "../transports/http-streamable.js";
 import {
   ControlPlane,
   ManagementCredentialStore,
+  createConfigManagementSource,
+  getExecutionMode,
   sanitizeText,
   sanitizeUrl,
   type ControlPlaneServer,
@@ -30,6 +34,10 @@ import {
   removeRuntimeManifest,
   type RuntimeManifest,
   transitionReadiness,
+  type WorkspaceRegistrationInput,
+  WorkspaceLeaseTracker,
+  WorkspaceRegistry,
+  type WorkspaceSnapshot,
   writeRuntimeManifest,
 } from "../daemon/index.js";
 import { buildRuntimeInvocation } from "../daemon/lifecycle.js";
@@ -50,6 +58,9 @@ export interface ServeCommandOptions {
 
 const DEFAULT_DAEMON_PORT = 7858;
 const MANAGED_RESTART_TIMEOUT_MS = 30_000;
+/** Internal-only handoff used by a controlled restart to retain bridge auth. */
+const MANAGED_RESTART_AUTH_TOKEN_ENV = "ROUTERMCP_DAEMON_RESTART_AUTH_TOKEN";
+const LOCAL_AUTH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export async function serveCommand(options: ServeCommandOptions): Promise<void> {
   const verbose = options.verbose ?? false;
@@ -69,6 +80,15 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
   let managementCredentials: ManagementCredentialStore | null = null;
+  let workspaceRegistry: WorkspaceRegistry | null = null;
+  let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
+  let currentWorkspace: WorkspaceSnapshot | null = null;
+  let currentWorkspaceRegistration: WorkspaceRegistrationInput | null = null;
+  let configFingerprint: string | undefined;
+  let desiredConfig: RouterMcpConfig | null = null;
+  let desiredConfigRevision: string | undefined;
+  const desiredServerLastChangedAt = new Map<string, string>();
+  const sessionWorkspaceIds = new Map<string, string>();
   let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
@@ -81,6 +101,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     const { config, path: configPath, scope } = await resolveConfigFromPath(options.config);
+    desiredConfig = config;
 
     if (verbose) {
       console.error(`Loaded config from: ${configPath} [${getScopeLabel(scope)}]`);
@@ -102,6 +123,24 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       }
       const projectId = getProjectId(projectPath);
       daemonPaths = getDaemonPaths(projectId, resolve(configPath), projectPath);
+      if (daemonPaths.runtimeManifest) {
+        configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
+        desiredConfigRevision = configFingerprint;
+        workspaceRegistry = new WorkspaceRegistry();
+        currentWorkspaceRegistration = {
+          directory: projectPath,
+          configPath: daemonPaths.configPath,
+          configScope: scope,
+          configDigest: configFingerprint,
+        };
+        currentWorkspace = await workspaceRegistry.ensure(currentWorkspaceRegistration);
+        workspaceLeaseTracker = new WorkspaceLeaseTracker(workspaceRegistry);
+      } else {
+        // Compatibility callers can provide the pre-manifest DaemonPaths
+        // shape. They retain the legacy pid/port lifecycle and have no
+        // workspace registry until they migrate to runtime.json.
+        configFingerprint = undefined;
+      }
 
       // The supervisor keeps this lock while the child reaches ready. A
       // manually launched daemon must acquire it itself so two direct
@@ -129,16 +168,16 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       }
 
       if (daemonPaths.runtimeManifest) {
-        const configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
+        const inheritedAuthToken = readManagedRestartAuthToken();
         runtimeManifest = await createRuntimeManifest({
           projectId,
           profileId: daemonPaths.profileId,
           configPath: daemonPaths.configPath,
-          configFingerprint,
+          configFingerprint: configFingerprint ?? (await fingerprintConfigFile(daemonPaths.configPath)),
           pid: process.pid,
           host: daemonHost,
           port: httpPort,
-          localAuthToken: randomBytes(32).toString("base64url"),
+          localAuthToken: inheritedAuthToken ?? randomBytes(32).toString("base64url"),
         });
         await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
       } else {
@@ -157,10 +196,71 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
 
       controlPlane = new ControlPlane({
         getStatus: () =>
-          createControlPlaneStatus(runtimeManifest, gateway, daemonPaths, httpPort),
-        getServers: () => createControlPlaneServers(gateway),
-        getSessions: () => createControlPlaneSessions(gateway, runtimeManifest),
+          createControlPlaneStatus(
+            runtimeManifest,
+            gateway,
+            daemonPaths,
+            httpPort,
+            currentWorkspace,
+            desiredConfigRevision,
+            restartScheduled,
+          ),
+        getServers: () =>
+          createControlPlaneServers(
+            gateway,
+            desiredConfig,
+            desiredConfigRevision,
+            desiredServerLastChangedAt,
+          ),
+        getSessions: () => createControlPlaneSessions(gateway, runtimeManifest, sessionWorkspaceIds),
         getLeases: () => gateway?.getConnectionLeases() ?? [],
+        getCurrentWorkspaceId: () => currentWorkspace?.id ?? null,
+        getWorkspaces: () =>
+          workspaceRegistry
+            ? workspaceRegistry.listSync({ currentWorkspaceId: currentWorkspace?.id })
+            : [],
+        management: createConfigManagementSource({
+          getConfigPath: () => daemonPaths?.configPath ?? resolve(configPath),
+          getEffectiveMode: () => getExecutionMode(config),
+          getRestartState: () =>
+            restartScheduled ? { restartState: "scheduled" as const } : { restartState: "idle" as const },
+          restart: () =>
+            controlPlane?.restart() ?? {
+              accepted: false,
+              message: "Managed daemon restart is not available",
+            },
+          onAuditEvent: (event) => {
+            controlPlane?.recordEvent({
+              level: "info",
+              type: `config.${event.type}`,
+              message: event.message,
+              ...(currentWorkspace?.id ? { workspaceId: currentWorkspace.id } : {}),
+              metadata: {
+                ...event.metadata,
+                ...(currentWorkspace?.id ? { workspaceId: currentWorkspace.id } : {}),
+              },
+            });
+          },
+          onMutation: async (mutation, context) => {
+            desiredConfig = mutation.config;
+            desiredConfigRevision = mutation.configDigest;
+            if (currentWorkspaceRegistration && currentWorkspace && workspaceRegistry) {
+              currentWorkspaceRegistration = {
+                ...currentWorkspaceRegistration,
+                configDigest: mutation.configDigest,
+              };
+              currentWorkspace = {
+                ...currentWorkspace,
+                configDigest: mutation.configDigest,
+                lastSeenAt: new Date().toISOString(),
+              };
+              await workspaceRegistry.ensure(currentWorkspaceRegistration);
+            }
+            if (mutation.changed && context.serverId) {
+              desiredServerLastChangedAt.set(context.serverId, new Date().toISOString());
+            }
+          },
+        }),
         restart: async () => {
           if (!daemonPaths || !runtimeManifest) {
             return {
@@ -225,7 +325,14 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           };
         },
       });
-      managementCredentials = new ManagementCredentialStore();
+      managementCredentials = new ManagementCredentialStore({
+        workspaceId: currentWorkspace?.id,
+        // A console handoff may be requested from a second directory that has
+        // already registered with this host. The registry is the authority for
+        // those claims; credentials never mint arbitrary path-derived IDs.
+        canIssueWorkspace: (workspaceId) =>
+          workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
+      });
     }
 
     gateway = createGateway({
@@ -254,12 +361,31 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
               }),
               controlPlane: controlPlane ?? undefined,
               managementCredentials: managementCredentials ?? undefined,
+              connectionTracker: workspaceLeaseTracker ?? undefined,
+              onSessionInitialize: (
+                sessionId: string,
+                _clientInfo: { name: string; version?: string } | undefined,
+                context?: HttpRequestContext,
+              ) => {
+                if (context?.workspaceId) {
+                  sessionWorkspaceIds.set(sessionId, context.workspaceId);
+                }
+              },
+              onSessionClose: (sessionId: string) => {
+                sessionWorkspaceIds.delete(sessionId);
+              },
             },
       verbose,
       clearOpenApiCache: clearCache,
     });
 
-    setupSignalHandlers(gateway, daemonPaths, () => runtimeManifest, () => controlPlane);
+    setupSignalHandlers(
+      gateway,
+      daemonPaths,
+      () => runtimeManifest,
+      () => controlPlane,
+      () => workspaceLeaseTracker,
+    );
 
     await gateway.start();
 
@@ -313,6 +439,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     if (gateway) {
       await gateway.stop().catch(() => undefined);
     }
+    await workspaceLeaseTracker?.destroy();
     if (runtimeManifest && daemonPaths?.runtimeManifest) {
       await removeRuntimeManifestIfCurrent(daemonPaths, runtimeManifest);
       runtimeManifest = null;
@@ -366,6 +493,9 @@ function createControlPlaneStatus(
   gateway: Gateway | null,
   paths: DaemonPaths | null,
   requestedPort: number | undefined,
+  workspace: WorkspaceSnapshot | null = null,
+  desiredConfigDigest?: string,
+  restartPending = false,
 ): ControlPlaneStatus {
   const host = manifest?.host ?? "127.0.0.1";
   const port = manifest?.port ?? gateway?.getHttpPort() ?? requestedPort ?? 0;
@@ -394,58 +524,127 @@ function createControlPlaneStatus(
     version: manifest?.cliVersion ?? "unknown",
     protocolVersion: manifest?.protocolVersion ?? "unknown",
     profile: manifest?.profileId ?? paths?.profileId ?? "unknown",
-    configDigest: manifest?.configFingerprint ?? "unknown",
+    configDigest: desiredConfigDigest ?? manifest?.configFingerprint ?? "unknown",
     host,
     port,
     mcpUrl: manifest?.mcpUrl ?? (fallbackBaseUrl ? `${fallbackBaseUrl}/mcp` : ""),
     controlUrl: manifest?.controlUrl ?? fallbackBaseUrl,
     startedAt,
     uptimeSeconds,
+    ...(workspace
+      ? {
+          workspaceId: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceConfigPath: workspace.configPath,
+        }
+      : {}),
+    ...(restartPending
+      ? { pendingRestart: true, restartState: "scheduled" as const }
+      : { pendingRestart: false, restartState: "idle" as const }),
   };
 }
 
-function createControlPlaneServers(gateway: Gateway | null): ControlPlaneServer[] {
-  if (!gateway) return [];
+function createControlPlaneServers(
+  gateway: Gateway | null,
+  desiredConfig: RouterMcpConfig | null,
+  configRevision: string | undefined,
+  lastChangedAtByServer: ReadonlyMap<string, string>,
+): ControlPlaneServer[] {
+  const observedMcp = new Map(
+    (gateway?.getUpstreamServers() ?? []).map((server) => [server.name, server]),
+  );
+  const mcpNames = new Set([
+    ...Object.keys(desiredConfig?.mcpServers ?? {}),
+    ...observedMcp.keys(),
+  ]);
 
-  const upstreamServers = gateway.getUpstreamServers().map((server) => {
-    const state = upstreamStateToControlState(server);
-    const url = sanitizeUrl(server.config.url);
-    const lastError = server.error ? sanitizeText(server.error.message) : undefined;
+  const mcpServers = Array.from(mcpNames, (name) => {
+    const desired = desiredConfig?.mcpServers[name];
+    const observed = observedMcp.get(name);
+    const configured = desired ?? observed?.config;
+    const enabled = configured?.enabled !== false;
+    const observedState = observed
+      ? upstreamStateToControlState(observed)
+      : enabled
+        ? "unknown"
+        : "offline";
+    const url = sanitizeUrl(configured?.url);
+    const lastError = observed?.error ? sanitizeText(observed.error.message) : undefined;
+    const serverId = `mcp:${sanitizeText(name)}`;
 
     return {
-      id: sanitizeText(server.name),
-      name: sanitizeText(server.name),
+      id: serverId,
+      name: sanitizeText(name),
+      kind: "mcp",
       ...(url ? { url } : {}),
-      transport: server.config.transport,
-      state,
-      toolCount: server.cachedTools.length || server.tools.length,
-      ...(server.lastLatencyMs !== undefined && server.lastLatencyMs !== null
-        ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
+      ...(configured?.transport ? { transport: configured.transport } : {}),
+      enabled,
+      observedState,
+      ...(configRevision ? { configRevision } : {}),
+      ...(lastChangedAtByServer.get(serverId)
+        ? { lastChangedAt: lastChangedAtByServer.get(serverId) }
         : {}),
-      ...(server.lastCheckedAt !== undefined && server.lastCheckedAt !== null
-        ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
+      // `state` is retained as the backwards-compatible alias for clients
+      // that predate the explicit desired/observed fields.
+      state: observedState,
+      toolCount: observed
+        ? Math.max(0, observed.cachedTools.length || observed.tools.length)
+        : 0,
+      ...(observed?.lastLatencyMs !== undefined && observed.lastLatencyMs !== null
+        ? { latencyMs: Math.max(0, Math.round(observed.lastLatencyMs)) }
+        : {}),
+      ...(observed?.lastCheckedAt !== undefined && observed.lastCheckedAt !== null
+        ? { lastCheckedAt: new Date(observed.lastCheckedAt).toISOString() }
         : {}),
       ...(lastError ? { lastError } : {}),
-    };
+    } satisfies ControlPlaneServer;
   });
 
-  const openApiServers = gateway.getOpenApiServerSnapshots().map((server) => ({
-    id: `openapi:${sanitizeText(server.name)}`,
-    name: sanitizeText(server.name),
-    ...(server.baseUrl ? { url: sanitizeUrl(server.baseUrl) } : {}),
-    transport: "openapi",
-    state: openApiStateToControlState(server),
-    toolCount: Math.max(0, Math.floor(server.toolCount)),
-    ...(server.lastLatencyMs !== undefined
-      ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
-      : {}),
-    ...(server.lastCheckedAt !== undefined
-      ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
-      : {}),
-    ...(server.lastError ? { lastError: sanitizeText(server.lastError) } : {}),
-  } satisfies ControlPlaneServer));
+  const observedOpenApi = new Map(
+    (gateway?.getOpenApiServerSnapshots() ?? []).map((server) => [server.name, server]),
+  );
+  const openApiNames = new Set([
+    ...Object.keys(desiredConfig?.openApiServers ?? {}),
+    ...observedOpenApi.keys(),
+  ]);
 
-  return [...upstreamServers, ...openApiServers];
+  const openApiServers = Array.from(openApiNames, (name) => {
+    const desired = desiredConfig?.openApiServers?.[name];
+    const observed = observedOpenApi.get(name);
+    const enabled = desired?.enabled !== false;
+    const observedState = observed
+      ? openApiStateToControlState(observed)
+      : enabled
+        ? "unknown"
+        : "offline";
+    const url = sanitizeUrl(desired?.baseUrl ?? observed?.baseUrl);
+    const serverId = `openapi:${sanitizeText(name)}`;
+
+    return {
+      id: serverId,
+      name: sanitizeText(name),
+      kind: "openapi",
+      ...(url ? { url } : {}),
+      transport: "openapi",
+      enabled,
+      observedState,
+      ...(configRevision ? { configRevision } : {}),
+      ...(lastChangedAtByServer.get(serverId)
+        ? { lastChangedAt: lastChangedAtByServer.get(serverId) }
+        : {}),
+      state: observedState,
+      toolCount: observed ? Math.max(0, Math.floor(observed.toolCount)) : 0,
+      ...(observed?.lastLatencyMs !== undefined
+        ? { latencyMs: Math.max(0, Math.round(observed.lastLatencyMs)) }
+        : {}),
+      ...(observed?.lastCheckedAt !== undefined
+        ? { lastCheckedAt: new Date(observed.lastCheckedAt).toISOString() }
+        : {}),
+      ...(observed?.lastError ? { lastError: sanitizeText(observed.lastError) } : {}),
+    } satisfies ControlPlaneServer;
+  });
+
+  return [...mcpServers, ...openApiServers];
 }
 
 function openApiStateToControlState(
@@ -465,20 +664,31 @@ function openApiStateToControlState(
 function createControlPlaneSessions(
   gateway: Gateway | null,
   manifest: RuntimeManifest | null,
+  sessionWorkspaceIds: Map<string, string> = new Map(),
 ): ControlPlaneSession[] {
   if (!gateway) return [];
 
   const profile = manifest?.profileId;
-  const sessions: ControlPlaneSession[] = gateway.getSessionSnapshots().map((session) => ({
-    id: `mcp:${session.id}`,
-    kind: "mcp",
-    clientName: session.clientName ?? "MCP client",
-    ...(session.clientVersion ? { clientVersion: session.clientVersion } : {}),
-    ...(profile ? { profile } : {}),
-    state: session.state,
-    connectedAt: new Date(session.createdAt).toISOString(),
-    lastSeenAt: new Date(session.lastSeenAt).toISOString(),
-  }));
+  const sessionSnapshots = gateway.getSessionSnapshots();
+  const liveSessionIds = new Set(sessionSnapshots.map((session) => session.id));
+  for (const sessionId of sessionWorkspaceIds.keys()) {
+    if (!liveSessionIds.has(sessionId)) sessionWorkspaceIds.delete(sessionId);
+  }
+
+  const sessions: ControlPlaneSession[] = sessionSnapshots.map((session) => {
+    const workspaceId = sessionWorkspaceIds.get(session.id);
+    return {
+      id: `mcp:${session.id}`,
+      kind: "mcp",
+      clientName: session.clientName ?? "MCP client",
+      ...(session.clientVersion ? { clientVersion: session.clientVersion } : {}),
+      ...(profile ? { profile } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      state: session.state,
+      connectedAt: new Date(session.createdAt).toISOString(),
+      lastSeenAt: new Date(session.lastSeenAt).toISOString(),
+    };
+  });
 
   const now = Date.now();
   for (const lease of gateway.getConnectionLeases()) {
@@ -486,7 +696,10 @@ function createControlPlaneSessions(
       id: `bridge:${lease.leaseId}`,
       kind: "bridge",
       clientName: "stdio bridge",
-      ...(profile ? { profile } : {}),
+      ...(lease.profileId ?? profile
+        ? { profile: lease.profileId ?? profile }
+        : {}),
+      ...(lease.workspaceId ? { workspaceId: lease.workspaceId } : {}),
       state: Date.parse(lease.leaseExpiresAt) > now ? "active" : "expired",
       connectedAt: lease.connectedAt,
       lastSeenAt: lease.lastSeenAt,
@@ -580,6 +793,11 @@ function launchManagedRestart(
   const env = { ...process.env };
   delete env.ROUTERMCP_DAEMON;
   delete env.ROUTERMCP_DAEMON_LOCK_HELD;
+  if (manifest.localAuthToken) {
+    env[MANAGED_RESTART_AUTH_TOKEN_ENV] = manifest.localAuthToken;
+  } else {
+    delete env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  }
 
   const child = spawn(invocation.command, invocation.args, {
     cwd: paths.projectPath,
@@ -620,6 +838,15 @@ function launchManagedRestart(
   child.unref();
 }
 
+function readManagedRestartAuthToken(): string | undefined {
+  const value = process.env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  // Consume the handoff so a daemon process cannot accidentally pass this
+  // private credential to a later child. Invalid external values never
+  // override a freshly generated token.
+  delete process.env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  return value && LOCAL_AUTH_TOKEN_PATTERN.test(value) ? value : undefined;
+}
+
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   const maybeTimer = timer as unknown as { unref?: () => void };
   maybeTimer.unref?.();
@@ -630,6 +857,7 @@ function setupSignalHandlers(
   daemonPaths: DaemonPaths | null,
   getRuntimeManifest: () => RuntimeManifest | null,
   getControlPlane: () => ControlPlane | null,
+  getWorkspaceLeaseTracker: () => WorkspaceLeaseTracker | null,
 ): void {
   let shutdownStarted = false;
   const shutdown = async (signal: string) => {
@@ -649,6 +877,7 @@ function setupSignalHandlers(
         });
       }
       await gateway.stop();
+      await getWorkspaceLeaseTracker()?.destroy();
       if (manifest && daemonPaths?.runtimeManifest) {
         await removeRuntimeManifestIfCurrent(daemonPaths, manifest);
       }

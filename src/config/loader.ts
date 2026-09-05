@@ -54,6 +54,17 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
     );
   }
 
+  return parseConfigContent(content, path);
+}
+
+/**
+ * Parse, normalize, expand, and validate configuration source content.
+ *
+ * Keeping this operation separate from filesystem I/O lets management
+ * mutations validate the complete JSONC result before atomically publishing
+ * it. The input is never logged or returned by this helper.
+ */
+export function parseConfigContent(content: string, path = "<config>"): RouterMcpConfig {
   // Parse JSONC (handles comments and trailing commas)
   let parsed: unknown;
   const errors: { error: number; offset: number; length: number }[] = [];

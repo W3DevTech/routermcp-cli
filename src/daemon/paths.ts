@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { getProfileDir, getProfileId } from "./project.js";
+import { getDaemonHostDir, getDaemonHostId, getProfileDir, getProfileId } from "./project.js";
 
 export interface DaemonPaths {
   dir: string;
@@ -16,6 +16,40 @@ export interface DaemonPaths {
   pid: string;
   log: string;
   configPath: string;
+}
+
+/**
+ * Paths owned by the user-scoped daemon host.
+ *
+ * Existing DaemonPaths remain profile-scoped for backwards compatibility. A
+ * host path set is additive so callers can migrate lifecycle ownership in a
+ * later stack without changing the on-disk contract of existing profiles.
+ */
+export interface DaemonHostPaths {
+  dir: string;
+  hostId: string;
+  runtimeManifest: string;
+  lock: string;
+  socket: string;
+  port: string;
+  pid: string;
+  log: string;
+  workspaceRegistry: string;
+}
+
+export function getDaemonHostPaths(): DaemonHostPaths {
+  const dir = getDaemonHostDir();
+  return {
+    dir,
+    hostId: getDaemonHostId(),
+    runtimeManifest: resolve(dir, "runtime.json"),
+    lock: resolve(dir, "daemon.lock"),
+    socket: resolve(dir, "daemon.sock"),
+    port: resolve(dir, "daemon.port"),
+    pid: resolve(dir, "daemon.pid"),
+    log: resolve(dir, "daemon.log"),
+    workspaceRegistry: resolve(dir, "workspaces.json"),
+  };
 }
 
 export function getDaemonPaths(
