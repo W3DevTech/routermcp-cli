@@ -138,3 +138,18 @@ export {
   type WorkspaceState,
   WORKSPACE_REGISTRY_SCHEMA_VERSION,
 } from "./workspace-registry.js";
+export {
+  WorkspaceRuntimeBusyError,
+  WorkspaceRuntimeDisposedError,
+  WorkspaceRuntimeManager,
+  type WorkspaceRuntime,
+  type WorkspaceRuntimeContext,
+  type WorkspaceRuntimeFactory,
+  type WorkspaceRuntimeInput,
+  type WorkspaceRuntimeLease,
+  type WorkspaceRuntimeManagerOptions,
+  type WorkspaceRuntimeOperation,
+  type WorkspaceRuntimeResource,
+  type WorkspaceRuntimeSnapshot,
+  type WorkspaceRuntimeState,
+} from "./workspace-runtime.js";

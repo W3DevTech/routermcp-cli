@@ -1,4 +1,5 @@
 import type { RouterMcpConfig } from "../config/types.js";
+import type { RuntimeExecutionContext } from "./execution-context.js";
 import {
   Aggregator,
   type PromptWithSource,
@@ -48,6 +49,7 @@ export interface VirtualSessionManagerOptions {
   sessionTimeout: number;
   maxSessions: number;
   verbose?: boolean;
+  executionContext?: RuntimeExecutionContext;
   onSessionCleanup?: (sessionId: string) => void;
 }
 
@@ -58,12 +60,14 @@ export class VirtualSessionManager {
   private cachedCapabilities: CachedCapabilities | null = null;
   private maxSessions: number;
   private verbose: boolean;
+  private readonly executionContext?: RuntimeExecutionContext;
   private readonly sessionTimeoutMs: number;
 
   constructor(options: VirtualSessionManagerOptions) {
     this.config = options.config;
     this.maxSessions = options.maxSessions;
     this.verbose = options.verbose ?? false;
+    this.executionContext = options.executionContext;
     this.sessionTimeoutMs = Math.max(0, options.sessionTimeout * 1000);
 
     this.sessionCounter = new SessionAccessCounter(options.sessionTimeout * 1000, (sessionId) => {
@@ -97,6 +101,7 @@ export class VirtualSessionManager {
       this.config,
       this.verbose,
       this.cachedCapabilities?.serverCapabilities,
+      this.executionContext,
     );
 
     const aggregator = new Aggregator(upstreamManager);

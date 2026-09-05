@@ -1,6 +1,7 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ServerConfig } from "../config/types.js";
+import type { RuntimeExecutionContext } from "../core/execution-context.js";
 import { TransportError } from "../utils/errors.js";
 import {
   createHttpClientTransport,
@@ -39,10 +40,11 @@ export async function createClientTransport(
   serverName: string,
   config: ServerConfig,
   options?: HttpClientTransportOptions,
+  executionContext?: RuntimeExecutionContext,
 ): Promise<ClientConnection> {
   switch (config.transport) {
     case "stdio":
-      return createStdioClientTransport(serverName, config);
+      return createStdioClientTransport(serverName, config, executionContext);
     case "http-streamable":
       return createHttpClientTransport(serverName, config, options);
     default:

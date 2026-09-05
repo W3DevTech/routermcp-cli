@@ -1,6 +1,7 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig, ServerConfig } from "../config/types.js";
+import type { RuntimeExecutionContext } from "./execution-context.js";
 import { DEFAULT_CLIENT_NAME, RouterMcpOAuthProvider } from "../oauth/provider.js";
 import { ensureValidTokens } from "../oauth/refresh.js";
 import { loadOAuthStorage } from "../oauth/storage.js";
@@ -47,15 +48,18 @@ export class UpstreamManager {
   private verbose: boolean;
   private subprocessTimeout: number;
   private connectionTimeout: number;
+  private readonly executionContext?: RuntimeExecutionContext;
 
   constructor(
     config: RouterMcpConfig,
     verbose = false,
     preloadedCapabilities?: Map<string, ServerCapabilityCache>,
+    executionContext?: RuntimeExecutionContext,
   ) {
     this.verbose = verbose;
     this.subprocessTimeout = config.subprocess_timeout ?? 180;
     this.connectionTimeout = config.connection_timeout ?? 30;
+    this.executionContext = executionContext;
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
       const enabled = serverConfig.enabled !== false;
@@ -177,7 +181,12 @@ export class UpstreamManager {
     const timeoutMs = this.connectionTimeout * 1000;
 
     const authProvider = await this.createOAuthProvider(server);
-    const connectionPromise = createClientTransport(name, server.config, { authProvider });
+    const connectionPromise = createClientTransport(
+      name,
+      server.config,
+      { authProvider },
+      this.executionContext,
+    );
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
