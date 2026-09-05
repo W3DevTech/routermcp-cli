@@ -51,7 +51,8 @@ routermcp connect -v
 Output:
 ```
 [connect] Using config: /path/to/routermcp.jsonc
-Connected to daemon at /path/to/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
+Connected to daemon (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp)
+Workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp
 ```
 
 ## Step 4: Connect an MCP Client

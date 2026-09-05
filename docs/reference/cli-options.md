@@ -20,6 +20,7 @@ routermcp [command] [options]
 | `serve` | Start the MCP gateway in foreground/debug mode |
 | `connect` | Connect to the managed gateway daemon (default) |
 | `console` | Open the hosted management console with a short-lived handoff |
+| `mcp-config` | Print or rotate a direct workspace MCP configuration |
 | `start` | Start or reuse the profile daemon |
 | `status` | Show profile daemon status |
 | `stop` | Stop the profile daemon |
@@ -107,6 +108,30 @@ routermcp connect --project /path/to/project
 # With verbose output
 routermcp connect -v
 ```
+
+## mcp-config Command
+
+Print the direct HTTP MCP endpoint and create its durable workspace-scoped
+credential when needed.
+
+```bash
+routermcp mcp-config [options]
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--config <path>` | string | `./routermcp.jsonc` | Path to config file |
+| `--project <path>` | string | `.` | Project directory |
+| `--rotate` | flag | false | Revoke the existing credential and print a new one |
+| `--json` | flag | false | Print machine-readable configuration |
+| `--verbose` | flag | false | Enable verbose logging |
+
+The credential is printed only when it is first created or explicitly rotated.
+RouterMCP persists only its digest, so a later invocation cannot recover the
+secret. The endpoint is workspace-scoped and can be used by an MCP client over
+loopback without exposing the local directory path.
 
 ## console Command
 

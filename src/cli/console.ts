@@ -21,6 +21,11 @@ export interface ConsoleCommandOptions extends DaemonCommandOptions {
   open?: boolean;
 }
 
+export interface McpConfigCommandOptions extends DaemonCommandOptions {
+  /** Replace the durable workspace credential and print the new secret. */
+  rotate?: boolean;
+}
+
 export interface ConsoleHandoff {
   endpoint: string;
   expiresAt: string;
@@ -32,8 +37,11 @@ export interface ConsoleHandoff {
 }
 
 export interface WorkspaceMcpCredential {
-  token: string;
-  expiresAt: string;
+  token?: string;
+  configuredAt: string;
+  rotatedAt?: string;
+  created: boolean;
+  rotated: boolean;
   scope: "mcp";
   workspaceId: string;
 }
@@ -48,10 +56,13 @@ export function isWorkspaceMcpCredential(
 
   const credential = value as Record<string, unknown>;
   return (
-    typeof credential.token === "string" &&
-    credential.token.length > 0 &&
-    typeof credential.expiresAt === "string" &&
-    Number.isFinite(Date.parse(credential.expiresAt)) &&
+    (credential.token === undefined || (typeof credential.token === "string" && credential.token.length > 0)) &&
+    typeof credential.configuredAt === "string" &&
+    Number.isFinite(Date.parse(credential.configuredAt)) &&
+    (credential.rotatedAt === undefined ||
+      (typeof credential.rotatedAt === "string" && Number.isFinite(Date.parse(credential.rotatedAt)))) &&
+    typeof credential.created === "boolean" &&
+    typeof credential.rotated === "boolean" &&
     credential.scope === "mcp" &&
     credential.workspaceId === workspaceId
   );
@@ -92,6 +103,60 @@ export async function consoleCommand(options: ConsoleCommandOptions): Promise<vo
 
   if (options.open) {
     await openConsoleUrl(handoff.url);
+  }
+}
+
+/**
+ * Print the direct HTTP MCP configuration for the selected workspace.
+ * Credentials are returned only when first created or explicitly rotated;
+ * ordinary invocations never invalidate an existing MCP client config.
+ */
+export async function mcpConfigCommand(options: McpConfigCommandOptions): Promise<void> {
+  const context = await resolveDaemonContext(options);
+  const status = await ensureWorkspaceRunning(context.workspace, {
+    configFingerprint: context.configFingerprint,
+    projectPath: context.projectPath,
+    host: options.host ?? context.configuredHost,
+    preferredPort: options.preferredPort ?? context.configuredPort,
+    verbose: options.verbose,
+  });
+
+  if (!status.running || !status.controlUrl || !status.authToken || !status.workspaceId) {
+    throw new Error(status.reason ?? "RouterMCP daemon did not become ready for MCP configuration");
+  }
+  if (!status.workspaceMcpUrl) {
+    throw new Error("The managed daemon did not provide a workspace MCP URL");
+  }
+
+  const credential = await requestWorkspaceMcpCredential(
+    status,
+    fetch,
+    status.workspaceId,
+    { rotate: options.rotate },
+  );
+  const output = {
+    url: status.workspaceMcpUrl,
+    workspaceId: status.workspaceId,
+    ...(credential.token ? { authorization: `Bearer ${credential.token}` } : {}),
+    configuredAt: credential.configuredAt,
+    ...(credential.rotatedAt ? { rotatedAt: credential.rotatedAt } : {}),
+    created: credential.created,
+    rotated: credential.rotated,
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  console.log("RouterMCP workspace MCP configuration:");
+  console.log(`URL: ${output.url}`);
+  if (output.authorization) {
+    console.log(`Authorization: ${output.authorization}`);
+    console.error("Store this authorization value in the MCP client configuration.");
+  } else {
+    console.log("Authorization: already configured (secret is not recoverable from RouterMCP).");
+    console.error("Use --rotate to revoke the old credential and print a new one.");
   }
 }
 
@@ -150,11 +215,12 @@ export async function requestManagementCredential(
   return grant;
 }
 
-/** Mint a short-lived credential for one direct workspace MCP endpoint. */
+/** Create or explicitly rotate the durable credential for one direct workspace MCP endpoint. */
 export async function requestWorkspaceMcpCredential(
   status: Pick<DaemonStatus, "controlUrl" | "authToken">,
   fetcher: typeof fetch = fetch,
   workspaceId: string,
+  options: { rotate?: boolean } = {},
 ): Promise<WorkspaceMcpCredential> {
   if (!status.controlUrl || !status.authToken || !isValidWorkspaceId(workspaceId)) {
     throw new Error("The managed daemon did not provide workspace MCP credentials");
@@ -172,7 +238,7 @@ export async function requestWorkspaceMcpCredential(
         "Content-Type": "application/json",
       },
       cache: "no-store",
-      body: JSON.stringify({ workspaceId }),
+      body: JSON.stringify({ workspaceId, ...(options.rotate ? { rotate: true } : {}) }),
     });
   } catch {
     throw new Error("The local daemon could not mint a workspace MCP credential");

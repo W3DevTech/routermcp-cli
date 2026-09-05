@@ -34,6 +34,18 @@ vi.mock("../../../src/daemon/index.js", () => ({
   readRuntimeManifest: vi.fn(async () => null),
   removeRuntimeManifest: vi.fn(async () => undefined),
   matchesProcessIdentity: vi.fn(async () => false),
+  getDaemonHostPaths: vi.fn(() => ({
+    dir: "/tmp/daemon-host",
+    hostId: "test-host-id",
+    runtimeManifest: "/tmp/daemon-host/runtime.json",
+    lock: "/tmp/daemon-host/daemon.lock",
+    socket: "/tmp/daemon-host/daemon.sock",
+    port: "/tmp/daemon-host/daemon.port",
+    pid: "/tmp/daemon-host/daemon.pid",
+    log: "/tmp/daemon-host/daemon.log",
+    workspaceRegistry: "/tmp/daemon-host/workspaces.json",
+    workspaceMcpCredentials: "/tmp/daemon-host/workspace-mcp-credentials.json",
+  })),
   getDaemonPaths: vi.fn(() => ({
     dir: "/tmp/daemon",
     pid: "/tmp/daemon/daemon.pid",

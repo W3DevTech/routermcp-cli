@@ -35,6 +35,7 @@ export interface DaemonHostPaths {
   pid: string;
   log: string;
   workspaceRegistry: string;
+  workspaceMcpCredentials: string;
 }
 
 export function getDaemonHostPaths(): DaemonHostPaths {
@@ -49,6 +50,7 @@ export function getDaemonHostPaths(): DaemonHostPaths {
     pid: resolve(dir, "daemon.pid"),
     log: resolve(dir, "daemon.log"),
     workspaceRegistry: resolve(dir, "workspaces.json"),
+    workspaceMcpCredentials: resolve(dir, "workspace-mcp-credentials.json"),
   };
 }
 

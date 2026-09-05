@@ -72,6 +72,13 @@ export {
   type ManagementCredentialStoreOptions,
 } from "./management-credentials.js";
 export {
+  DEFAULT_MAX_WORKSPACE_MCP_CREDENTIALS,
+  WORKSPACE_MCP_CREDENTIALS_SCHEMA_VERSION,
+  WorkspaceMcpCredentialStore,
+  type WorkspaceMcpCredentialResult,
+  type WorkspaceMcpCredentialStoreOptions,
+} from "./workspace-mcp-credentials.js";
+export {
   BROWSER_MANAGEMENT_PROTOCOL_VERSION,
   CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
   CONTROL_PLANE_BROWSER_DEVICES_PATH,

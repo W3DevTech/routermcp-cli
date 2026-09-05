@@ -31,6 +31,7 @@ import {
   type ControlPlaneMutationResult,
   BrowserManagementError,
   type ManagementCredentialStore,
+  WorkspaceMcpCredentialStore,
   type BrowserManagementSessionStore,
 } from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
@@ -109,7 +110,7 @@ export const DAEMON_BRIDGE_LEASES_PATH = "/api/v1/bridge-leases";
 export const DAEMON_BRIDGE_LEASE_HEADER = "X-RouterMCP-Bridge-Lease-Id";
 /** Header used by the stdio bridge to carry the canonical workspace ID. */
 export const DAEMON_WORKSPACE_HEADER = "X-RouterMCP-Workspace-Id";
-/** Mint a short-lived workspace-scoped credential for direct MCP clients. */
+/** Create or explicitly rotate a durable workspace-scoped credential. */
 export const WORKSPACE_MCP_CREDENTIAL_PATH = "/api/v1/management/mcp-credential";
 /** Default hosted management origin for a token-protected local daemon. */
 export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
@@ -177,7 +178,7 @@ export interface HttpServerOptions {
   /** Short-lived browser credentials for the hosted management console. */
   managementCredentials?: ManagementCredentialStore;
   /** Separate scoped credentials for direct workspace MCP clients. */
-  workspaceMcpCredentials?: ManagementCredentialStore;
+  workspaceMcpCredentials?: ManagementCredentialStore | WorkspaceMcpCredentialStore;
   /** Public-key registry for remembered same-browser management sessions. */
   browserManagement?: BrowserManagementSessionStore;
   connectionTracker?: BridgeLeaseTracker;
@@ -1782,7 +1783,7 @@ async function handleManagementCredentialRequest(
 
 async function handleWorkspaceMcpCredentialRequest(
   request: Request,
-  credentials: ManagementCredentialStore,
+  credentials: ManagementCredentialStore | WorkspaceMcpCredentialStore,
   headers: (request: Request) => Record<string, string>,
 ): Promise<Response> {
   if (request.method !== "POST") {
@@ -1800,12 +1801,27 @@ async function handleWorkspaceMcpCredentialRequest(
       throw new Error("Workspace MCP credential body must be an object");
     }
     const record = body as Record<string, unknown>;
-    if (Object.keys(record).some((key) => key !== "workspaceId")) {
+    if (Object.keys(record).some((key) => key !== "workspaceId" && key !== "rotate")) {
       throw new Error("Workspace MCP credential body contains an unsupported field");
     }
     if (!isValidWorkspaceId(record.workspaceId) || !credentials.canIssueForWorkspace(record.workspaceId)) {
       throw new Error("Workspace MCP credential workspace is not available");
     }
+
+    if (credentials instanceof WorkspaceMcpCredentialStore) {
+      if (record.rotate !== undefined && typeof record.rotate !== "boolean") {
+        throw new Error("Workspace MCP credential rotate must be a boolean");
+      }
+      const result = await credentials.issue(record.workspaceId, {
+        rotate: record.rotate === true,
+      });
+      return jsonResponse(
+        result,
+        result.created || result.rotated ? 201 : 200,
+        withWorkspaceAttribution(headers(request), record.workspaceId),
+      );
+    }
+
     const grant = credentials.issue(record.workspaceId);
     return jsonResponse(
       {
@@ -2358,6 +2374,9 @@ function isWorkspaceMcpAuthorized(
 ): boolean {
   const credentials = options.workspaceMcpCredentials;
   if (!credentials) return false;
+  if (credentials instanceof WorkspaceMcpCredentialStore) {
+    return credentials.authorize(getBearerToken(request), workspaceId);
+  }
   const authorization = credentials.getAuthorization(getBearerToken(request));
   return authorization?.authority === "workspace" && authorization.workspaceId === workspaceId;
 }

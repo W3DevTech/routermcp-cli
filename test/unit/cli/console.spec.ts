@@ -212,7 +212,9 @@ describe("console handoff", () => {
       new Response(
         JSON.stringify({
           token: "workspace-mcp-token",
-          expiresAt: "2026-01-01T00:05:00.000Z",
+          configuredAt: "2026-01-01T00:00:00.000Z",
+          created: true,
+          rotated: false,
           scope: "mcp",
           workspaceId: "workspace-current",
         }),
@@ -228,7 +230,9 @@ describe("console handoff", () => {
 
     expect(credential).toEqual({
       token: "workspace-mcp-token",
-      expiresAt: "2026-01-01T00:05:00.000Z",
+      configuredAt: "2026-01-01T00:00:00.000Z",
+      created: true,
+      rotated: false,
       scope: "mcp",
       workspaceId: "workspace-current",
     });
@@ -251,7 +255,9 @@ describe("console handoff", () => {
       isWorkspaceMcpCredential(
         {
           token: "workspace-mcp-token",
-          expiresAt: "2026-01-01T00:05:00.000Z",
+          configuredAt: "2026-01-01T00:00:00.000Z",
+          created: true,
+          rotated: false,
           scope: "mcp",
           workspaceId: "workspace-current",
         },
@@ -262,7 +268,9 @@ describe("console handoff", () => {
       isWorkspaceMcpCredential(
         {
           token: "workspace-mcp-token",
-          expiresAt: "2026-01-01T00:05:00.000Z",
+          configuredAt: "2026-01-01T00:00:00.000Z",
+          created: true,
+          rotated: false,
           scope: "mcp",
           workspaceId: "workspace-other",
         },
@@ -273,7 +281,9 @@ describe("console handoff", () => {
       isWorkspaceMcpCredential(
         {
           token: "workspace-mcp-token",
-          expiresAt: "not-a-date",
+          configuredAt: "not-a-date",
+          created: true,
+          rotated: false,
           scope: "mcp",
           workspaceId: "workspace-current",
         },
@@ -287,7 +297,9 @@ describe("console handoff", () => {
       new Response(
         JSON.stringify({
           token: "workspace-mcp-token",
-          expiresAt: "2026-01-01T00:05:00.000Z",
+          configuredAt: "2026-01-01T00:00:00.000Z",
+          created: true,
+          rotated: false,
           scope: "management",
           workspaceId: "workspace-current",
         }),

@@ -7,7 +7,8 @@ description: Connect to a shared gateway daemon
 
 Connect to a shared gateway daemon. Multiple MCP clients can share a single gateway instance.
 The daemon is started automatically on the first connection and reused by later
-connections for the same project and configuration.
+connections on the same machine, including connections from other project
+directories and configuration profiles.
 
 ## Usage
 
@@ -56,16 +57,23 @@ routermcp connect -v                 # Verbose logging
 
 ## Daemon Files
 
-Daemon state is stored in a platform-specific runtime directory, per project
-and configuration profile. On Linux, the default is
+The daemon host is machine-wide for the current user. Its process identity,
+workspace registry, and durable direct-MCP credential digests are stored in a
+platform-specific host directory. Each project/configuration profile also has
+runtime metadata below the same state root. On Linux, the defaults are
+`~/.local/state/routermcp/host/` and
 `~/.local/state/routermcp/projects/<project-id>/profiles/<profile-id>/` (or the
-same path below `XDG_STATE_HOME` when it is set). See [Daemon Mode](../advanced/daemon-mode.md#file-locations) for macOS and Windows paths.
+same paths below `XDG_STATE_HOME` when it is set). See [Daemon Mode](../advanced/daemon-mode.md#file-locations) for macOS and Windows paths.
 
 | File | Description |
 |------|-------------|
 | `runtime.json` | Atomic, authenticated runtime manifest |
 | `daemon.lock` | Per-profile startup/lifecycle lock |
 | `daemon.log` | Daemon stderr and startup diagnostics |
+
+The host directory additionally contains `runtime.json`, `daemon.lock`,
+`workspaces.json`, and `workspace-mcp-credentials.json`. The latter stores only
+credential digests and is permissioned for the current user.
 
 Legacy `daemon.pid`, `daemon.port`, and `daemon.sock` files may be cleaned up
 when upgrading from an older CLI, but are not used for connection routing.
@@ -79,10 +87,8 @@ cd /my/project
 routermcp connect -v
 
 # Output (diagnostics are written to stderr):
-# Daemon started at /my/project (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp, workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp)
+# Daemon started (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp)
 # Workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp
-# Workspace MCP Authorization: Bearer <short-lived-token>
-# Workspace MCP credential expires: 2026-01-01T00:05:00.000Z
 ```
 
 ### Terminal 2: Second Client
@@ -92,21 +98,27 @@ cd /my/project
 routermcp connect -v
 
 # Output:
-# Connected to daemon at /my/project (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp, workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp)
+# Connected to daemon (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp)
 # Workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp
-# Workspace MCP Authorization: Bearer <short-lived-token>
-# Workspace MCP credential expires: 2026-01-01T00:05:00.000Z
 ```
 
 Both clients now share the same gateway instance!
 
-`connect` also prints a workspace-bound MCP endpoint and short-lived bearer
-credential on stderr. Use those values when an MCP client needs a direct HTTP
-connection to this directory. The endpoint contains an opaque workspace ID,
-never the local directory path. The credential expires after five minutes by
-default; run `routermcp connect` again to mint a fresh one. The stdio bridge
-continues to use the host endpoint internally and remains the recommended
-default for clients that support stdio.
+`connect` also prints a workspace-bound MCP endpoint on stderr. Use the
+explicit `mcp-config` command when an MCP client needs a direct HTTP connection
+to this directory:
+
+```bash
+routermcp mcp-config
+```
+
+The first invocation prints a durable workspace-scoped bearer credential. The
+daemon stores only a digest, so subsequent invocations show the endpoint and
+metadata without repeating the secret. Use `routermcp mcp-config --rotate` if
+the credential is lost or compromised. The endpoint contains an opaque
+workspace ID, never the local directory path. The stdio bridge continues to
+use the host endpoint internally and remains the recommended default for
+clients that support stdio.
 
 ## Explicit Daemon Lifecycle
 

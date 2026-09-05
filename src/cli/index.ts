@@ -9,7 +9,7 @@ import {
   configRemoveCommand,
 } from "./config.js";
 import { type ConnectCommandOptions, connectCommand } from "./connect.js";
-import { consoleCommand } from "./console.js";
+import { consoleCommand, mcpConfigCommand } from "./console.js";
 import {
   type DaemonCommandOptions,
   restartCommand,
@@ -50,6 +50,7 @@ interface CliOptions extends ServeCommandOptions {
   toolsJson?: boolean;
   json?: boolean;
   open?: boolean;
+  rotate?: boolean;
 }
 
 type Command =
@@ -59,6 +60,7 @@ type Command =
   | "proxy"
   | "connect"
   | "console"
+  | "mcp-config"
   | "start"
   | "status"
   | "stop"
@@ -268,6 +270,11 @@ export function parseArgs(args: string[]): {
       case "console":
         explicitCommand = true;
         command = "console";
+        break;
+
+      case "mcp-config":
+        explicitCommand = true;
+        command = "mcp-config";
         break;
 
       case "start":
@@ -502,6 +509,10 @@ export function parseArgs(args: string[]): {
         options.open = true;
         break;
 
+      case "--rotate":
+        options.rotate = true;
+        break;
+
       default:
         if (arg.startsWith("--tunnel=")) {
           const provider = arg.slice("--tunnel=".length) as TunnelProvider;
@@ -535,6 +546,7 @@ COMMANDS:
   serve     Start the MCP gateway in the foreground
   connect   Connect to gateway daemon (auto-starts if needed)
   console   Open the hosted management console with a short-lived handoff
+  mcp-config Print or rotate the direct workspace MCP configuration
   start     Start or reuse the profile daemon
   status    Show daemon status
   stop      Stop the profile daemon
@@ -555,6 +567,13 @@ SERVE OPTIONS:
   --host <host>         HTTP bind host (managed daemon must use loopback)
   --daemon-mode         Run as background daemon (for connect command)
   --clear               Clear OpenAPI cache before starting (force re-parse)
+  --verbose             Enable verbose logging
+
+MCP CONFIG OPTIONS:
+  -c, --config <path>   Path to config file
+  --project <path>      Project directory (default: current directory)
+  --rotate              Revoke the existing credential and print a new one
+  --json                Print machine-readable configuration
   --verbose             Enable verbose logging
 
   CONNECT OPTIONS:
@@ -642,6 +661,10 @@ EXAMPLES:
   # Connect (daemon mode - for multiple MCP clients)
   routermcp connect                   Connect to daemon (auto-starts if needed)
   routermcp connect --project /path   Connect using specific project directory
+
+  # Direct workspace MCP endpoint
+  routermcp mcp-config                 Print endpoint and create its credential
+  routermcp mcp-config --rotate         Rotate a lost or compromised credential
 
   # Proxy (single server mode)
   routermcp proxy --stdio "npx -y @modelcontextprotocol/server-filesystem ."
@@ -765,6 +788,13 @@ export async function main(args: string[]): Promise<void> {
       await consoleCommand({
         ...daemonCommandOptions(options),
         open: options.open,
+      });
+      break;
+
+    case "mcp-config":
+      await mcpConfigCommand({
+        ...daemonCommandOptions(options),
+        rotate: options.rotate,
       });
       break;
 

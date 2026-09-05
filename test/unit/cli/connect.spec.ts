@@ -334,7 +334,7 @@ describe("connectCommand", () => {
   });
 
   describe("direct workspace MCP endpoint", () => {
-    it("prints the workspace URL and scoped credential on stderr only", async () => {
+    it("prints the workspace URL without rotating its direct credential", async () => {
       vi.mocked(getDaemonPaths).mockReturnValue({
         dir: "/tmp/daemon",
         pid: "/tmp/daemon/daemon.pid",
@@ -361,17 +361,6 @@ describe("connectCommand", () => {
 
       vi.mocked(fetch).mockImplementation(async (input, init) => {
         const url = String(input);
-        if (url.endsWith("/mcp-credential")) {
-          return new Response(
-            JSON.stringify({
-              token: "workspace-mcp-token",
-              expiresAt: "2026-01-01T00:05:00.000Z",
-              scope: "mcp",
-              workspaceId: "workspace-current",
-            }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          );
-        }
         if (url.endsWith("/bridge-leases") && init?.method === "POST") {
           return new Response(
             JSON.stringify({
@@ -393,11 +382,11 @@ describe("connectCommand", () => {
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         "Workspace MCP URL: http://127.0.0.1:5151/api/v1/workspaces/workspace-current/mcp",
       );
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "Workspace MCP Authorization: Bearer workspace-mcp-token",
-      );
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "Workspace MCP credential expires: 2026-01-01T00:05:00.000Z",
+      expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining("Connected to daemon at "));
+      expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining("Daemon started at "));
+      expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+        "http://127.0.0.1:5151/api/v1/management/mcp-credential",
+        expect.anything(),
       );
       expect(ensureWorkspaceRunning).toHaveBeenCalled();
     });

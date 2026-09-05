@@ -33,11 +33,14 @@ DELETE /api/v1/workspaces/:workspaceId/mcp
 ```
 
 The minting request must use the private loopback daemon token and contain only
-the registered `workspaceId`. It returns an expiring `scope: "mcp"` bearer
-credential. The credential is accepted only by the matching workspace URL and
-cannot be used with another workspace or the host `/mcp` endpoint. The private
-daemon token and directory paths are never included in the returned endpoint
-or credential response.
+the registered `workspaceId` (plus `rotate: true` when replacing a credential).
+The first request returns a durable `scope: "mcp"` bearer credential; repeated
+requests return metadata without the secret. The credential is accepted only
+by the matching workspace URL and cannot be used with another workspace or the
+host `/mcp` endpoint. The private daemon token and directory paths are never
+included in the returned endpoint or credential response. The CLI command
+`routermcp mcp-config` is the supported create/rotate interface; ordinary
+`routermcp connect` invocations never mint or rotate this credential.
 
 ## Context routes
 

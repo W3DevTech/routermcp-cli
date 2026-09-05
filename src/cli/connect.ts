@@ -22,7 +22,6 @@ import {
   type BridgeLeaseMetadata,
 } from "../transports/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
-import { requestWorkspaceMcpCredential } from "./console.js";
 
 export interface ConnectCommandOptions {
   config?: string;
@@ -132,37 +131,18 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     }
 
     const workspaceMcpUrl = status.workspaceMcpUrl;
-    const endpointDescription = workspaceMcpUrl
-      ? `host MCP URL: ${mcpUrl}, workspace MCP URL: ${workspaceMcpUrl}`
-      : `host MCP URL: ${mcpUrl}`;
+    const endpointDescription = `host MCP URL: ${mcpUrl}`;
     if (wasRunning) {
-      info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, ${endpointDescription})`);
+      info(`Connected to daemon (pid: ${status.pid}, ${endpointDescription})`);
     } else {
-      info(`Daemon started at ${projectPath} (pid: ${status.pid}, ${endpointDescription})`);
+      info(`Daemon started (pid: ${status.pid}, ${endpointDescription})`);
     }
 
-    // The stdio bridge remains the protocol path for this process, so any
-    // direct HTTP endpoint details must stay on stderr. Mint a separate,
-    // workspace-scoped credential for users who want to configure an MCP
-    // client against the daemon directly without exposing its root token.
-    if (workspaceMcpUrl && status.workspaceId && status.controlUrl && status.authToken) {
-      try {
-        const workspaceCredential = await requestWorkspaceMcpCredential(
-          status,
-          fetch,
-          status.workspaceId,
-        );
-        info(`Workspace MCP URL: ${workspaceMcpUrl}`);
-        info(`Workspace MCP Authorization: Bearer ${workspaceCredential.token}`);
-        info(`Workspace MCP credential expires: ${workspaceCredential.expiresAt}`);
-      } catch (error) {
-        log(
-          `Unable to mint a direct workspace MCP credential: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
+    // The stdio bridge remains the protocol path for this process. The
+    // workspace URL is stable and can be configured through the explicit
+    // `routermcp mcp-config` command, which creates or rotates its durable
+    // authorization credential without changing ordinary bridge startup.
+    if (workspaceMcpUrl) info(`Workspace MCP URL: ${workspaceMcpUrl}`);
     const bridgeWorkspace: BridgeLeaseMetadata = {
       directory: projectPath,
       configPath,

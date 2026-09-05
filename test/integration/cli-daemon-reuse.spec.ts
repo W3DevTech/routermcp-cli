@@ -8,7 +8,7 @@ import {
   getAvailablePort,
   writeConfigFile,
 } from "../helpers/test-utils.js";
-import { getWorkspaceId } from "../../src/daemon/index.js";
+import { getWorkspaceId, isProcessRunning } from "../../src/daemon/index.js";
 
 interface CliResult {
   code: number | null;
@@ -95,6 +95,8 @@ describe("CLI daemon reuse", () => {
     expect(connected.code).toBe(0);
     expect(connected.stderr).toContain(`pid: ${startedStatus.pid}`);
     expect(connected.stderr).toContain("Connected to daemon");
+    expect(connected.stderr).toContain("Workspace MCP URL: http://127.0.0.2:");
+    expect(connected.stderr).not.toContain("Connected to daemon at ");
     expect(connected.stdout).toContain('"jsonrpc"');
 
     const bare = await runCli(
@@ -106,6 +108,8 @@ describe("CLI daemon reuse", () => {
     expect(bare.code).toBe(0);
     expect(bare.stderr).toContain(`pid: ${startedStatus.pid}`);
     expect(bare.stderr).toContain("Connected to daemon");
+    expect(bare.stderr).toContain("Workspace MCP URL: http://127.0.0.2:");
+    expect(bare.stderr).not.toContain("Connected to daemon at ");
     expect(bare.stdout).toContain('"jsonrpc"');
 
     const stopped = await runCli(entrypoint, ["stop", ...common], env);
@@ -202,6 +206,185 @@ describe("CLI daemon reuse", () => {
       );
       expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
       await cleanupTempDir(secondProjectDir);
+    }
+  }, 45_000);
+
+  it("replaces a crashed host when the next project connects", async () => {
+    const secondProjectDir = await createTempDir();
+    const secondConfigPath = await writeConfigFile(secondProjectDir, {
+      mcpServers: { second: { transport: "stdio", command: "true" } },
+    });
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
+
+    try {
+      const first = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+      const firstStatus = JSON.parse(first.stdout) as { pid?: number; instanceId?: string };
+      expect(firstStatus.pid).toBeTypeOf("number");
+      expect(firstStatus.instanceId).toBeTypeOf("string");
+
+      const firstHostManifest = JSON.parse(
+        await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+      ) as { controlUrl: string; localAuthToken: string };
+      const workspaceId = getWorkspaceId(projectDir, configPath);
+      const credentialResponse = await fetch(
+        new URL("/api/v1/management/mcp-credential", `${firstHostManifest.controlUrl}/`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${firstHostManifest.localAuthToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ workspaceId }),
+        },
+      );
+      expect(credentialResponse.status).toBe(201);
+      const workspaceCredential = (await credentialResponse.json()) as { token?: string };
+      expect(workspaceCredential.token).toBeTypeOf("string");
+
+      // Simulate an abrupt daemon crash. The host manifest is intentionally
+      // left behind so the next workspace exercises stale-host recovery.
+      process.kill(firstStatus.pid!, "SIGKILL");
+      await waitForProcessExit(firstStatus.pid!);
+
+      const second = await runCli(
+        entrypoint,
+        ["connect", "--config", secondConfigPath, "--project", secondProjectDir],
+        env,
+        '{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
+      );
+      expect(second.code, `${second.stdout}\n${second.stderr}`).toBe(0);
+      expect(second.stderr).toContain("Daemon started");
+      expect(second.stdout).toContain('"jsonrpc"');
+
+      const replacement = await runCli(
+        entrypoint,
+        ["status", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(replacement.code, `${replacement.stdout}\n${replacement.stderr}`).toBe(0);
+      const replacementStatus = JSON.parse(replacement.stdout) as {
+        pid?: number;
+        instanceId?: string;
+        state?: string;
+      };
+      expect(replacementStatus.pid).not.toBe(firstStatus.pid);
+      expect(replacementStatus.instanceId).not.toBe(firstStatus.instanceId);
+      expect(replacementStatus.state).toBe("ready");
+
+      const replacementHostManifest = JSON.parse(
+        await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+      ) as { controlUrl: string };
+      const directMcpResponse = await fetch(
+        new URL(`/api/v1/workspaces/${workspaceId}/mcp`, `${replacementHostManifest.controlUrl}/`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${workspaceCredential.token}`,
+            "Content-Type": "application/json",
+          },
+          body: '{"jsonrpc":"2.0","id":2,"method":"ping"}',
+        },
+      );
+      expect(directMcpResponse.status).toBe(200);
+      expect(await directMcpResponse.json()).toMatchObject({ jsonrpc: "2.0", id: 2 });
+    } finally {
+      const stopped = await runCli(
+        entrypoint,
+        ["stop", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
+      await cleanupTempDir(secondProjectDir);
+    }
+  }, 45_000);
+
+  it("creates, reuses, and rotates a durable workspace MCP config", async () => {
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = [
+      "--config",
+      configPath,
+      "--project",
+      projectDir,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(preferredPort),
+      "--json",
+    ];
+
+    try {
+      const first = await runCli(entrypoint, ["mcp-config", ...common], env);
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+      const firstConfig = JSON.parse(first.stdout) as {
+        url?: string;
+        authorization?: string;
+        configuredAt?: string;
+        created?: boolean;
+        rotated?: boolean;
+      };
+      expect(firstConfig.url).toContain("/api/v1/workspaces/");
+      expect(firstConfig.authorization).toMatch(/^Bearer .+/);
+      expect(firstConfig.configuredAt).toBeTypeOf("string");
+      expect(firstConfig.created).toBe(true);
+      expect(firstConfig.rotated).toBe(false);
+
+      const repeated = await runCli(entrypoint, ["mcp-config", ...common], env);
+      expect(repeated.code, `${repeated.stdout}\n${repeated.stderr}`).toBe(0);
+      const repeatedConfig = JSON.parse(repeated.stdout) as {
+        authorization?: string;
+        configuredAt?: string;
+        created?: boolean;
+        rotated?: boolean;
+      };
+      expect(repeatedConfig).not.toHaveProperty("authorization");
+      expect(repeatedConfig.configuredAt).toBe(firstConfig.configuredAt);
+      expect(repeatedConfig.created).toBe(false);
+      expect(repeatedConfig.rotated).toBe(false);
+
+      const rotated = await runCli(entrypoint, ["mcp-config", "--rotate", ...common], env);
+      expect(rotated.code, `${rotated.stdout}\n${rotated.stderr}`).toBe(0);
+      const rotatedConfig = JSON.parse(rotated.stdout) as {
+        authorization?: string;
+        configuredAt?: string;
+        rotatedAt?: string;
+        created?: boolean;
+        rotated?: boolean;
+      };
+      expect(rotatedConfig.authorization).toMatch(/^Bearer .+/);
+      expect(rotatedConfig.authorization).not.toBe(firstConfig.authorization);
+      expect(rotatedConfig.configuredAt).toBe(firstConfig.configuredAt);
+      expect(rotatedConfig.rotatedAt).toBeTypeOf("string");
+      expect(rotatedConfig.created).toBe(false);
+      expect(rotatedConfig.rotated).toBe(true);
+
+      const connected = await runCli(
+        entrypoint,
+        ["connect", "--config", configPath, "--project", projectDir],
+        env,
+        '{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
+      );
+      expect(connected.code, `${connected.stdout}\n${connected.stderr}`).toBe(0);
+      expect(connected.stderr).not.toContain(firstConfig.authorization);
+      expect(connected.stderr).not.toContain(rotatedConfig.authorization);
+    } finally {
+      const stopped = await runCli(entrypoint, ["stop", ...common], env);
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
     }
   }, 45_000);
 
@@ -519,4 +702,13 @@ async function runCli(
       resolveResult({ code, stdout, stderr });
     });
   });
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(pid)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  throw new Error(`Process ${pid} did not exit within ${timeoutMs}ms`);
 }

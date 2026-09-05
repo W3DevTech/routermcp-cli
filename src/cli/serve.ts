@@ -16,6 +16,7 @@ import {
   ControlPlane,
   BrowserManagementSessionStore,
   ManagementCredentialStore,
+  WorkspaceMcpCredentialStore,
   createConfigManagementSource,
   getExecutionMode,
   sanitizeText,
@@ -92,7 +93,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
   let managementCredentials: ManagementCredentialStore | null = null;
-  let workspaceMcpCredentials: ManagementCredentialStore | null = null;
+  let workspaceMcpCredentials: WorkspaceMcpCredentialStore | null = null;
   let browserManagement: BrowserManagementSessionStore | null = null;
   let workspaceRegistry: WorkspaceRegistry | null = null;
   let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
@@ -658,11 +659,12 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         canIssueWorkspace: (workspaceId) =>
           workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
       });
-      workspaceMcpCredentials = new ManagementCredentialStore({
-        authority: "workspace",
+      workspaceMcpCredentials = new WorkspaceMcpCredentialStore({
+        path: getDaemonHostPaths().workspaceMcpCredentials,
         canIssueWorkspace: (workspaceId) =>
           workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
       });
+      await workspaceMcpCredentials.initialize();
       if (runtimeManifest) {
         const hostPaths = getDaemonHostPaths();
         browserManagement = new BrowserManagementSessionStore({

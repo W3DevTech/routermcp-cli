@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 
 vi.mock("../../../src/compat/index.js", () => ({
   serve: vi.fn(),
@@ -10,6 +11,7 @@ import {
   createConfigManagementSource,
   ManagementCredentialStore,
   readConfigSnapshot,
+  WorkspaceMcpCredentialStore,
 } from "../../../src/control-plane/index.js";
 import { createHttpServerTransport } from "../../../src/transports/http-streamable.js";
 import { cleanupTempDir, createTempDir, writeConfigFile } from "../../helpers/test-utils.js";
@@ -309,6 +311,69 @@ describe("control-plane management routes", () => {
         }),
       );
       expect(managementMcp.status).toBe(401);
+
+      await handle.stop();
+    } finally {
+      await cleanupTempDir(directory);
+    }
+  });
+
+  it("keeps durable workspace credentials stable until explicit rotation", async () => {
+    const directory = await createTempDir();
+    try {
+      const configPath = await writeConfigFile(directory, {
+        mcpServers: { demo: { transport: "stdio", command: "true" } },
+      });
+      const management = createConfigManagementSource({ getConfigPath: () => configPath });
+      const controlPlane = createControlPlane(management, ["workspace-current"]);
+      const credentials = new ManagementCredentialStore({
+        authority: "host",
+        generateToken: () => "management-token",
+      });
+      credentials.issue();
+      let tokenCounter = 0;
+      const workspaceMcpCredentials = new WorkspaceMcpCredentialStore({
+        path: join(directory, "workspace-mcp-credentials.json"),
+        generateToken: () => `workspace-mcp-token-${++tokenCounter}`,
+        canIssueWorkspace: (workspaceId) => workspaceId === "workspace-current",
+      });
+      await workspaceMcpCredentials.initialize();
+      const handle = createHttpServerTransport(7858, "127.0.0.1", {
+        authToken: "local-secret",
+        controlPlane,
+        managementCredentials: credentials,
+        workspaceMcpCredentials,
+      });
+      await handle.start();
+
+      const request = (body: Record<string, unknown>) =>
+        fetchHandler(
+          new Request("http://127.0.0.1/api/v1/management/mcp-credential", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer local-secret",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+
+      const first = await request({ workspaceId: "workspace-current" });
+      expect(first.status).toBe(201);
+      const firstBody = (await first.json()) as Record<string, unknown>;
+      expect(firstBody.token).toBe("workspace-mcp-token-1");
+
+      const stable = await request({ workspaceId: "workspace-current" });
+      expect(stable.status).toBe(200);
+      expect(await stable.json()).toMatchObject({
+        workspaceId: "workspace-current",
+        created: false,
+        rotated: false,
+      });
+      expect(await (async () => {
+        const response = await request({ workspaceId: "workspace-current", rotate: true });
+        return response.json();
+      })()).toMatchObject({ rotated: true, token: "workspace-mcp-token-2" });
 
       await handle.stop();
     } finally {

@@ -156,6 +156,20 @@ describe("parseArgs", () => {
       expect(options.open).toBe(true);
       expect(options.json).toBe(true);
     });
+
+    it("parses mcp-config credential options", () => {
+      const { command, options } = parseArgs([
+        "mcp-config",
+        "--project",
+        "/tmp/project",
+        "--rotate",
+        "--json",
+      ]);
+      expect(command).toBe("mcp-config");
+      expect(options.project).toBe("/tmp/project");
+      expect(options.rotate).toBe(true);
+      expect(options.json).toBe(true);
+    });
   });
 
   describe("proxy options", () => {

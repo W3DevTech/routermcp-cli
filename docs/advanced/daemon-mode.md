@@ -103,7 +103,9 @@ port.
 
 ## File Locations
 
-Runtime state is stored per project and configuration profile under the
+The managed daemon host is machine-wide for the current user. Host state
+(including the workspace registry and direct-MCP credential digests) is stored
+alongside per-project/configuration-profile runtime metadata under the
 platform's application-state directory. Configuration files remain under
 `~/.config/routermcp`; runtime metadata is kept separately so locks, manifests,
 and logs are not mixed with user-edited configuration.
@@ -118,7 +120,10 @@ ${XDG_STATE_HOME:-~/.local/state}/routermcp/projects/<project-id>/profiles/<prof
 is `~/Library/Application Support/RouterMCP/`; on Windows it is
 `%LOCALAPPDATA%\RouterMCP\` (falling back to `AppData\Local\RouterMCP`).
 
-Each profile directory contains:
+The host directory is `${XDG_STATE_HOME:-~/.local/state}/routermcp/host/` on
+Linux and contains the host `runtime.json`, `daemon.lock`, `daemon.log`,
+`workspaces.json`, and `workspace-mcp-credentials.json` files. Each profile
+directory contains:
 
 ```
 <profile-id>/
@@ -129,7 +134,8 @@ Each profile directory contains:
 
 The project ID is derived from the resolved project directory. The profile ID
 is a stable digest of that project ID and the normalized config-file path, so
-two config files in the same project receive independent daemon state.
+two config files in the same project receive independent workspace runtime
+contexts while still sharing the machine-wide host process.
 
 ## Connection Flow
 
@@ -205,7 +211,8 @@ routermcp connect
 routermcp connect
 ```
 
-All three connect to the same daemon, sharing upstream connections.
+All three connect to the same daemon host. Each workspace retains its own
+configuration and upstream runtime context behind that shared process.
 
 ### CI/CD Pipelines
 
@@ -257,7 +264,9 @@ routermcp connect
 
 ### Wrong Config
 
-The daemon uses the config file that started it. To change:
+The daemon host can register multiple project/configuration workspaces. To
+change the current workspace's configuration, edit the selected config or
+choose another project/configuration profile:
 
 ```bash
 routermcp stop
