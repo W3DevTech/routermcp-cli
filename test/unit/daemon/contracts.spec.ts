@@ -7,7 +7,12 @@ import {
   fingerprintString,
 } from "../../../src/daemon/fingerprint.js";
 import { getDaemonPaths } from "../../../src/daemon/paths.js";
-import { getProfileDir, getProfileId } from "../../../src/daemon/project.js";
+import {
+  getLegacyProjectId,
+  getProfileDir,
+  getProfileId,
+  getProjectId,
+} from "../../../src/daemon/project.js";
 import {
   canTransitionReadiness,
   createReadinessSnapshot,
@@ -43,6 +48,24 @@ describe("daemon contracts", () => {
     expect(paths.profileId).toBe(getProfileId(projectId, firstPath));
     expect(paths.runtimeManifest).toBe(join(paths.dir, "runtime.json"));
     expect(paths.lock).toBe(join(paths.dir, "daemon.lock"));
+  });
+
+  it("derives collision-resistant filesystem-safe project IDs", () => {
+    const hyphenatedDirectory = "/tmp/foo-bar";
+    const nestedDirectory = "/tmp/foo/bar";
+
+    const hyphenatedId = getProjectId(hyphenatedDirectory);
+    const nestedId = getProjectId(nestedDirectory);
+
+    expect(hyphenatedId).not.toBe(nestedId);
+    expect(hyphenatedId).toMatch(/^[a-f0-9]{64}$/);
+    expect(nestedId).toMatch(/^[a-f0-9]{64}$/);
+    expect(getProjectId(`${hyphenatedDirectory}/../foo-bar`)).toBe(hyphenatedId);
+  });
+
+  it("retains the legacy project ID encoding for migration lookups", () => {
+    expect(getLegacyProjectId("/tmp/foo/bar")).toBe("tmp-foo-bar");
+    expect(getLegacyProjectId("/tmp/foo-bar")).toBe("tmp-foo-bar");
   });
 
   it("fingerprints configs deterministically and detects source changes", async () => {

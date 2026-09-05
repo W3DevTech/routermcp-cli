@@ -36,6 +36,7 @@ export {
 export { type DaemonPaths, getDaemonPaths, isWindows } from "./paths.js";
 export {
   getDaemonDir,
+  getLegacyProjectId,
   getProjectId,
   getProfileDir,
   getProfileId,

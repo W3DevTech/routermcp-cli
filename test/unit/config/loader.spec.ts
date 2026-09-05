@@ -1,7 +1,17 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { findConfigFile, loadConfig, loadConfigFromPath } from "../../../src/config/loader.js";
+import {
+  findConfigFile,
+  getConfigLocations,
+  loadConfig,
+  loadConfigFromPath,
+} from "../../../src/config/loader.js";
+import {
+  getLegacyProjectId,
+  getProjectId,
+  getUserProjectConfigPath,
+} from "../../../src/daemon/project.js";
 import { cleanupTempDir, createTempDir } from "../../helpers/test-utils.js";
 
 describe("findConfigFile", () => {
@@ -957,5 +967,77 @@ describe("loadConfigFromPath", () => {
     process.cwd = () => tempDir;
 
     await expect(loadConfigFromPath()).rejects.toThrow("No config file found");
+  });
+});
+
+describe("project config identity migration", () => {
+  let homeDir: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    homeDir = await createTempDir();
+    projectDir = join(homeDir, "workspace", "foo", "bar");
+    await mkdir(projectDir, { recursive: true });
+    vi.stubEnv("HOME", homeDir);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await cleanupTempDir(homeDir);
+  });
+
+  it("finds an existing XDG user-project config under its legacy ID", async () => {
+    const legacyId = getLegacyProjectId(projectDir);
+    const legacyConfigPath = join(
+      homeDir,
+      ".config",
+      "routermcp",
+      "projects",
+      legacyId,
+      "routermcp.jsonc",
+    );
+    await mkdir(join(homeDir, ".config", "routermcp", "projects", legacyId), {
+      recursive: true,
+    });
+    await writeFile(legacyConfigPath, '{"mcpServers":{}}');
+
+    const locations = await getConfigLocations(projectDir);
+
+    expect(locations[1]).toEqual({
+      scope: "user-project",
+      path: legacyConfigPath,
+      exists: true,
+    });
+  });
+
+  it("prefers the new project ID when both config locations exist", async () => {
+    const legacyId = getLegacyProjectId(projectDir);
+    const newId = getProjectId(projectDir);
+    const legacyConfigPath = join(
+      homeDir,
+      ".config",
+      "routermcp",
+      "projects",
+      legacyId,
+      "routermcp.jsonc",
+    );
+    const newConfigPath = getUserProjectConfigPath(newId);
+
+    await mkdir(join(homeDir, ".config", "routermcp", "projects", legacyId), {
+      recursive: true,
+    });
+    await mkdir(join(homeDir, ".config", "routermcp", "projects", newId), {
+      recursive: true,
+    });
+    await writeFile(legacyConfigPath, '{"mcpServers":{}}');
+    await writeFile(newConfigPath, '{"mcpServers":{}}');
+
+    const locations = await getConfigLocations(projectDir);
+
+    expect(locations[1]).toEqual({
+      scope: "user-project",
+      path: newConfigPath,
+      exists: true,
+    });
   });
 });

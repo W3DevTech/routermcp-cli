@@ -4,6 +4,7 @@ import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { file } from "../compat/index.js";
 import {
   getLegacyRouterMcpDir,
+  getLegacyProjectId,
   getProjectId,
   getRouterMcpDir,
   getUserGlobalConfigPath,
@@ -330,14 +331,19 @@ async function checkConfigExists(basePath: string): Promise<string | null> {
  */
 export async function getConfigLocations(cwd: string = process.cwd()): Promise<ConfigLocation[]> {
   const projectId = getProjectId(cwd);
+  const legacyProjectId = getLegacyProjectId(cwd);
 
   // Define base paths for each scope
   const projectLocalBase = await findConfigFile(cwd);
   const userProjectBase = getUserProjectConfigPath(projectId);
+  const legacyXdgUserProjectBase = getUserProjectConfigPath(legacyProjectId);
   const userGlobalBase = getUserGlobalConfigPath();
 
   // Check existence for user-scoped configs (project-local already checked via findConfigFile)
   const userProjectPath = await checkConfigExists(userProjectBase);
+  const legacyXdgUserProjectPath = userProjectPath
+    ? null
+    : await checkConfigExists(legacyXdgUserProjectBase);
   const userGlobalPath = await checkConfigExists(userGlobalBase);
 
   // Back-compat: look for legacy ~/.routermcp locations for user-scoped configs.
@@ -347,11 +353,11 @@ export async function getConfigLocations(cwd: string = process.cwd()): Promise<C
   const legacyUserProjectBase = resolvePath(
     legacyRouterDir,
     "projects",
-    projectId,
+    legacyProjectId,
     "routermcp.jsonc",
   );
 
-  const legacyUserProjectPath = userProjectPath
+  const legacyUserProjectPath = userProjectPath || legacyXdgUserProjectPath
     ? null
     : await checkConfigExists(legacyUserProjectBase);
   const legacyUserGlobalPath = userGlobalPath
@@ -366,8 +372,12 @@ export async function getConfigLocations(cwd: string = process.cwd()): Promise<C
     },
     {
       scope: "user-project",
-      path: userProjectPath || legacyUserProjectPath || userProjectBase,
-      exists: userProjectPath !== null || legacyUserProjectPath !== null,
+      path:
+        userProjectPath || legacyXdgUserProjectPath || legacyUserProjectPath || userProjectBase,
+      exists:
+        userProjectPath !== null ||
+        legacyXdgUserProjectPath !== null ||
+        legacyUserProjectPath !== null,
     },
     {
       scope: "user-global",

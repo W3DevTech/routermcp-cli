@@ -3,10 +3,29 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 /**
- * Generate a unique project ID from a directory path.
- * Normalizes the path and replaces path separators with dashes.
+ * Generate a stable, filesystem-safe project ID from a directory path.
+ *
+ * The complete normalized path is hashed instead of being flattened into a
+ * dash-separated name. Flattening is lossy: `/tmp/foo-bar` and
+ * `/tmp/foo/bar` both become `tmp-foo-bar`, which makes those projects share
+ * daemon state. A hexadecimal SHA-256 digest is safe in every supported
+ * filesystem and keeps the identity bounded even for deeply nested paths.
  */
 export function getProjectId(cwd: string = process.cwd()): string {
+  const normalized = resolve(cwd);
+  const identityPath = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return createHash("sha256").update(identityPath).digest("hex");
+}
+
+/**
+ * Return the project ID used by releases before project identities were
+ * content-addressed.
+ *
+ * This is intentionally kept separate from getProjectId. It is used only for
+ * locating existing user-project configuration during the one-way migration
+ * to collision-resistant IDs; new state must always use getProjectId.
+ */
+export function getLegacyProjectId(cwd: string = process.cwd()): string {
   const normalized = resolve(cwd);
   return normalized.replace(/^\//, "").replace(/\\/g, "-").replace(/\//g, "-").replace(/:/g, "");
 }
