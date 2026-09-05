@@ -21,6 +21,24 @@ callback is used only when a handoff requests an initial workspace claim; it
 must reject IDs that are not registered. The browser cannot submit paths or
 config contents to obtain a grant.
 
+## Direct workspace MCP endpoints
+
+The managed daemon exposes a separate credential minting route for clients
+that need HTTP MCP instead of the stdio bridge:
+
+```text
+POST /api/v1/management/mcp-credential
+POST /api/v1/workspaces/:workspaceId/mcp
+DELETE /api/v1/workspaces/:workspaceId/mcp
+```
+
+The minting request must use the private loopback daemon token and contain only
+the registered `workspaceId`. It returns an expiring `scope: "mcp"` bearer
+credential. The credential is accepted only by the matching workspace URL and
+cannot be used with another workspace or the host `/mcp` endpoint. The private
+daemon token and directory paths are never included in the returned endpoint
+or credential response.
+
 ## Context routes
 
 The dashboard selects a registered context explicitly. Its read routes are:

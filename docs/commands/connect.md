@@ -79,7 +79,10 @@ cd /my/project
 routermcp connect -v
 
 # Output (diagnostics are written to stderr):
-# Connected to daemon at /my/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
+# Daemon started at /my/project (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp, workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp)
+# Workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp
+# Workspace MCP Authorization: Bearer <short-lived-token>
+# Workspace MCP credential expires: 2026-01-01T00:05:00.000Z
 ```
 
 ### Terminal 2: Second Client
@@ -89,10 +92,21 @@ cd /my/project
 routermcp connect -v
 
 # Output:
-# Connected to daemon at /my/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
+# Connected to daemon at /my/project (pid: 12345, host MCP URL: http://127.0.0.1:7858/mcp, workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp)
+# Workspace MCP URL: http://127.0.0.1:7858/api/v1/workspaces/<workspace-id>/mcp
+# Workspace MCP Authorization: Bearer <short-lived-token>
+# Workspace MCP credential expires: 2026-01-01T00:05:00.000Z
 ```
 
 Both clients now share the same gateway instance!
+
+`connect` also prints a workspace-bound MCP endpoint and short-lived bearer
+credential on stderr. Use those values when an MCP client needs a direct HTTP
+connection to this directory. The endpoint contains an opaque workspace ID,
+never the local directory path. The credential expires after five minutes by
+default; run `routermcp connect` again to mint a fresh one. The stdio bridge
+continues to use the host endpoint internally and remains the recommended
+default for clients that support stdio.
 
 ## Explicit Daemon Lifecycle
 
