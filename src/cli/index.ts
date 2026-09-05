@@ -527,7 +527,7 @@ routermcp - MCP Gateway CLI
 
 USAGE:
   routermcp [command] [options]
-  routermcp -v, --version    Print version and exit
+  routermcp --version        Print version and exit
 
 COMMANDS:
   serve     Start the MCP gateway in the foreground
