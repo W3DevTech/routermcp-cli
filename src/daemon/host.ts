@@ -124,6 +124,11 @@ export async function ensureWorkspaceRunning(
             return attachWorkspaceStatus(existing, hostManifest.hostId, workspace);
           }
         }
+        // A compatible host can still have died between the manifest check
+        // and the profile health probe. Its lease counts belong to that dead
+        // process, so clear them before the replacement host is allowed to
+        // inherit the registry.
+        await registry.resetActiveConnections();
         await removeDaemonHostManifest(hostPaths.runtimeManifest);
       }
     }

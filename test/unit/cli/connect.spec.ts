@@ -24,8 +24,12 @@ vi.mock("../../../src/daemon/index.js", () => ({
   })),
   getDaemonStatus: vi.fn(),
   ensureRunning: vi.fn(),
+  ensureWorkspaceRunning: vi.fn(),
+  fingerprintConfigFile: vi.fn(),
+  getWorkspaceDaemonStatus: vi.fn(),
   startDaemon: vi.fn(),
   isWindows: vi.fn(() => false),
+  isLoopbackHost: vi.fn(() => true),
 }));
 
 import { createInterface } from "node:readline";
@@ -457,6 +461,132 @@ describe("connectCommand", () => {
       expect(releaseHeaders.get("Authorization")).toBe("Bearer secret");
       expect(releaseHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe("test-lease");
       expect(releaseHeaders.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-1");
+    });
+
+    it("reacquires the lease and replays the handshake after a daemon restart", async () => {
+      let lineHandler: ((line: string) => void) | undefined;
+      let closeHandler: (() => void) | undefined;
+      mockRl.on.mockImplementation((event: string, callback: (line: string) => void) => {
+        if (event === "line") lineHandler = callback;
+        return mockRl;
+      });
+      mockRl.once.mockImplementation((event: string, callback: () => void) => {
+        if (event === "close") closeHandler = callback;
+        return mockRl;
+      });
+
+      vi.useFakeTimers();
+      const fetchMock = vi.mocked(fetch);
+      const mcpBodies: Array<{ url: string; method?: string; body?: string }> = [];
+      let leaseNumber = 0;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/bridge-leases") && init?.method === "POST") {
+          leaseNumber += 1;
+          return new Response(
+            JSON.stringify({
+              leaseId: leaseNumber === 1 ? "old-lease" : "new-lease",
+              connectedAt: new Date(0).toISOString(),
+              lastSeenAt: new Date(0).toISOString(),
+              leaseExpiresAt: new Date(30_000).toISOString(),
+              leaseTtlMs: 30,
+              workspaceId: "workspace-1",
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/bridge-leases/old-lease/heartbeat")) {
+          return new Response("Lease Not Found", { status: 404 });
+        }
+        if (url.endsWith("/mcp") && init?.method === "POST") {
+          mcpBodies.push({
+            url,
+            method: init.method,
+            body: typeof init.body === "string" ? init.body : undefined,
+          });
+          const request = JSON.parse(String(init.body)) as { id?: number };
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: request.id ?? null, result: {} }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": "session-1",
+              },
+            },
+          );
+        }
+        return new Response(null, { status: 204 });
+      });
+
+      const reconnect = vi.fn(async () => ({
+        mcpUrl: "http://127.0.0.1:5152/mcp",
+        authToken: "new-secret",
+        workspace: {
+          directory: "/tmp/project",
+          configPath: "/tmp/project/routermcp.jsonc",
+          configScope: "project-local" as const,
+          configDigest: "b".repeat(64),
+        },
+      }));
+      const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const proxyPromise = proxyStdioToHttp(
+        "http://127.0.0.1:5151/mcp",
+        () => undefined,
+        "old-secret",
+        {
+          directory: "/tmp/project",
+          configPath: "/tmp/project/routermcp.jsonc",
+          configScope: "project-local",
+          configDigest: "a".repeat(64),
+        },
+        reconnect,
+      );
+
+      for (let attempt = 0; attempt < 10 && (!lineHandler || !closeHandler); attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(lineHandler).toBeDefined();
+      expect(closeHandler).toBeDefined();
+
+      lineHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test" } },
+        }),
+      );
+      for (let attempt = 0; attempt < 10; attempt += 1) await Promise.resolve();
+
+      lineHandler?.(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }));
+      for (let attempt = 0; attempt < 10; attempt += 1) await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(10);
+      for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
+      expect(reconnect).toHaveBeenCalledTimes(1);
+
+      lineHandler?.(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }));
+      for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
+
+      closeHandler?.();
+      await proxyPromise;
+      const stdoutCallCount = stdoutSpy.mock.calls.length;
+      stdoutSpy.mockRestore();
+
+      expect(leaseNumber).toBe(2);
+      const oldBodies = mcpBodies.filter(({ url }) => url.includes(":5151"));
+      const newBodies = mcpBodies.filter(({ url }) => url.includes(":5152"));
+      expect(oldBodies.map(({ body }) => JSON.parse(body ?? "{}").method)).toEqual([
+        "initialize",
+        "notifications/initialized",
+      ]);
+      expect(newBodies.map(({ body }) => JSON.parse(body ?? "{}").method)).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "ping",
+      ]);
+      expect(stdoutCallCount).toBe(3);
     });
   });
 });

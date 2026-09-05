@@ -58,6 +58,9 @@ export interface ServeCommandOptions {
 
 const DEFAULT_DAEMON_PORT = 7858;
 const MANAGED_RESTART_TIMEOUT_MS = 30_000;
+/** Internal-only handoff used by a controlled restart to retain bridge auth. */
+const MANAGED_RESTART_AUTH_TOKEN_ENV = "ROUTERMCP_DAEMON_RESTART_AUTH_TOKEN";
+const LOCAL_AUTH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export async function serveCommand(options: ServeCommandOptions): Promise<void> {
   const verbose = options.verbose ?? false;
@@ -165,6 +168,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       }
 
       if (daemonPaths.runtimeManifest) {
+        const inheritedAuthToken = readManagedRestartAuthToken();
         runtimeManifest = await createRuntimeManifest({
           projectId,
           profileId: daemonPaths.profileId,
@@ -173,7 +177,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           pid: process.pid,
           host: daemonHost,
           port: httpPort,
-          localAuthToken: randomBytes(32).toString("base64url"),
+          localAuthToken: inheritedAuthToken ?? randomBytes(32).toString("base64url"),
         });
         await writeRuntimeManifest(daemonPaths.runtimeManifest, runtimeManifest);
       } else {
@@ -789,6 +793,11 @@ function launchManagedRestart(
   const env = { ...process.env };
   delete env.ROUTERMCP_DAEMON;
   delete env.ROUTERMCP_DAEMON_LOCK_HELD;
+  if (manifest.localAuthToken) {
+    env[MANAGED_RESTART_AUTH_TOKEN_ENV] = manifest.localAuthToken;
+  } else {
+    delete env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  }
 
   const child = spawn(invocation.command, invocation.args, {
     cwd: paths.projectPath,
@@ -827,6 +836,15 @@ function launchManagedRestart(
   }, MANAGED_RESTART_TIMEOUT_MS);
   unrefTimer(watchdog);
   child.unref();
+}
+
+function readManagedRestartAuthToken(): string | undefined {
+  const value = process.env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  // Consume the handoff so a daemon process cannot accidentally pass this
+  // private credential to a later child. Invalid external values never
+  // override a freshly generated token.
+  delete process.env[MANAGED_RESTART_AUTH_TOKEN_ENV];
+  return value && LOCAL_AUTH_TOKEN_PATTERN.test(value) ? value : undefined;
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {

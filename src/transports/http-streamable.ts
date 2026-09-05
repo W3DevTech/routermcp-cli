@@ -1503,6 +1503,14 @@ function isWorkspaceControlPlaneAuthorized(
   const credentials = options.managementCredentials;
   if (!credentials) return false;
 
+  // Status is the read-only inventory view used by the hosted workspace
+  // switcher. A valid short-lived management grant may inspect any workspace
+  // already known to this daemon; it does not thereby gain access to that
+  // workspace's servers, features, or mutation routes.
+  if (route.kind === "workspace-status") {
+    return credentials.authorize(token);
+  }
+
   // New grants carry a workspace claim. The fallback keeps grants issued by
   // older unscoped daemons usable for the current context while still making
   // a claimed grant fail closed for another workspace.

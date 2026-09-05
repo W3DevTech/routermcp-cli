@@ -777,7 +777,8 @@ describe("createHttpServerTransport control-plane routes", () => {
         headers: currentHeaders,
       }),
     );
-    expect(otherWithCurrentGrant.status).toBe(401);
+    expect(otherWithCurrentGrant.status).toBe(200);
+    expect((await otherWithCurrentGrant.json()).workspace.id).toBe(otherWorkspace.id);
 
     const rootOtherStatus = await fetchHandler(
       new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, {

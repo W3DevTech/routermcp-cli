@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -6,7 +7,9 @@ import {
   getDaemonStatus,
   getDaemonPaths,
   getProjectId,
+  ensureWorkspaceRunning,
   stopDaemon,
+  WorkspaceRegistry,
 } from "../../src/daemon/index.js";
 import { MANAGEMENT_CREDENTIAL_HANDOFF_PATH } from "../../src/control-plane/index.js";
 import {
@@ -258,10 +261,165 @@ describe("managed daemon control plane", () => {
       expect(replacement.running).toBe(true);
       expect(replacement.instanceId).not.toBe(status.instanceId);
       expect(replacement.pid).not.toBe(status.pid);
+      // Existing stdio bridges keep using the daemon credential while the
+      // managed process is replaced, then reacquire a fresh lease.
+      expect(replacement.authToken).toBe(status.authToken);
     } finally {
       await stopDaemon(paths, { shutdownTimeoutMs: 5_000 });
     }
   }, 40_000);
+
+  it("keeps an active stdio bridge connected across a managed restart", async () => {
+    const paths = getDaemonPaths(getProjectId(projectDir), configPath, projectDir);
+    const status = await ensureRunning(paths, {
+      entrypoint: resolve(process.cwd(), "src/index.ts"),
+      projectPath: projectDir,
+      preferredPort: await getAvailablePort(),
+      startupTimeoutMs: 10_000,
+    });
+    const runtime = /(?:^|[\\/])bun(?:\.exe)?$/i.test(process.execPath)
+      ? process.execPath
+      : "bun";
+    const child = spawn(
+      runtime,
+      [
+        resolve(process.cwd(), "src/index.ts"),
+        "connect",
+        "--config",
+        configPath,
+        "--project",
+        projectDir,
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, ROUTERMCP_TELEMETRY: "0" },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const waitForOutput = async (needle: string, timeoutMs = 15_000): Promise<void> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (stdout.includes(needle)) return;
+        if (child.exitCode !== null) {
+          throw new Error(`connect exited with ${child.exitCode}: ${stderr}`);
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+      throw new Error(`Timed out waiting for ${needle}: ${stdout}\n${stderr}`);
+    };
+
+    try {
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "restart-bridge-test", version: "1.0.0" },
+          },
+        })}\n`,
+      );
+      await waitForOutput('"id":1');
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+
+      const restartResponse = await fetch(new URL("/api/v1/restart", `${status.controlUrl}/`), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${status.authToken}` },
+      });
+      expect(restartResponse.status).toBe(202);
+
+      const configFingerprint = await fingerprintConfigFile(configPath);
+      const deadline = Date.now() + 15_000;
+      let replacement = await getDaemonStatus(paths, { configFingerprint });
+      while (Date.now() < deadline) {
+        if (replacement.running && replacement.instanceId !== status.instanceId) break;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+        replacement = await getDaemonStatus(paths, { configFingerprint });
+      }
+      expect(replacement.running).toBe(true);
+      expect(replacement.instanceId).not.toBe(status.instanceId);
+      expect(replacement.authToken).toBe(status.authToken);
+
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })}\n`);
+      await waitForOutput('"id":2');
+      expect(child.exitCode).toBeNull();
+    } finally {
+      child.stdin.end();
+      await new Promise<void>((resolveClose) => {
+        if (child.exitCode !== null) {
+          resolveClose();
+          return;
+        }
+        const timer = setTimeout(resolveClose, 5_000);
+        child.once("close", () => {
+          clearTimeout(timer);
+          resolveClose();
+        });
+      });
+      if (child.exitCode === null) child.kill("SIGTERM");
+      await stopDaemon(paths, { shutdownTimeoutMs: 5_000 });
+    }
+  }, 50_000);
+
+  it("clears stale workspace lease counts after the host process dies", async () => {
+    const paths = getDaemonPaths(getProjectId(projectDir), configPath, projectDir);
+    const configDigest = await fingerprintConfigFile(configPath);
+    const workspace = {
+      directory: projectDir,
+      configPath,
+      configScope: "project-local" as const,
+      configDigest,
+    };
+    const registry = new WorkspaceRegistry();
+    const started = await ensureWorkspaceRunning(workspace, {
+      registry,
+      entrypoint: resolve(process.cwd(), "src/index.ts"),
+      projectPath: projectDir,
+      preferredPort: await getAvailablePort(),
+      startupTimeoutMs: 10_000,
+    });
+    await registry.acquire(workspace);
+
+    try {
+      expect(started.pid).toBeTypeOf("number");
+      expect((await registry.list())[0]?.activeConnections).toBe(1);
+      process.kill(started.pid as number, "SIGKILL");
+
+      const deadDeadline = Date.now() + 5_000;
+      let deadStatus = await getDaemonStatus(paths, { configFingerprint: configDigest });
+      while (Date.now() < deadDeadline && deadStatus.running) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+        deadStatus = await getDaemonStatus(paths, { configFingerprint: configDigest });
+      }
+      expect(deadStatus.running).toBe(false);
+
+      const replacement = await ensureWorkspaceRunning(workspace, {
+        registry,
+        entrypoint: resolve(process.cwd(), "src/index.ts"),
+        projectPath: projectDir,
+        preferredPort: started.port,
+        startupTimeoutMs: 10_000,
+      });
+      expect(replacement.running).toBe(true);
+      expect(replacement.pid).not.toBe(started.pid);
+      expect((await registry.list())[0]?.activeConnections).toBe(0);
+    } finally {
+      await stopDaemon(paths, { shutdownTimeoutMs: 5_000 });
+    }
+  }, 45_000);
 
   it("includes OpenAPI adapter snapshots in server health and status", async () => {
     const openApiConfigPath = await writeConfigFile(
