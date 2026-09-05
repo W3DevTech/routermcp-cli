@@ -472,7 +472,14 @@ export function createHttpServerTransport(
                   });
                 }
 
-                return handleControlPlaneRequest(request, controlRoute, options.controlPlane, corsHeaders);
+                return handleControlPlaneRequest(
+                  request,
+                  controlRoute,
+                  options.controlPlane,
+                  corsHeaders,
+                  options,
+                  sessionContexts,
+                );
               }
 
               const leaseRoute = parseBridgeLeasePath(url.pathname);
@@ -796,6 +803,7 @@ type ControlPlaneRoute =
   | { kind: "restart" }
   | { kind: "workspaces" }
   | { kind: "workspace-activate"; workspaceId: string }
+  | { kind: "workspace-mcp"; workspaceId: string }
   | { kind: "workspace-status"; workspaceId: string }
   | { kind: "workspace-servers"; workspaceId: string }
   | { kind: "workspace-server"; workspaceId: string; serverId: string }
@@ -866,6 +874,8 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
       switch (parts[1]) {
         case "activate":
           return { kind: "workspace-activate", workspaceId };
+        case "mcp":
+          return { kind: "workspace-mcp", workspaceId };
         case "status":
           return { kind: "workspace-status", workspaceId };
         case "servers":
@@ -994,6 +1004,8 @@ async function handleControlPlaneRequest(
   route: ControlPlaneRoute,
   controlPlane: ControlPlane,
   headers: (request: Request) => Record<string, string>,
+  options: HttpServerOptions,
+  sessionContexts: Map<string, HttpRequestContext>,
 ): Promise<Response> {
   const responseHeaders = withWorkspaceAttribution(
     headers(request),
@@ -1015,6 +1027,10 @@ async function handleControlPlaneRequest(
       404,
       responseHeaders,
     );
+  }
+
+  if (route.kind === "workspace-mcp") {
+    return handleWorkspaceMcpRequest(request, route.workspaceId, options, sessionContexts, headers);
   }
 
   if (route.kind === "workspace-activate") {
@@ -1190,6 +1206,180 @@ async function handleControlPlaneRequest(
         : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
     }
   }
+}
+
+/**
+ * Serve MCP directly for one registered workspace. Unlike the legacy `/mcp`
+ * bridge endpoint, the workspace is selected by the already-authorized URL
+ * path and is therefore never inferred from caller-supplied directory data.
+ */
+async function handleWorkspaceMcpRequest(
+  request: Request,
+  workspaceId: string,
+  options: HttpServerOptions,
+  sessionContexts: Map<string, HttpRequestContext>,
+  headers: (request: Request) => Record<string, string>,
+): Promise<Response> {
+  const responseHeaders = withWorkspaceAttribution(headers(request), workspaceId);
+
+  if (!options.dispatchMcp) {
+    return new Response("Not Found", { status: 404, headers: responseHeaders });
+  }
+
+  if (request.method === "POST") {
+    const requestStartedAt = performance.now();
+    let requestMethod: string | undefined;
+    let requestContext: HttpRequestContext | undefined;
+    let sessionId = readContextHeader(request, "mcp-session-id");
+    let newlyBound = false;
+
+    try {
+      sessionId ??= randomUUID();
+      const existingContext = sessionContexts.get(sessionId);
+      if (existingContext?.workspaceId && existingContext.workspaceId !== workspaceId) {
+        throw new BridgeRequestContextError("MCP session is already bound to another workspace", 400);
+      }
+      requestContext = { ...existingContext, workspaceId };
+      if (!existingContext) newlyBound = true;
+      // Bind before dispatch so concurrent requests cannot move a new session
+      // between workspace URLs while its initialize request is in flight.
+      sessionContexts.set(sessionId, requestContext);
+
+      const body = (await readBoundedJsonBody(
+        request,
+        MANAGEMENT_BODY_LIMIT_BYTES,
+        "MCP request",
+      )) as JSONRPCMessage;
+      requestMethod = getJsonRpcMethod(body);
+      const response = await options.dispatchMcp(body, sessionId, requestContext);
+      const protocolError = isJsonRpcProtocolError(response);
+      const resultError = isJsonRpcResultError(response);
+
+      if (requestMethod === "initialize" && response && !protocolError) {
+        await options.onSessionInitialize?.(
+          sessionId,
+          getInitializeClientInfo(body),
+          requestContext,
+        );
+      }
+
+      recordMcpObservation(options.controlPlane, {
+        durationMs: performance.now() - requestStartedAt,
+        method: requestMethod,
+        error: protocolError,
+        resultError,
+        workspaceId,
+      });
+
+      if (response) {
+        return new Response(JSON.stringify(response), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Mcp-Session-Id": sessionId,
+            ...withContextAttribution(headers(request), requestContext),
+          },
+        });
+      }
+
+      return new Response(null, {
+        status: 202,
+        headers: {
+          "Cache-Control": "no-store",
+          "Mcp-Session-Id": sessionId,
+          ...withContextAttribution(headers(request), requestContext),
+        },
+      });
+    } catch (error) {
+      if (newlyBound && sessionId && sessionContexts.get(sessionId) === requestContext) {
+        sessionContexts.delete(sessionId);
+      }
+
+      recordMcpObservation(options.controlPlane, {
+        durationMs: performance.now() - requestStartedAt,
+        method: requestMethod,
+        error: true,
+        workspaceId,
+      });
+      const message = sanitizeControlError(error);
+      const status =
+        error instanceof RequestBodyLimitError
+          ? 413
+          : error instanceof BridgeRequestContextError
+            ? error.statusCode
+            : 500;
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: {
+            code: status === 413 ? -32600 : -32603,
+            message: status === 413 ? "MCP request body is too large" : message,
+          },
+          id: null,
+        }),
+        {
+          status,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+            ...withContextAttribution(headers(request), requestContext),
+          },
+        },
+      );
+    }
+  }
+
+  if (request.method === "DELETE") {
+    const sessionId = readContextHeader(request, "mcp-session-id");
+    if (!sessionId) {
+      return new Response("Mcp-Session-Id is required", { status: 400, headers: responseHeaders });
+    }
+
+    const existingContext = sessionContexts.get(sessionId);
+    if (existingContext?.workspaceId && existingContext.workspaceId !== workspaceId) {
+      return new Response("MCP session is already bound to another workspace", {
+        status: 400,
+        headers: responseHeaders,
+      });
+    }
+    const requestContext = { ...existingContext, workspaceId };
+    sessionContexts.delete(sessionId);
+    await options.onSessionClose?.(sessionId, requestContext);
+    return new Response(null, {
+      status: 204,
+      headers: withContextAttribution(responseHeaders, requestContext),
+    });
+  }
+
+  return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+}
+
+function recordMcpObservation(
+  controlPlane: ControlPlane | undefined,
+  observation: {
+    durationMs: number;
+    method?: string;
+    error?: boolean;
+    resultError?: boolean;
+    workspaceId: string;
+  },
+): void {
+  controlPlane?.recordRequest(observation);
+  controlPlane?.recordEvent({
+    level: observation.error || observation.resultError ? "warn" : "debug",
+    type: observation.error ? "mcp.error" : "mcp.request",
+    message: observation.error
+      ? `${observation.method ?? "request"} failed`
+      : `${observation.method ?? "request"} completed`,
+    workspaceId: observation.workspaceId,
+    metadata: {
+      ...(observation.method ? { method: observation.method } : {}),
+      workspaceId: observation.workspaceId,
+      latencyMs: Math.round(observation.durationMs),
+    },
+  });
 }
 
 async function handleServerPatch(

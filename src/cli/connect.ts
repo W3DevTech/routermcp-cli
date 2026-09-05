@@ -130,10 +130,14 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
       throw new Error("Daemon did not report an MCP URL or HTTP port");
     }
 
+    const workspaceMcpUrl = status.workspaceMcpUrl;
+    const endpointDescription = workspaceMcpUrl
+      ? `host MCP URL: ${mcpUrl}, workspace MCP URL: ${workspaceMcpUrl}`
+      : `host MCP URL: ${mcpUrl}`;
     if (wasRunning) {
-      info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, url: ${mcpUrl})`);
+      info(`Connected to daemon at ${projectPath} (pid: ${status.pid}, ${endpointDescription})`);
     } else {
-      info(`Daemon started at ${projectPath} (pid: ${status.pid}, url: ${mcpUrl})`);
+      info(`Daemon started at ${projectPath} (pid: ${status.pid}, ${endpointDescription})`);
     }
     const bridgeWorkspace: BridgeLeaseMetadata = {
       directory: projectPath,

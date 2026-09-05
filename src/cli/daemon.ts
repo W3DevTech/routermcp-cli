@@ -110,13 +110,26 @@ function printStatus(status: DaemonStatus, json = false): void {
     // cross the CLI output boundary, especially for host status responses that
     // do not have a profile manifest to select.
     const { authToken: _authToken, ...safeStatus } = status;
-    console.log(JSON.stringify(safeStatus.manifest ?? safeStatus, null, 2));
+    const output = safeStatus.manifest
+      ? {
+          ...safeStatus.manifest,
+          ...(safeStatus.hostId ? { hostId: safeStatus.hostId } : {}),
+          ...(safeStatus.workspaceId ? { workspaceId: safeStatus.workspaceId } : {}),
+          ...(safeStatus.projectPath ? { projectPath: safeStatus.projectPath } : {}),
+          ...(safeStatus.workspaceMcpUrl
+            ? { workspaceMcpUrl: safeStatus.workspaceMcpUrl }
+            : {}),
+        }
+      : safeStatus;
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
 
   if (status.running) {
     const address = status.port ? `http://${status.host ?? "127.0.0.1"}:${status.port}` : "unknown";
     console.log(`RouterMCP daemon running (pid ${status.pid}, ${address})`);
+    if (status.mcpUrl) console.log(`Host MCP URL: ${status.mcpUrl}`);
+    if (status.workspaceMcpUrl) console.log(`Workspace MCP URL: ${status.workspaceMcpUrl}`);
     return;
   }
 

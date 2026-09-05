@@ -50,6 +50,8 @@ export interface DaemonStatus {
   /** Workspace selected for the request that produced this status. */
   workspaceId?: string;
   projectPath?: string;
+  /** Direct MCP endpoint bound to the selected workspace on a shared host. */
+  workspaceMcpUrl?: string;
   mcpUrl?: string;
   controlUrl?: string;
   /**

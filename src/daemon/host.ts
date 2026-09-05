@@ -14,6 +14,7 @@ import { getDaemonHostPaths, getDaemonPaths } from "./paths.js";
 import { matchesProcessIdentity } from "./identity.js";
 import { getProjectId } from "./project.js";
 import { DAEMON_HEALTH_PATH } from "../transports/http-streamable.js";
+import { CONTROL_PLANE_PATH } from "../control-plane/index.js";
 import {
   createDaemonHostManifest,
   getDaemonHostCompatibility,
@@ -428,12 +429,38 @@ function attachWorkspaceStatus(
   hostId: string,
   workspace: WorkspaceSnapshot,
 ): WorkspaceDaemonStatus {
+  const workspaceMcpUrl = getWorkspaceMcpUrl(status.controlUrl, workspace.id);
   return {
     ...status,
     hostId,
     workspaceId: workspace.id,
     projectPath: workspace.directory,
+    ...(workspaceMcpUrl ? { workspaceMcpUrl } : {}),
   };
+}
+
+function getWorkspaceMcpUrl(controlUrl: string | undefined, workspaceId: string): string | undefined {
+  if (!controlUrl) return undefined;
+
+  try {
+    const endpoint = new URL(controlUrl);
+    if (
+      endpoint.protocol !== "http:" ||
+      !isLoopbackHost(endpoint.hostname) ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash
+    ) {
+      return undefined;
+    }
+
+    const normalizedPath = endpoint.pathname.replace(/\/+$/, "") || "/";
+    if (normalizedPath !== "/" && normalizedPath !== CONTROL_PLANE_PATH) return undefined;
+    return `${endpoint.origin}${CONTROL_PLANE_PATH}/workspaces/${encodeURIComponent(workspaceId)}/mcp`;
+  } catch {
+    return undefined;
+  }
 }
 
 function makeUnregisteredWorkspace(descriptor: {

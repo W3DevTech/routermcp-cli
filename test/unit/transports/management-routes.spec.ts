@@ -8,6 +8,7 @@ import { serve, type ServeOptions } from "../../../src/compat/index.js";
 import {
   ControlPlane,
   createConfigManagementSource,
+  ManagementCredentialStore,
   readConfigSnapshot,
 } from "../../../src/control-plane/index.js";
 import { createHttpServerTransport } from "../../../src/transports/http-streamable.js";
@@ -162,10 +163,154 @@ describe("control-plane management routes", () => {
       await cleanupTempDir(directory);
     }
   });
+
+  it("routes management-authenticated MCP traffic to the URL workspace", async () => {
+    const directory = await createTempDir();
+    try {
+      const configPath = await writeConfigFile(directory, {
+        mcpServers: { demo: { transport: "stdio", command: "true" } },
+      });
+      const management = createConfigManagementSource({ getConfigPath: () => configPath });
+      const controlPlane = createControlPlane(management, ["workspace-current", "workspace-other"]);
+      const credentials = new ManagementCredentialStore({
+        authority: "host",
+        generateToken: () => "management-token",
+      });
+      credentials.issue();
+      const dispatchMcp = vi.fn(async (message, _sessionId, context) => ({
+        jsonrpc: "2.0" as const,
+        id: "id" in message ? message.id : null,
+        result: {
+          workspaceId: context?.workspaceId,
+          ...(message.method === "initialize"
+            ? {
+                protocolVersion: "2025-11-25",
+                capabilities: {},
+                serverInfo: { name: "test-server", version: "1.0.0" },
+              }
+            : {}),
+        },
+      }));
+      const onSessionInitialize = vi.fn();
+      const onSessionClose = vi.fn();
+      const handle = createHttpServerTransport(7858, "127.0.0.1", {
+        authToken: "local-secret",
+        controlPlane,
+        managementCredentials: credentials,
+        dispatchMcp,
+        onSessionInitialize,
+        onSessionClose,
+      });
+      await handle.start();
+
+      const authorization = { Authorization: "Bearer management-token" };
+      const initialized = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/workspaces/workspace-current/mcp", {
+          method: "POST",
+          headers: { ...authorization, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: { clientInfo: { name: "test-client", version: "1.0.0" } },
+          }),
+        }),
+      );
+      expect(initialized.status).toBe(200);
+      const sessionId = initialized.headers.get("mcp-session-id");
+      expect(sessionId).toBeTruthy();
+      expect(await initialized.json()).toMatchObject({ result: { workspaceId: "workspace-current" } });
+      expect(dispatchMcp).toHaveBeenLastCalledWith(
+        expect.objectContaining({ method: "initialize" }),
+        sessionId,
+        { workspaceId: "workspace-current" },
+      );
+      expect(onSessionInitialize).toHaveBeenCalledWith(
+        sessionId,
+        { name: "test-client", version: "1.0.0" },
+        { workspaceId: "workspace-current" },
+      );
+
+      const crossWorkspace = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/workspaces/workspace-other/mcp", {
+          method: "POST",
+          headers: {
+            ...authorization,
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": sessionId as string,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+        }),
+      );
+      expect(crossWorkspace.status).toBe(400);
+      expect(dispatchMcp).toHaveBeenCalledTimes(1);
+
+      const otherWorkspace = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/workspaces/workspace-other/mcp", {
+          method: "POST",
+          headers: { ...authorization, "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+        }),
+      );
+      expect(otherWorkspace.status).toBe(200);
+      expect(await otherWorkspace.json()).toMatchObject({ result: { workspaceId: "workspace-other" } });
+
+      const closed = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/workspaces/workspace-current/mcp", {
+          method: "DELETE",
+          headers: { ...authorization, "Mcp-Session-Id": sessionId as string },
+        }),
+      );
+      expect(closed.status).toBe(204);
+      expect(onSessionClose).toHaveBeenCalledWith(sessionId, { workspaceId: "workspace-current" });
+
+      await handle.stop();
+    } finally {
+      await cleanupTempDir(directory);
+    }
+  });
+
+  it("does not let management grants use the shared bridge MCP route", async () => {
+    const directory = await createTempDir();
+    try {
+      const configPath = await writeConfigFile(directory, {
+        mcpServers: { demo: { transport: "stdio", command: "true" } },
+      });
+      const management = createConfigManagementSource({ getConfigPath: () => configPath });
+      const credentials = new ManagementCredentialStore({
+        authority: "host",
+        generateToken: () => "management-token",
+      });
+      credentials.issue();
+      const handle = createHttpServerTransport(7858, "127.0.0.1", {
+        authToken: "local-secret",
+        controlPlane: createControlPlane(management, ["workspace-current"]),
+        managementCredentials: credentials,
+        dispatchMcp: vi.fn(),
+      });
+      await handle.start();
+
+      const response = await fetchHandler(
+        new Request("http://127.0.0.1/mcp", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer management-token",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        }),
+      );
+      expect(response.status).toBe(401);
+      await handle.stop();
+    } finally {
+      await cleanupTempDir(directory);
+    }
+  });
 });
 
 function createControlPlane(
   management: ReturnType<typeof createConfigManagementSource>,
+  workspaceIds: string[] = ["workspace-current"],
 ): ControlPlane {
   return new ControlPlane({
     getStatus: () => ({
@@ -184,6 +329,19 @@ function createControlPlane(
     }),
     getServers: () => [],
     getSessions: () => [],
+    getWorkspaces: () => workspaceIds.map((id) => ({
+      id,
+      directory: `/tmp/${id}`,
+      configPath: `/tmp/${id}/routermcp.jsonc`,
+      configScope: "project-local" as const,
+      profileId: id,
+      configDigest: "a".repeat(64),
+      state: "known" as const,
+      activeConnections: 0,
+      firstSeenAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+    })),
+    getCurrentWorkspaceId: () => "workspace-current",
     management,
   });
 }

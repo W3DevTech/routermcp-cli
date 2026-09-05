@@ -26,6 +26,7 @@ export interface ConsoleHandoff {
   profile?: string;
   scope: ManagementCredentialGrant["scope"];
   workspaceId?: string;
+  workspaceMcpUrl?: string;
   url: string;
 }
 
@@ -124,7 +125,7 @@ export async function requestManagementCredential(
 
 /** Build the fragment format consumed by the hosted console without URL query credentials. */
 export function createConsoleHandoff(
-  status: Pick<DaemonStatus, "controlUrl" | "profileId">,
+  status: Pick<DaemonStatus, "controlUrl" | "profileId" | "workspaceMcpUrl">,
   grant: ManagementCredentialGrant,
 ): ConsoleHandoff {
   const endpoint = normalizeControlEndpoint(status.controlUrl);
@@ -133,6 +134,7 @@ export function createConsoleHandoff(
     managementToken: grant.token,
     ...(status.profileId ? { profile: status.profileId } : {}),
     ...(grant.workspaceId ? { workspace: grant.workspaceId } : {}),
+    ...(status.workspaceMcpUrl ? { workspaceMcpUrl: status.workspaceMcpUrl } : {}),
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const url = `${CLI_CONSOLE_URL}#rmcp=${encodedPayload}`;
@@ -143,6 +145,7 @@ export function createConsoleHandoff(
     ...(status.profileId ? { profile: status.profileId } : {}),
     scope: grant.scope,
     ...(grant.workspaceId ? { workspaceId: grant.workspaceId } : {}),
+    ...(status.workspaceMcpUrl ? { workspaceMcpUrl: status.workspaceMcpUrl } : {}),
     url,
   };
 }
