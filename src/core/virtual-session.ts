@@ -6,7 +6,11 @@ import {
   type ToolWithSource,
 } from "./aggregator.js";
 import { SessionAccessCounter } from "./session-counter.js";
-import { type ServerCapabilityCache, UpstreamManager } from "./upstream.js";
+import {
+  type ServerCapabilityCache,
+  type UpstreamServer,
+  UpstreamManager,
+} from "./upstream.js";
 
 export interface CachedCapabilities {
   tools: Map<string, ToolWithSource>;
@@ -20,6 +24,23 @@ export interface VirtualSession {
   upstreamManager: UpstreamManager;
   aggregator: Aggregator;
   createdAt: number;
+  clientInfo?: VirtualSessionClientInfo;
+}
+
+export interface VirtualSessionClientInfo {
+  name: string;
+  version?: string;
+}
+
+export type VirtualSessionSnapshotState = "active" | "idle" | "expired";
+
+export interface VirtualSessionSnapshot {
+  id: string;
+  createdAt: number;
+  lastSeenAt: number;
+  state: VirtualSessionSnapshotState;
+  clientName?: string;
+  clientVersion?: string;
 }
 
 export interface VirtualSessionManagerOptions {
@@ -37,15 +58,17 @@ export class VirtualSessionManager {
   private cachedCapabilities: CachedCapabilities | null = null;
   private maxSessions: number;
   private verbose: boolean;
+  private readonly sessionTimeoutMs: number;
 
   constructor(options: VirtualSessionManagerOptions) {
     this.config = options.config;
     this.maxSessions = options.maxSessions;
     this.verbose = options.verbose ?? false;
+    this.sessionTimeoutMs = Math.max(0, options.sessionTimeout * 1000);
 
     this.sessionCounter = new SessionAccessCounter(options.sessionTimeout * 1000, (sessionId) => {
       this.log(`Session ${sessionId} timed out`);
-      this.cleanup(sessionId);
+      void this.cleanup(sessionId);
       options.onSessionCleanup?.(sessionId);
     });
   }
@@ -54,9 +77,12 @@ export class VirtualSessionManager {
     this.cachedCapabilities = capabilities;
   }
 
-  getOrCreate(sessionId: string): VirtualSession {
+  getOrCreate(sessionId: string, clientInfo?: VirtualSessionClientInfo): VirtualSession {
     const existing = this.sessions.get(sessionId);
     if (existing) {
+      if (clientInfo) {
+        existing.clientInfo = clientInfo;
+      }
       this.sessionCounter.access(sessionId);
       return existing;
     }
@@ -88,6 +114,7 @@ export class VirtualSessionManager {
       upstreamManager,
       aggregator,
       createdAt: Date.now(),
+      ...(clientInfo ? { clientInfo } : {}),
     };
 
     this.sessions.set(sessionId, session);
@@ -141,9 +168,49 @@ export class VirtualSessionManager {
     return Array.from(this.sessions.keys());
   }
 
+  /**
+   * Return the upstream records owned by active virtual sessions. The
+   * gateway combines these with its discovery snapshot for management views
+   * so on-demand connection failures are not hidden by the shared cache.
+   */
+  getUpstreamServers(): UpstreamServer[] {
+    return Array.from(this.sessions.values()).flatMap((session) => session.upstreamManager.getAll());
+  }
+
+  /**
+   * Return the small, browser-safe portion of session state needed by the
+   * management API. Upstream clients and aggregators are intentionally not
+   * exposed to callers taking a snapshot.
+   */
+  getSnapshots(now = Date.now()): VirtualSessionSnapshot[] {
+    return Array.from(this.sessions.values(), (session) => ({
+      id: session.id,
+      createdAt: session.createdAt,
+      lastSeenAt: this.sessionCounter.getLastAccess(session.id) ?? session.createdAt,
+      state: getSessionSnapshotState(
+        now,
+        this.sessionCounter.getLastAccess(session.id) ?? session.createdAt,
+        this.sessionTimeoutMs,
+      ),
+      ...(session.clientInfo?.name ? { clientName: session.clientInfo.name } : {}),
+      ...(session.clientInfo?.version ? { clientVersion: session.clientInfo.version } : {}),
+    }));
+  }
+
   private log(message: string): void {
     if (this.verbose) {
       console.error(`[session-manager] ${message}`);
     }
   }
+}
+
+function getSessionSnapshotState(
+  now: number,
+  lastSeenAt: number,
+  timeoutMs: number,
+): VirtualSessionSnapshotState {
+  const ageMs = Math.max(0, now - lastSeenAt);
+  if (ageMs >= timeoutMs) return "expired";
+  if (ageMs >= timeoutMs / 2) return "idle";
+  return "active";
 }

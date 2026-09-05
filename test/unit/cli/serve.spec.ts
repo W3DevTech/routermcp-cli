@@ -28,6 +28,12 @@ vi.mock("../../../src/core/gateway.js", () => ({
 
 vi.mock("../../../src/daemon/index.js", () => ({
   getProjectId: vi.fn(() => "test-project-id"),
+  isLoopbackHost: vi.fn(() => true),
+  acquireProfileLock: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+  getDaemonStatus: vi.fn(async () => ({ running: false })),
+  readRuntimeManifest: vi.fn(async () => null),
+  removeRuntimeManifest: vi.fn(async () => undefined),
+  matchesProcessIdentity: vi.fn(async () => false),
   getDaemonPaths: vi.fn(() => ({
     dir: "/tmp/daemon",
     pid: "/tmp/daemon/daemon.pid",
@@ -44,6 +50,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { serveCommand } from "../../../src/cli/serve.js";
 import { resolveConfigFromPath } from "../../../src/config/loader.js";
 import { createGateway } from "../../../src/core/gateway.js";
+import { acquireProfileLock, getDaemonStatus } from "../../../src/daemon/index.js";
 import { ConfigError, RouterMcpError } from "../../../src/utils/errors.js";
 
 describe("serveCommand", () => {
@@ -64,6 +71,10 @@ describe("serveCommand", () => {
     };
 
     vi.mocked(createGateway).mockReturnValue(mockGateway as never);
+    vi.mocked(acquireProfileLock).mockResolvedValue({
+      release: vi.fn(async () => undefined),
+    });
+    vi.mocked(getDaemonStatus).mockResolvedValue({ running: false });
     vi.mocked(resolveConfigFromPath).mockResolvedValue({
       config: {
         mcpServers: {

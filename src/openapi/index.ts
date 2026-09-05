@@ -3,6 +3,7 @@ export { OpenApiHandler } from "./handler.js";
 export type {
   CacheMetadata,
   OpenApiServerState,
+  OpenApiServerSnapshot,
   OpenApiServerStatus,
   OpenApiTool,
   ParameterLocation,

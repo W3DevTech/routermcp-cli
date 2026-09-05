@@ -3,9 +3,9 @@ import { getCurrentArgs, getCurrentCommand, main, parseArgs } from "../../../src
 
 describe("parseArgs", () => {
   describe("command detection", () => {
-    it("defaults to 'serve' when no command provided", () => {
+    it("defaults to 'connect' when no command provided", () => {
       const { command } = parseArgs([]);
-      expect(command).toBe("serve");
+      expect(command).toBe("connect");
     });
 
     it("parses 'serve' command", () => {
@@ -16,6 +16,11 @@ describe("parseArgs", () => {
     it("parses 'connect' command", () => {
       const { command } = parseArgs(["connect"]);
       expect(command).toBe("connect");
+    });
+
+    it("parses 'console' command", () => {
+      const { command } = parseArgs(["console"]);
+      expect(command).toBe("console");
     });
 
     it("parses 'config' command", () => {
@@ -134,6 +139,22 @@ describe("parseArgs", () => {
       expect(command).toBe("connect");
       expect(options.config).toBe("config.jsonc");
       expect(options.verbose).toBe(true);
+    });
+  });
+
+  describe("console options", () => {
+    it("parses console handoff options", () => {
+      const { command, options } = parseArgs([
+        "console",
+        "--project",
+        "/tmp/project",
+        "--open",
+        "--json",
+      ]);
+      expect(command).toBe("console");
+      expect(options.project).toBe("/tmp/project");
+      expect(options.open).toBe(true);
+      expect(options.json).toBe(true);
     });
   });
 
@@ -331,7 +352,7 @@ describe("parseArgs", () => {
 
     it("handles empty args array", () => {
       const { command, options } = parseArgs([]);
-      expect(command).toBe("serve");
+      expect(command).toBe("connect");
       expect(options).toEqual({});
     });
 
@@ -340,6 +361,12 @@ describe("parseArgs", () => {
       expect(command).toBe("serve");
       expect(options.http).toBe(5000);
       expect(options.verbose).toBe(true);
+    });
+
+    it("uses the reusable bridge for a bare config selection", () => {
+      const { command, options } = parseArgs(["--config", "routermcp.jsonc"]);
+      expect(command).toBe("connect");
+      expect(options.config).toBe("routermcp.jsonc");
     });
   });
 });

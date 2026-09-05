@@ -6,6 +6,8 @@ description: Connect to a shared gateway daemon
 # connect Command
 
 Connect to a shared gateway daemon. Multiple MCP clients can share a single gateway instance.
+The daemon is started automatically on the first connection and reused by later
+connections for the same project and configuration.
 
 ## Usage
 
@@ -21,14 +23,17 @@ routermcp connect -v                 # Verbose logging
 |--------|-------------|
 | `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
 | `--project <path>` | Project directory for daemon lookup (default: current directory) |
+| `--host <host>` | Loopback bind host for a newly started daemon |
+| `--port <port>` | Preferred daemon port (falls back when occupied) |
+| `--json` | Print machine-readable daemon status when used with lifecycle commands |
 | `-v, --verbose` | Enable verbose logging |
 
 ## Why Use Daemon Mode?
 
 - **Resource Sharing**: Multiple clients share one gateway instance
 - **Reduced Overhead**: Upstream servers connect once, not per-client
-- **Session Persistence**: Sessions survive client disconnections
-- **Background Management**: Auto-start and idle shutdown
+- **Session Isolation**: Each bridge receives an isolated MCP session
+- **Background Management**: Auto-start and reuse of one managed process
 
 ## How It Works
 
@@ -47,17 +52,23 @@ routermcp connect -v                 # Verbose logging
 1. Run `routermcp connect`
 2. If no daemon exists, one is automatically started
 3. Your stdio is proxied to the daemon's HTTP endpoint
-4. When all clients disconnect, daemon shuts down after 10 seconds idle
+4. The daemon remains available for subsequent clients until it is explicitly stopped
 
 ## Daemon Files
 
-Daemon state is stored in `~/.routermcp/projects/<project-id>/`:
+Daemon state is stored in a platform-specific runtime directory, per project
+and configuration profile. On Linux, the default is
+`~/.local/state/routermcp/projects/<project-id>/profiles/<profile-id>/` (or the
+same path below `XDG_STATE_HOME` when it is set). See [Daemon Mode](../advanced/daemon-mode.md#file-locations) for macOS and Windows paths.
 
 | File | Description |
 |------|-------------|
-| `daemon.pid` | Process ID of running daemon |
-| `daemon.port` | HTTP port the daemon listens on |
-| `daemon.socket` | Unix socket path (non-Windows) |
+| `runtime.json` | Atomic, authenticated runtime manifest |
+| `daemon.lock` | Per-profile startup/lifecycle lock |
+| `daemon.log` | Daemon stderr and startup diagnostics |
+
+Legacy `daemon.pid`, `daemon.port`, and `daemon.sock` files may be cleaned up
+when upgrading from an older CLI, but are not used for connection routing.
 
 ## Example Workflow
 
@@ -67,11 +78,8 @@ Daemon state is stored in `~/.routermcp/projects/<project-id>/`:
 cd /my/project
 routermcp connect -v
 
-# Output:
-# [connect] No existing daemon found, starting new daemon...
-# [connect] Daemon started on port 5151
-# [connect] Connected to daemon
-# MCP Gateway ready (stdio mode)
+# Output (diagnostics are written to stderr):
+# Connected to daemon at /my/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
 ```
 
 ### Terminal 2: Second Client
@@ -81,53 +89,58 @@ cd /my/project
 routermcp connect -v
 
 # Output:
-# [connect] Found existing daemon on port 5151
-# [connect] Connected to daemon
-# MCP Gateway ready (stdio mode)
+# Connected to daemon at /my/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
 ```
 
 Both clients now share the same gateway instance!
 
-## Manual Daemon Mode
+## Explicit Daemon Lifecycle
 
-You can also start the daemon manually:
+Use the daemon commands when a process should be started or stopped without
+opening a stdio bridge:
 
 ```bash
-# Start daemon explicitly
-routermcp serve --daemon-mode --http 5151
-
-# Then connect from another terminal
-routermcp connect
+routermcp start
+routermcp status
+routermcp stop
 ```
 
-## Idle Shutdown
+## Stopping the Daemon
 
-The daemon automatically shuts down after **10 seconds** with no active connections. This prevents orphaned processes while allowing brief reconnection windows.
+The managed daemon is persistent. Stop it explicitly when it is no longer
+needed:
+
+```bash
+routermcp stop
+```
+
+The stdio bridge releases its lease and MCP session when the client exits. A
+lease heartbeat and expiry protect the daemon from retaining a connection when
+a client crashes; releasing a lease does not stop the daemon.
 
 ## Troubleshooting
 
 ### Stale Daemon Files
 
-If the daemon crashed, stale PID files may exist:
+If the daemon crashed, the next `connect` or `start` invocation validates the
+runtime manifest and replaces stale state:
 
 ```bash
-# Check if daemon is actually running
-ps aux | grep routermcp
+# Check the daemon status and manifest
+routermcp status --json
 
-# If not running, remove stale files
-rm -rf ~/.routermcp/projects/<project-id>
+# Stop any known instance and start a fresh one
+routermcp stop
+routermcp start
 ```
 
 ### Port Already in Use
 
-If port 5151 is occupied:
+If the preferred port `7858` is occupied, the supervisor automatically selects
+the next available loopback port. Inspect the selected endpoint with:
 
-```jsonc
-{
-  "httpServer": {
-    "port": 5152
-  }
-}
+```bash
+routermcp status --json
 ```
 
 > **See Also**: [Daemon Mode Deep Dive](../advanced/daemon-mode.md), [serve Command](serve.md)

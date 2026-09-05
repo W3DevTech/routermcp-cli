@@ -5,14 +5,18 @@ description: Configure HTTP server and session management
 
 # HTTP & Sessions
 
-Configure the HTTP server and session management for HTTP mode.
+Configure the HTTP server and session management for HTTP mode. The managed
+daemon binds to loopback and exposes its authenticated MCP endpoint over HTTP;
+standalone `serve --http` remains available for foreground/debug use. The
+browser management UI is hosted separately at `https://cli.routermcp.com` and
+is not bundled with the CLI.
 
 ## HTTP Server Configuration
 
 ```jsonc
 {
   "httpServer": {
-    "port": 5151,        // Default: 5151
+    "port": 5151,        // Standalone/tunnel default; managed daemon prefers 7858 when unset
     "host": "127.0.0.1"  // Default: 127.0.0.1
   }
 }
@@ -20,8 +24,14 @@ Configure the HTTP server and session management for HTTP mode.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `port` | number | 5151 | HTTP server port |
+| `port` | number | 5151 | Standalone/tunnel HTTP port; managed commands use it as their preferred port |
 | `host` | string | 127.0.0.1 | Host to bind to |
+
+The managed daemon uses `httpServer.port` as its preferred port when it is set;
+otherwise it prefers loopback port `7858`. A `--port` flag overrides the
+configured preference. If the preferred port is occupied, the daemon advances
+to another available port and publishes the actual value in `runtime.json` and
+`status --json`. Managed daemon hosts must be loopback addresses.
 
 ## Session Configuration
 
@@ -65,6 +75,65 @@ In HTTP mode, RouterMCP manages virtual sessions:
 2. **Activity**: Each request resets the session timeout
 3. **Idle Timeout**: Session cleaned up after `timeout` seconds of inactivity
 4. **Upstream Disconnection**: Idle upstream connections disconnect after `subprocess_timeout` seconds
+
+The `connect` bridge sends `DELETE /mcp` when its stdio input closes so the
+daemon can immediately release that virtual session. If a client crashes before
+cleanup, its bridge lease expires after the heartbeat TTL and no longer counts
+as an active connection.
+
+## Managed daemon endpoint
+
+The managed daemon publishes `mcpUrl`, `controlUrl`, and a private local bearer
+token in its per-profile runtime state. The token protects health, bridge lease,
+and MCP requests; it is not included in `status --json` output. Browser-based
+management must not read this private token from the filesystem. Use
+`routermcp console` to have the CLI exchange it locally for a separate,
+short-lived browser credential.
+
+The local management API is served on loopback under `/api/v1/*` and is
+authenticated with the daemon's private token. The hosted console calls these
+endpoints directly from the browser; the hosted service does not proxy local
+traffic. Current endpoints include:
+
+- `GET /api/v1/health`
+- `GET /api/v1/status`
+- `GET /api/v1/servers`
+- `GET /api/v1/sessions`
+- `GET /api/v1/metrics`
+- `GET /api/v1/events`
+- `POST /api/v1/restart`
+
+The CLI-only handoff endpoint is separate from those management routes:
+
+- `POST /api/v1/management/handoff` — mint a short-lived management credential
+  using the private local token
+
+The handoff endpoint requires the private local token and never accepts a
+management credential. A management credential can read the control-plane
+snapshots and request a restart, but cannot access `/mcp`, health, or bridge
+leases. Credentials are kept in daemon memory, expire after five minutes by
+default (maximum fifteen minutes), and are discarded when the daemon stops.
+
+Run:
+
+```bash
+routermcp console       # print a hosted-console handoff URL
+routermcp console --open
+```
+
+The URL carries the credential in its `#rmcp=...` fragment. Browsers do not
+send fragments to the hosted website, but the complete URL is still sensitive
+until it expires and should not be shared or logged.
+
+The servers snapshot includes both configured MCP upstreams and OpenAPI
+adapters. OpenAPI entries expose their resolved base URL, tool count, loading
+or failure state, and last check timing; authentication configuration and
+generated tool details are never returned.
+
+Peer mutations and device-pairing routes are intentionally not exposed in this
+phase. The separately reviewed [scoped-pairing contract](../advanced/device-pairing.md)
+now defines the process-local grant and challenge model that a later route
+implementation will use.
 
 ## Upstream Connection Management
 
@@ -157,7 +226,7 @@ When using tunnel commands, HTTP settings are automatically applied:
 
 ```bash
 routermcp tunnel --tunnel=cloudflare
-# Uses httpServer.port from config, defaults to 5151
+# Uses httpServer.port from config; this is separate from the managed daemon's default port
 ```
 
 Override with CLI:

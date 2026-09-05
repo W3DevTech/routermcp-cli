@@ -5,16 +5,18 @@ description: Start the MCP gateway server
 
 # serve Command
 
-Start the MCP gateway. This is the default command when you run `routermcp` without arguments.
+Start the MCP gateway in foreground/debug mode. The default `routermcp`
+invocation uses [`connect`](connect.md), which starts or reuses a managed
+daemon for the current project.
 
 ## Usage
 
 ```bash
-routermcp                           # Start with defaults (stdio mode)
+routermcp                           # Connect to the managed daemon (default)
 routermcp serve                     # Explicit serve command
-routermcp --http 3000               # HTTP mode on port 3000
-routermcp -c /path/to/config.jsonc  # Custom config file
-routermcp -v                        # Verbose logging
+routermcp serve --http 3000         # HTTP mode on port 3000
+routermcp serve -c /path/to/config.jsonc  # Custom config file
+routermcp serve -v                  # Verbose logging
 ```
 
 ## Options
@@ -24,8 +26,8 @@ routermcp -v                        # Verbose logging
 | `-c, --config <path>` | Path to config file (default: `./routermcp.jsonc`) |
 | `--stdio` | Use stdio transport (default) |
 | `--http <port>` | Use HTTP streamable transport on specified port |
-| `--daemon-mode` | Run as background daemon |
-| `--socket <path>` | Unix socket path (daemon mode, non-Windows) |
+| `--daemon-mode` | Internal managed-daemon mode; normally use `start` or `connect` |
+| `--socket <path>` | Legacy state path; managed connections use loopback HTTP |
 | `--clear` | Clear OpenAPI cache before starting |
 | `-v, --verbose` | Enable verbose logging |
 
@@ -34,7 +36,7 @@ routermcp -v                        # Verbose logging
 ### Stdio Mode (Default)
 
 ```bash
-routermcp
+routermcp serve
 ```
 
 Uses stdin/stdout for MCP protocol communication. This is the standard mode for MCP clients like Claude Code or Cursor.
@@ -42,7 +44,7 @@ Uses stdin/stdout for MCP protocol communication. This is the standard mode for 
 ### HTTP Mode
 
 ```bash
-routermcp --http 3000
+routermcp serve --http 3000
 ```
 
 Starts an HTTP server on the specified port. Clients connect to `http://localhost:3000/mcp`.
@@ -62,7 +64,7 @@ Starts an HTTP server on the specified port. Clients connect to `http://localhos
 
 ```bash
 # Start gateway with verbose output
-routermcp -v
+routermcp serve -v
 
 # Output:
 # [upstream] Discovering capabilities from 2 servers (concurrency: 5)
@@ -76,22 +78,30 @@ routermcp -v
 ### HTTP Mode with Custom Port
 
 ```bash
-routermcp --http 8080 -v
+routermcp serve --http 8080 -v
 ```
 
 ### Custom Config Path
 
 ```bash
-routermcp -c ./configs/production.jsonc
+routermcp serve -c ./configs/production.jsonc
 ```
 
-### Daemon Mode
+### Managed Daemon Mode
 
-For running as a background process (used by `connect` command):
+Use `connect` (or the explicit daemon commands) to start and reuse one
+authenticated loopback HTTP process:
 
 ```bash
-routermcp serve --daemon-mode --http 5151
+routermcp connect
+routermcp start
+routermcp status
+routermcp stop
 ```
+
+The CLI stores an atomic runtime manifest per project/configuration profile and
+verifies the process identity and authenticated health descriptor before reuse.
+The managed bridge always uses TCP/HTTP; Unix socket files are not used.
 
 ## Session Management
 

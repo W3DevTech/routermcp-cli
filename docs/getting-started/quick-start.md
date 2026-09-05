@@ -36,24 +36,22 @@ This configures a single filesystem MCP server that exposes the current director
 routermcp
 ```
 
-That's it! The gateway is now running in stdio mode, ready to accept MCP connections.
+That's it! RouterMCP has started (or reused) the managed gateway daemon and is
+bridging this command's stdio to its authenticated loopback HTTP endpoint.
+Use `routermcp serve` when you want a standalone foreground stdio process.
 
 ## Step 3: Verify It's Working
 
 With verbose logging enabled, you'll see the discovery process:
 
 ```bash
-routermcp -v
+routermcp connect -v
 ```
 
 Output:
 ```
-[upstream] Discovering capabilities from 1 servers (concurrency: 5)
-[upstream] Connecting to filesystem...
-[upstream] Discovered filesystem: 5 tools, 0 resources, 0 prompts
-[gateway] Aggregated: 5 tools, 0 resources, 0 prompts
-[gateway] Gateway running
-MCP Gateway ready (stdio mode)
+[connect] Using config: /path/to/routermcp.jsonc
+Connected to daemon at /path/to/project (pid: 12345, url: http://127.0.0.1:7858/mcp)
 ```
 
 ## Step 4: Connect an MCP Client
@@ -77,8 +75,8 @@ Now that you have a basic gateway running:
 
 1. **Add more servers**: See [Server Configuration](../configuration/servers.md)
 2. **Add filtering**: See [Filtering](../configuration/filtering.md)
-3. **Use HTTP mode**: `routermcp --http 3000`
-4. **Try daemon mode**: `routermcp connect` for shared access
+3. **Use HTTP mode**: `routermcp serve --http 3000`
+4. **Inspect daemon mode**: `routermcp status` for the shared process
 
 ## Common Starting Points
 
@@ -117,7 +115,7 @@ Now that you have a basic gateway running:
 ### HTTP Mode
 
 ```bash
-routermcp --http 3000
+routermcp serve --http 3000
 ```
 
 Then connect clients to `http://localhost:3000/mcp`.

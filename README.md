@@ -47,6 +47,7 @@ Full documentation is available in the [docs/](./docs/) folder:
 - **Commands**
   - [serve](./docs/commands/serve.md) - Start the gateway
   - [connect](./docs/commands/connect.md) - Daemon mode
+  - [console](./docs/commands/console.md) - Hosted management console
   - [proxy](./docs/commands/proxy.md) - Stdio-to-HTTP proxy
   - [tunnel](./docs/commands/tunnel.md) - Public tunnels
   - [config](./docs/commands/config.md) - Interactive wizard
@@ -65,6 +66,7 @@ Full documentation is available in the [docs/](./docs/) folder:
 - **Advanced**
   - [Code Mode](./docs/advanced/code-mode.md) - JavaScript sandbox
   - [Daemon Mode](./docs/advanced/daemon-mode.md) - Process sharing
+  - [Device Pairing](./docs/advanced/device-pairing.md) - Hosted-console pairing contract
   - [Multiple Servers](./docs/advanced/multiple-servers.md) - Aggregation
   - [Security](./docs/advanced/security.md) - Best practices
 
@@ -79,6 +81,7 @@ Full documentation is available in the [docs/](./docs/) folder:
 - **Code Mode** - Execute JavaScript in a secure sandbox with tool access
 - **Session Management** - HTTP multiplexing with isolated sessions
 - **Daemon Mode** - Shared gateway process across multiple clients
+- **Hosted Management UI** - Browser console for stats and future peering controls at `https://cli.routermcp.com`
 - **OpenAPI Integration** - Convert REST APIs to MCP tools
 - **Stdio-to-HTTP Proxy** - Expose stdio servers over HTTP
 - **Tunnel Support** - Cloudflare and ngrok tunnels for public access

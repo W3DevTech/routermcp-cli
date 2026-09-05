@@ -262,9 +262,10 @@ OpenAPI specs are cached to avoid re-parsing. Clear the cache:
 routermcp serve --clear
 ```
 
-Or delete cache manually:
+Or delete the OpenAPI cache manually (after stopping RouterMCP):
+
 ```bash
-rm -rf ~/.routermcp/cache/
+rm -rf -- ~/.config/routermcp/openapi-cache/
 ```
 
 ## Parameter Mapping

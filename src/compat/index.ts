@@ -190,6 +190,7 @@ export type FetchHandler = (request: Request) => Response | Promise<Response>;
  */
 export interface ServeOptions {
   port: number;
+  host?: string;
   fetch: FetchHandler;
 }
 
@@ -199,6 +200,8 @@ export interface ServeOptions {
 export interface ServerHandle {
   stop(): void;
   port: number;
+  /** Resolves once the underlying listener is bound, or rejects on bind error. */
+  ready?: Promise<number>;
 }
 
 /**
@@ -206,7 +209,23 @@ export interface ServerHandle {
  */
 export function serve(options: ServeOptions): ServerHandle {
   if (isBun) {
-    return (globalThis.Bun as any).serve(options);
+    const server = (globalThis.Bun as any).serve({
+      port: options.port,
+      hostname: options.host,
+      fetch: options.fetch,
+    });
+    const boundPort = server.port ?? options.port;
+
+    // Bun's Server methods may be non-enumerable and may depend on the
+    // original receiver. Do not spread the server object: expose an explicit
+    // wrapper so lifecycle callers can always invoke stop() safely.
+    return {
+      port: boundPort,
+      ready: Promise.resolve(boundPort),
+      stop: () => {
+        server.stop();
+      },
+    };
   }
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -245,12 +264,31 @@ export function serve(options: ServeOptions): ServerHandle {
     }
   });
 
-  server.listen(options.port);
+  let resolveReady: (port: number) => void = () => undefined;
+  let rejectReady: (error: Error) => void = () => undefined;
+  const ready = new Promise<number>((resolveReadyPromise, rejectReadyPromise) => {
+    resolveReady = resolveReadyPromise;
+    rejectReady = rejectReadyPromise;
+  });
+
+  server.once("listening", () => {
+    const address = server.address();
+    if (address && typeof address === "object") {
+      resolveReady(address.port);
+    } else {
+      rejectReady(new Error("HTTP server did not expose a bound address"));
+    }
+  });
+  server.once("error", (error) => {
+    rejectReady(error instanceof Error ? error : new Error(String(error)));
+  });
+  server.listen(options.port, options.host);
 
   return {
     stop() {
       server.close();
     },
     port: options.port,
+    ready,
   };
 }

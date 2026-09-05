@@ -135,7 +135,7 @@ describe("Aggregator", () => {
       expect(prompts.map((p) => p.name)).toEqual(["prompt1", "prompt2"]);
     });
 
-    it("throws on tool name collision", () => {
+    it("disambiguates tool name collisions deterministically", () => {
       const servers = [
         createMockServer("server1", {
           tools: [
@@ -152,10 +152,15 @@ describe("Aggregator", () => {
       const upstreamManager = createMockUpstreamManager(servers);
       const aggregator = new Aggregator(upstreamManager);
 
-      expect(() => aggregator.refresh()).toThrow(/duplicate_tool/);
+      aggregator.refresh();
+
+      const tools = aggregator.getTools();
+      expect(tools).toHaveLength(2);
+      expect(tools[0]?.name).toBe("duplicate_tool");
+      expect(tools[1]?.name).toMatch(/^duplicate_tool_[0-9a-f]{4}$/);
     });
 
-    it("throws on resource URI collision", () => {
+    it("disambiguates resource URI collisions deterministically", () => {
       const servers = [
         createMockServer("server1", {
           resources: [{ uri: "file:///same/path", name: "Resource 1" }],
@@ -168,10 +173,15 @@ describe("Aggregator", () => {
       const upstreamManager = createMockUpstreamManager(servers);
       const aggregator = new Aggregator(upstreamManager);
 
-      expect(() => aggregator.refresh()).toThrow();
+      aggregator.refresh();
+
+      const resources = aggregator.getResources();
+      expect(resources).toHaveLength(2);
+      expect(resources[0]?.uri).toBe("file:///same/path");
+      expect(resources[1]?.uri).toMatch(/^file:\/\/\/same\/path_[0-9a-f]{4}$/);
     });
 
-    it("throws on prompt name collision", () => {
+    it("disambiguates prompt name collisions deterministically", () => {
       const servers = [
         createMockServer("server1", {
           prompts: [{ name: "same_prompt", description: "Prompt 1" }],
@@ -184,7 +194,12 @@ describe("Aggregator", () => {
       const upstreamManager = createMockUpstreamManager(servers);
       const aggregator = new Aggregator(upstreamManager);
 
-      expect(() => aggregator.refresh()).toThrow();
+      aggregator.refresh();
+
+      const prompts = aggregator.getPrompts();
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]?.name).toBe("same_prompt");
+      expect(prompts[1]?.name).toMatch(/^same_prompt_[0-9a-f]{4}$/);
     });
 
     it("ignores disabled servers", () => {

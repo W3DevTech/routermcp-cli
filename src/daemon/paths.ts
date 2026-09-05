@@ -1,8 +1,16 @@
 import { resolve } from "node:path";
-import { getDaemonDir } from "./project.js";
+import { getProfileDir, getProfileId } from "./project.js";
 
 export interface DaemonPaths {
   dir: string;
+  /** Project directory used when launching the daemon process. */
+  projectPath: string;
+  /** Stable profile identifier used to isolate runtime state. */
+  profileId: string;
+  /** Canonical atomic runtime manifest path. */
+  runtimeManifest: string;
+  /** Per-profile startup lock path. */
+  lock: string;
   socket: string;
   port: string;
   pid: string;
@@ -10,15 +18,25 @@ export interface DaemonPaths {
   configPath: string;
 }
 
-export function getDaemonPaths(projectId: string, configPath: string): DaemonPaths {
-  const dir = getDaemonDir(projectId);
+export function getDaemonPaths(
+  projectId: string,
+  configPath: string,
+  projectPath: string = process.cwd(),
+): DaemonPaths {
+  const profileId = getProfileId(projectId, configPath);
+  const dir = getProfileDir(projectId, configPath);
+  const runtimeManifest = resolve(dir, "runtime.json");
   return {
     dir,
+    projectPath: resolve(projectPath),
+    profileId,
+    runtimeManifest,
+    lock: resolve(dir, "daemon.lock"),
     socket: resolve(dir, "daemon.sock"),
     port: resolve(dir, "daemon.port"),
     pid: resolve(dir, "daemon.pid"),
     log: resolve(dir, "daemon.log"),
-    configPath,
+    configPath: resolve(configPath),
   };
 }
 

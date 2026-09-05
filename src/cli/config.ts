@@ -10,6 +10,7 @@ import {
   getConfigPathForScope,
   getScopeLabel,
   loadConfig,
+  resolveConfigPathForScope,
 } from "../config/loader.js";
 import type { ConfigScope, RouterMcpConfig, ServerConfig } from "../config/types.js";
 import { getProjectId } from "../daemon/project.js";
@@ -57,7 +58,7 @@ export async function configCommand(): Promise<void> {
   p.intro(`RouterMCP Configuration Wizard [${scopeLabel}]`);
 
   // Check for existing config at the selected scope
-  const configPath = getConfigPathForScope(scope);
+  const configPath = await resolveConfigPathForScope(scope);
   let config: RouterMcpConfig = { mcpServers: {} };
   let existingPath: string | null = null;
 
@@ -3060,7 +3061,7 @@ function parseCommandString(cmd: string): { command: string; args: string[] } {
  * Load config for a specific scope, returning empty config if none exists.
  */
 async function loadConfigForScope(scope: ConfigScope): Promise<RouterMcpConfig> {
-  const configPath = getConfigPathForScope(scope);
+  const configPath = await resolveConfigPathForScope(scope);
 
   try {
     // Check both .jsonc and .json variants

@@ -16,6 +16,7 @@ export default defineConfig({
       exclude: [
         "src/cli/serve.ts",
         "src/cli/connect.ts",
+        "src/cli/daemon.ts",
         "src/cli/config.ts",
         "src/cli/tunnel.ts",
         "src/cli/proxy.ts",

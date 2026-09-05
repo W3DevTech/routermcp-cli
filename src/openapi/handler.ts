@@ -5,7 +5,7 @@ import { clearAllCache, isCacheValid, loadFromCache, saveToCache } from "./cache
 import { convertSpecToTools } from "./converter.js";
 import { executeHttpRequest } from "./executor.js";
 import { extractBaseUrl, parseOpenApiSpec } from "./parser.js";
-import type { OpenApiServerState, OpenApiTool } from "./types.js";
+import type { OpenApiServerSnapshot, OpenApiServerState, OpenApiTool } from "./types.js";
 
 export class OpenApiHandler {
   private servers: Map<string, OpenApiServerState> = new Map();
@@ -28,6 +28,7 @@ export class OpenApiHandler {
         config: serverConfig,
         status: "pending",
         tools: [],
+        ...(serverConfig.baseUrl ? { baseUrl: serverConfig.baseUrl } : {}),
       });
     }
   }
@@ -57,6 +58,9 @@ export class OpenApiHandler {
 
   private async initializeServer(server: OpenApiServerState): Promise<void> {
     server.status = "loading";
+    const checkedAt = Date.now();
+    const startedAt = performance.now();
+    server.lastCheckedAt = checkedAt;
 
     try {
       const specSource = server.config.spec;
@@ -64,6 +68,7 @@ export class OpenApiHandler {
       if (await isCacheValid(server.name, specSource)) {
         this.log(`Loading ${server.name} from cache`);
         server.tools = await loadFromCache(server.name);
+        server.baseUrl = server.config.baseUrl ?? server.tools[0]?.execution.baseUrl;
         server.status = "ready";
         return;
       }
@@ -84,6 +89,7 @@ export class OpenApiHandler {
       await saveToCache(server.name, specSource, tools, this.verbose);
 
       server.tools = tools;
+      server.baseUrl = baseUrl;
       server.status = "ready";
     } catch (err) {
       server.status = "error";
@@ -92,6 +98,9 @@ export class OpenApiHandler {
       console.error(
         `[openapi] Warning: Failed to initialize ${server.name}: ${server.error.message}`,
       );
+    } finally {
+      server.lastCheckedAt = checkedAt;
+      server.lastLatencyMs = Math.max(0, Math.round(performance.now() - startedAt));
     }
   }
 
@@ -180,6 +189,23 @@ export class OpenApiHandler {
       failedServers: servers.filter((s) => s.status === "error").length,
       totalTools: this.toolRegistry.size,
     };
+  }
+
+  /**
+   * Return only the OpenAPI state needed by the local management API. Auth
+   * configuration, generated tools, and spec contents stay inside the
+   * handler and are never exposed as part of a server snapshot.
+   */
+  getSnapshots(): OpenApiServerSnapshot[] {
+    return Array.from(this.servers.values(), (server) => ({
+      name: server.name,
+      status: server.status,
+      ...(server.baseUrl ? { baseUrl: server.baseUrl } : {}),
+      toolCount: server.tools.length,
+      ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
+      ...(server.lastLatencyMs !== undefined ? { lastLatencyMs: server.lastLatencyMs } : {}),
+      ...(server.error ? { lastError: server.error.message } : {}),
+    }));
   }
 
   private log(message: string): void {

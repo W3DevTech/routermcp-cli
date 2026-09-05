@@ -4,6 +4,7 @@ import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import { file } from "../compat/index.js";
 import {
   getLegacyRouterMcpDir,
+  getLegacyProjectId,
   getProjectId,
   getRouterMcpDir,
   getUserGlobalConfigPath,
@@ -290,6 +291,24 @@ export function getConfigPathForScope(scope: ConfigScope, cwd: string = process.
 }
 
 /**
+ * Resolve the config path to read for a scope, including existing paths from
+ * before project IDs became content-addressed.
+ *
+ * A missing config always resolves to the current path. Callers that save a
+ * config should continue to use getConfigPathForScope so a legacy file is
+ * migrated to the new location on the next write.
+ */
+export async function resolveConfigPathForScope(
+  scope: ConfigScope,
+  cwd: string = process.cwd(),
+): Promise<string> {
+  const location = (await getConfigLocations(cwd)).find(
+    (candidate) => candidate.scope === scope && candidate.exists,
+  );
+  return location?.path ?? getConfigPathForScope(scope, cwd);
+}
+
+/**
  * Check if a config file exists at the given path (supports both .jsonc and .json).
  */
 async function checkConfigExists(basePath: string): Promise<string | null> {
@@ -330,14 +349,19 @@ async function checkConfigExists(basePath: string): Promise<string | null> {
  */
 export async function getConfigLocations(cwd: string = process.cwd()): Promise<ConfigLocation[]> {
   const projectId = getProjectId(cwd);
+  const legacyProjectId = getLegacyProjectId(cwd);
 
   // Define base paths for each scope
   const projectLocalBase = await findConfigFile(cwd);
   const userProjectBase = getUserProjectConfigPath(projectId);
+  const legacyXdgUserProjectBase = getUserProjectConfigPath(legacyProjectId);
   const userGlobalBase = getUserGlobalConfigPath();
 
   // Check existence for user-scoped configs (project-local already checked via findConfigFile)
   const userProjectPath = await checkConfigExists(userProjectBase);
+  const legacyXdgUserProjectPath = userProjectPath
+    ? null
+    : await checkConfigExists(legacyXdgUserProjectBase);
   const userGlobalPath = await checkConfigExists(userGlobalBase);
 
   // Back-compat: look for legacy ~/.routermcp locations for user-scoped configs.
@@ -347,11 +371,11 @@ export async function getConfigLocations(cwd: string = process.cwd()): Promise<C
   const legacyUserProjectBase = resolvePath(
     legacyRouterDir,
     "projects",
-    projectId,
+    legacyProjectId,
     "routermcp.jsonc",
   );
 
-  const legacyUserProjectPath = userProjectPath
+  const legacyUserProjectPath = userProjectPath || legacyXdgUserProjectPath
     ? null
     : await checkConfigExists(legacyUserProjectBase);
   const legacyUserGlobalPath = userGlobalPath
@@ -366,8 +390,12 @@ export async function getConfigLocations(cwd: string = process.cwd()): Promise<C
     },
     {
       scope: "user-project",
-      path: userProjectPath || legacyUserProjectPath || userProjectBase,
-      exists: userProjectPath !== null || legacyUserProjectPath !== null,
+      path:
+        userProjectPath || legacyXdgUserProjectPath || legacyUserProjectPath || userProjectBase,
+      exists:
+        userProjectPath !== null ||
+        legacyXdgUserProjectPath !== null ||
+        legacyUserProjectPath !== null,
     },
     {
       scope: "user-global",

@@ -7,6 +7,8 @@ description: Official documentation for RouterMCP CLI - MCP Gateway that aggrega
 
 RouterMCP is a powerful CLI MCP Gateway that aggregates multiple upstream MCP servers into a single unified interface with comprehensive filtering capabilities.
 
+The local daemon control plane is managed by the CLI, while the browser UI for stats and future peering controls lives at `https://cli.routermcp.com` and is not bundled in the binary.
+
 ## Why RouterMCP?
 
 - **Aggregate Multiple Servers**: Combine tools from multiple MCP servers into one endpoint
@@ -41,8 +43,10 @@ Installation, quick start guide, and your first configuration.
 ### [Commands](commands/serve.md)
 Complete reference for all CLI commands.
 
-- [serve](commands/serve.md) - Start the MCP gateway (default)
-- [connect](commands/connect.md) - Connect to daemon mode
+- [serve](commands/serve.md) - Start the MCP gateway in foreground/debug mode
+- [connect](commands/connect.md) - Connect to the managed daemon (default)
+- [console](commands/console.md) - Open the hosted management console
+- [daemon lifecycle](advanced/daemon-mode.md) - Start, inspect, stop, or restart the managed daemon
 - [proxy](commands/proxy.md) - Proxy stdio server over HTTP
 - [tunnel](commands/tunnel.md) - Expose via public tunnel
 - [config](commands/config.md) - Interactive configuration wizard
@@ -66,6 +70,7 @@ Deep dives into advanced features.
 - [Code Mode](advanced/code-mode.md) - JavaScript execution sandbox
 - [Tool Search Mode](advanced/tool-search.md) - Intelligent tool discovery
 - [Daemon Mode](advanced/daemon-mode.md) - Background process sharing
+- [Device Pairing](advanced/device-pairing.md) - Hosted-console pairing contract
 - [Multiple Servers](advanced/multiple-servers.md) - Aggregation strategies
 - [Security](advanced/security.md) - Security best practices
 

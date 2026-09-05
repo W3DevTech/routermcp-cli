@@ -36,8 +36,8 @@ describe("Multi-server filtering integration", () => {
   });
 });
 
-describe("Collision detection", () => {
-  it("throws error when tools collide without filtering", async () => {
+describe("Collision handling", () => {
+  it("starts with deterministic names when tools collide without filtering", async () => {
     const collisionConfig = join(FIXTURES_DIR, "collision-config.jsonc");
     const config = await loadConfig(collisionConfig);
 
@@ -47,7 +47,8 @@ describe("Collision detection", () => {
       verbose: false,
     });
 
-    await expect(gateway.start()).rejects.toThrow();
+    await gateway.start();
+    expect(gateway.getState()).toBe("running");
 
     try {
       await gateway.stop();

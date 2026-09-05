@@ -9,6 +9,14 @@ import {
   configRemoveCommand,
 } from "./config.js";
 import { type ConnectCommandOptions, connectCommand } from "./connect.js";
+import { consoleCommand } from "./console.js";
+import {
+  type DaemonCommandOptions,
+  restartCommand,
+  startCommand,
+  statusCommand,
+  stopCommand,
+} from "./daemon.js";
 import { doctorCommand } from "./doctor.js";
 import { oauthLoginCommand, oauthLogoutCommand, oauthStatusCommand } from "./oauth.js";
 import { type ProxyCommandOptions, proxyCommand } from "./proxy.js";
@@ -40,6 +48,8 @@ interface CliOptions extends ServeCommandOptions {
   telemetryAction?: TelemetryAction;
   configSubcommand?: ConfigSubcommand;
   toolsJson?: boolean;
+  json?: boolean;
+  open?: boolean;
 }
 
 type Command =
@@ -48,6 +58,11 @@ type Command =
   | "tunnel"
   | "proxy"
   | "connect"
+  | "console"
+  | "start"
+  | "status"
+  | "stop"
+  | "restart"
   | "doctor"
   | "oauth"
   | "telemetry"
@@ -95,13 +110,18 @@ export function parseArgs(args: string[]): {
   options: CliOptions;
 } {
   const options: CliOptions = {};
-  let command: Command = "serve";
+  // A bare invocation is an MCP client launch and should reuse the managed
+  // daemon. Foreground ownership remains available through an explicit
+  // `serve` command (or the explicit HTTP/daemon flags below).
+  let command: Command = "connect";
+  let explicitCommand = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     switch (arg) {
       case "config": {
+        explicitCommand = true;
         command = "config";
         // Check for subcommands: add, remove, list
         const nextArg = args[i + 1];
@@ -226,26 +246,57 @@ export function parseArgs(args: string[]): {
       }
 
       case "serve":
+        explicitCommand = true;
         command = "serve";
         break;
 
       case "tunnel":
+        explicitCommand = true;
         command = "tunnel";
         break;
 
       case "proxy":
+        explicitCommand = true;
         command = "proxy";
         break;
 
       case "connect":
+        explicitCommand = true;
         command = "connect";
         break;
 
+      case "console":
+        explicitCommand = true;
+        command = "console";
+        break;
+
+      case "start":
+        explicitCommand = true;
+        command = "start";
+        break;
+
+      case "status":
+        explicitCommand = true;
+        command = "status";
+        break;
+
+      case "stop":
+        explicitCommand = true;
+        command = "stop";
+        break;
+
+      case "restart":
+        explicitCommand = true;
+        command = "restart";
+        break;
+
       case "doctor":
+        explicitCommand = true;
         command = "doctor";
         break;
 
       case "tools": {
+        explicitCommand = true;
         command = "tools";
         while (i + 1 < args.length) {
           const opt = args[i + 1];
@@ -260,6 +311,7 @@ export function parseArgs(args: string[]): {
       }
 
       case "oauth": {
+        explicitCommand = true;
         command = "oauth";
         const subAction = args[++i];
         if (subAction === "status") {
@@ -281,6 +333,7 @@ export function parseArgs(args: string[]): {
       }
 
       case "telemetry": {
+        explicitCommand = true;
         command = "telemetry";
         const telemetryAction = args[++i];
         if (
@@ -300,18 +353,25 @@ export function parseArgs(args: string[]): {
       case "help":
       case "--help":
       case "-h":
+        explicitCommand = true;
         command = "help";
         break;
 
       case "version":
       case "--version":
-      case "-v":
+        explicitCommand = true;
         command = "version";
+        break;
+
+      case "-v":
+        options.verbose = true;
         break;
 
       case "--json":
         if (command === "tools") {
           options.toolsJson = true;
+        } else {
+          options.json = true;
         }
         break;
 
@@ -325,13 +385,24 @@ export function parseArgs(args: string[]): {
           options.proxyStdio = args[++i];
         } else {
           options.stdio = true;
+          if (!explicitCommand) command = "serve";
         }
         break;
 
       case "--http":
         options.http = Number.parseInt(args[++i], 10);
+        if (!explicitCommand) command = "serve";
         if (Number.isNaN(options.http)) {
           console.error("Error: --http requires a port number");
+          process.exit(1);
+        }
+        break;
+
+      case "--host":
+        options.host = args[++i];
+        if (!explicitCommand) command = "serve";
+        if (!options.host) {
+          console.error("Error: --host requires a host name");
           process.exit(1);
         }
         break;
@@ -413,14 +484,20 @@ export function parseArgs(args: string[]): {
 
       case "--daemon-mode":
         options.daemonMode = true;
+        if (!explicitCommand) command = "serve";
         break;
 
       case "--socket":
         options.socket = args[++i];
+        if (!explicitCommand) command = "serve";
         break;
 
       case "--clear":
         options.clearCache = true;
+        break;
+
+      case "--open":
+        options.open = true;
         break;
 
       default:
@@ -450,11 +527,16 @@ routermcp - MCP Gateway CLI
 
 USAGE:
   routermcp [command] [options]
-  routermcp -v, --version    Print version and exit
+  routermcp --version        Print version and exit
 
 COMMANDS:
-  serve     Start the MCP gateway (default)
+  serve     Start the MCP gateway in the foreground
   connect   Connect to gateway daemon (auto-starts if needed)
+  console   Open the hosted management console with a short-lived handoff
+  start     Start or reuse the profile daemon
+  status    Show daemon status
+  stop      Stop the profile daemon
+  restart   Restart the profile daemon
   proxy     Proxy a stdio MCP server over HTTP (SSE or Streamable HTTP)
   tunnel    Expose gateway via tunnel (Cloudflare, ngrok)
   config    Configuration management (wizard, add, remove, list)
@@ -468,14 +550,33 @@ SERVE OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --stdio               Use stdio transport (default)
   --http <port>         Use HTTP streamable transport on specified port
+  --host <host>         HTTP bind host (managed daemon must use loopback)
   --daemon-mode         Run as background daemon (for connect command)
-  --socket <path>       Unix socket path (daemon mode, non-Windows)
   --clear               Clear OpenAPI cache before starting (force re-parse)
   --verbose             Enable verbose logging
 
-CONNECT OPTIONS:
+  CONNECT OPTIONS:
   -c, --config <path>   Path to config file (default: ./routermcp.jsonc)
   --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
+  --verbose             Enable verbose logging
+
+  CONSOLE OPTIONS:
+  -c, --config <path>   Path to config file
+  --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
+  --open                Open the hosted console in the default browser
+  --json                Print the handoff as JSON
+  --verbose             Enable verbose logging
+
+DAEMON OPTIONS:
+  -c, --config <path>   Path to config file
+  --project <path>      Project directory (default: current directory)
+  --host <host>         HTTP bind host (managed daemon must use loopback)
+  --port <port>         Preferred daemon port (falls back when occupied)
+  --json                Print machine-readable status
   --verbose             Enable verbose logging
 
 PROXY OPTIONS:
@@ -533,7 +634,7 @@ TOOLS OPTIONS:
 
 EXAMPLES:
   # Serve (gateway mode)
-  routermcp                           Start gateway with default config (stdio mode)
+  routermcp                           Connect via the reusable daemon (auto-starts if needed)
   routermcp --http 3000               Start gateway with HTTP transport on port 3000
 
   # Connect (daemon mode - for multiple MCP clients)
@@ -611,8 +712,10 @@ export async function main(args: string[]): Promise<void> {
         config: options.config,
         stdio: options.stdio,
         http: options.http,
+        host: options.host,
         verbose: options.verbose,
         daemonMode: options.daemonMode,
+        project: options.project,
         socket: options.socket,
         clearCache: options.clearCache,
       });
@@ -650,8 +753,33 @@ export async function main(args: string[]): Promise<void> {
       await connectCommand({
         config: options.config,
         project: options.project,
+        host: options.host,
+        preferredPort: options.port,
         verbose: options.verbose,
       });
+      break;
+
+    case "console":
+      await consoleCommand({
+        ...daemonCommandOptions(options),
+        open: options.open,
+      });
+      break;
+
+    case "start":
+      await startCommand(daemonCommandOptions(options));
+      break;
+
+    case "status":
+      await statusCommand(daemonCommandOptions(options));
+      break;
+
+    case "stop":
+      await stopCommand(daemonCommandOptions(options));
+      break;
+
+    case "restart":
+      await restartCommand(daemonCommandOptions(options));
       break;
 
     case "config": {
@@ -713,4 +841,15 @@ export async function main(args: string[]): Promise<void> {
       });
       break;
   }
+}
+
+function daemonCommandOptions(options: CliOptions): DaemonCommandOptions {
+  return {
+    config: options.config,
+    project: options.project,
+    host: options.host,
+    preferredPort: options.port,
+    verbose: options.verbose,
+    json: options.json,
+  };
 }
