@@ -198,6 +198,88 @@ describe("CLI daemon reuse", () => {
     }
   }, 45_000);
 
+  it("isolates tools for two workspaces behind one host process", async () => {
+    const secondProjectDir = await createTempDir();
+    const secondConfigPath = resolve(secondProjectDir, "routermcp.jsonc");
+    const everythingEntrypoint = resolve(
+      process.cwd(),
+      "node_modules/@modelcontextprotocol/server-everything/dist/stdio.js",
+    );
+    const upstream = {
+      transport: "stdio" as const,
+      command: process.execPath,
+      args: [everythingEntrypoint],
+    };
+    await writeConfigFile(projectDir, {
+      mcpServers: { shared: { ...upstream, allowedTools: ["echo"] } },
+    });
+    await writeConfigFile(secondProjectDir, {
+      mcpServers: { shared: { ...upstream, allowedTools: ["add"] } },
+    });
+
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
+
+    try {
+      const first = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+      const firstStatus = JSON.parse(first.stdout) as { pid?: number; instanceId?: string };
+
+      const second = await runCli(
+        entrypoint,
+        ["start", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(second.code, `${second.stdout}\n${second.stderr}`).toBe(0);
+      const secondStatus = JSON.parse(second.stdout) as { pid?: number; instanceId?: string };
+      expect(secondStatus.pid).toBe(firstStatus.pid);
+      expect(secondStatus.instanceId).toBe(firstStatus.instanceId);
+
+      const request = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n';
+      const firstTools = await runCli(
+        entrypoint,
+        ["connect", "--config", configPath, "--project", projectDir],
+        env,
+        request,
+      );
+      const secondTools = await runCli(
+        entrypoint,
+        ["connect", "--config", secondConfigPath, "--project", secondProjectDir],
+        env,
+        request,
+      );
+      expect(firstTools.code, `${firstTools.stdout}\n${firstTools.stderr}`).toBe(0);
+      expect(secondTools.code, `${secondTools.stdout}\n${secondTools.stderr}`).toBe(0);
+
+      const parseTools = (result: CliResult) => {
+        const line = result.stdout.trim().split("\n").at(-1);
+        return (JSON.parse(line ?? "{}") as { result?: { tools?: Array<{ name: string }> } }).result
+          ?.tools?.map((tool) => tool.name) ?? [];
+      };
+      expect(parseTools(firstTools)).toContain("echo");
+      expect(parseTools(firstTools)).not.toContain("add");
+      expect(parseTools(secondTools)).toContain("add");
+      expect(parseTools(secondTools)).not.toContain("echo");
+    } finally {
+      const stopped = await runCli(
+        entrypoint,
+        ["stop", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
+      await cleanupTempDir(secondProjectDir);
+    }
+  }, 60_000);
+
 });
 
 async function runCli(

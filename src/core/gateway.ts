@@ -43,7 +43,7 @@ export type GatewayState = "stopped" | "starting" | "running" | "stopping" | "er
 
 export interface GatewayOptions {
   config: RouterMcpConfig;
-  mode: "stdio" | "http-streamable";
+  mode: "stdio" | "http-streamable" | "embedded";
   httpPort?: number;
   httpHost?: string;
   httpOptions?: HttpServerOptions;
@@ -393,6 +393,21 @@ export class Gateway {
 
     this.state = "stopped";
     this.log("Gateway stopped");
+  }
+
+  /** Dispatch one request through an embedded gateway owned by the daemon. */
+  async handleRequestWithSession(
+    message: import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage,
+    sessionId: string,
+  ): Promise<import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage | null> {
+    if (this.state !== "running") {
+      throw new Error(`Cannot dispatch request while gateway is ${this.state}`);
+    }
+    const dispatch = this.serverTransport?.handleRequestWithSession;
+    if (!dispatch) {
+      throw new Error("Gateway is not using an embedded request transport");
+    }
+    return dispatch(message, sessionId);
   }
 
   getState(): GatewayState {

@@ -8,8 +8,13 @@ import {
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,
+  type HttpMcpRequestHandler,
   type HttpServerOptions,
 } from "./http-streamable.js";
+import {
+  createEmbeddedServerTransport,
+  type EmbeddedServerTransport,
+} from "./embedded.js";
 import { createStdioClientTransport, createStdioServerTransport } from "./stdio.js";
 
 export {
@@ -27,9 +32,11 @@ export {
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,
+  type HttpMcpRequestHandler,
   type HttpServerOptions,
 } from "./http-streamable.js";
 export { createStdioServerTransport } from "./stdio.js";
+export { createEmbeddedServerTransport, type EmbeddedServerTransport } from "./embedded.js";
 
 export interface ClientConnection {
   client: Client;
@@ -61,17 +68,32 @@ export interface ServerTransportHandle {
   stop: () => Promise<void>;
   getCurrentSessionId?: () => string | null;
   getPort?: () => number | null;
+  handleRequestWithSession?: (
+    message: import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage,
+    sessionId: string,
+  ) => Promise<import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage | null>;
 }
 
 /**
  * Create a server transport for the gateway output.
  */
 export function createServerTransport(
-  mode: "stdio" | "http-streamable",
+  mode: "stdio" | "http-streamable" | "embedded",
   httpPort?: number,
   httpHost?: string,
   httpOptions?: HttpServerOptions,
 ): ServerTransportHandle {
+  if (mode === "embedded") {
+    const transport: EmbeddedServerTransport = createEmbeddedServerTransport();
+    return {
+      transport,
+      start: transport.start.bind(transport),
+      stop: transport.close.bind(transport),
+      getCurrentSessionId: () => transport.getCurrentSessionId(),
+      handleRequestWithSession: transport.handleRequestWithSession.bind(transport),
+    };
+  }
+
   if (mode === "stdio") {
     const transport = createStdioServerTransport();
     return {

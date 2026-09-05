@@ -3,11 +3,15 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
+import { getScopeLabel, loadConfig, resolveConfigFromPath } from "../config/loader.js";
 import type { RouterMcpConfig } from "../config/types.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
 import type { UpstreamServer } from "../core/upstream.js";
-import type { HttpRequestContext } from "../transports/http-streamable.js";
+import {
+  createHttpServerTransport,
+  type HttpRequestContext,
+  type HttpServerHandle,
+} from "../transports/http-streamable.js";
 import {
   ControlPlane,
   ManagementCredentialStore,
@@ -18,6 +22,7 @@ import {
   type ControlPlaneServer,
   type ControlPlaneSession,
   type ControlPlaneStatus,
+  type ControlPlaneWorkspaceStatus,
 } from "../control-plane/index.js";
 import {
   type DaemonPaths,
@@ -37,6 +42,8 @@ import {
   type WorkspaceRegistrationInput,
   WorkspaceLeaseTracker,
   WorkspaceRegistry,
+  WorkspaceRuntimeManager,
+  type WorkspaceRuntimeInput,
   type WorkspaceSnapshot,
   writeRuntimeManifest,
 } from "../daemon/index.js";
@@ -82,6 +89,8 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let managementCredentials: ManagementCredentialStore | null = null;
   let workspaceRegistry: WorkspaceRegistry | null = null;
   let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
+  let workspaceRuntimeManager: WorkspaceRuntimeManager | null = null;
+  let hostHttpServer: HttpServerHandle | null = null;
   let currentWorkspace: WorkspaceSnapshot | null = null;
   let currentWorkspaceRegistration: WorkspaceRegistrationInput | null = null;
   let configFingerprint: string | undefined;
@@ -194,6 +203,175 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         );
       }
 
+      const workspaceConfigs = new Map<
+        string,
+        { config: RouterMcpConfig; configDigest: string }
+      >();
+      const workspaceManagement = new Map<
+        string,
+        ReturnType<typeof createConfigManagementSource>
+      >();
+      if (currentWorkspace) {
+        workspaceConfigs.set(currentWorkspace.id, {
+          config,
+          configDigest: currentWorkspace.configDigest,
+        });
+      }
+
+      const loadWorkspaceRuntimeInput = async (
+        workspace: WorkspaceSnapshot,
+      ): Promise<WorkspaceRuntimeInput> => {
+        const workspaceConfig = await loadConfig(workspace.configPath, { env: process.env });
+        const digest = await fingerprintConfigFile(workspace.configPath).catch(
+          () => workspace.configDigest,
+        );
+        workspaceConfigs.set(workspace.id, { config: workspaceConfig, configDigest: digest });
+        return {
+          directory: workspace.directory,
+          configPath: workspace.configPath,
+          config: workspaceConfig,
+          configDigest: digest,
+          cwd: workspace.directory,
+          env: process.env,
+        };
+      };
+
+      const reloadWorkspace = async (workspaceId: string) => {
+        const workspace = workspaceRegistry?.getSync(workspaceId);
+        if (!workspace || !workspaceRuntimeManager) {
+          return {
+            accepted: false,
+            message: "Workspace runtime is not available",
+            state: "offline" as const,
+          };
+        }
+
+        try {
+          const input = await loadWorkspaceRuntimeInput(workspace);
+          await workspaceRuntimeManager.reload(input);
+          return {
+            accepted: true,
+            message: "Workspace runtime reloaded",
+            state: "ready" as const,
+          };
+        } catch {
+          return {
+            accepted: false,
+            message: "Workspace configuration changed, but its runtime could not be reloaded",
+            state: "failed" as const,
+          };
+        }
+      };
+
+      const getWorkspaceManagement = (workspaceId: string) => {
+        const registry = workspaceRegistry;
+        if (!registry) return null;
+        const workspace = registry.getSync(workspaceId);
+        if (!workspace) return null;
+
+        const existing = workspaceManagement.get(workspaceId);
+        if (existing) return existing;
+
+        const management = createConfigManagementSource({
+          getConfigPath: () => workspace.configPath,
+          getEffectiveMode: async () => {
+            const cached = workspaceConfigs.get(workspaceId);
+            if (cached) return getExecutionMode(cached.config);
+            const current = registry.getSync(workspaceId);
+            if (!current) return getExecutionMode(config);
+            const loaded = await loadConfig(current.configPath, { env: process.env });
+            workspaceConfigs.set(workspaceId, {
+              config: loaded,
+              configDigest: current.configDigest,
+            });
+            return getExecutionMode(loaded);
+          },
+          getRestartState: () => ({ restartState: "idle" as const }),
+          restart: () => reloadWorkspace(workspaceId),
+          onAuditEvent: (event) => {
+            controlPlane?.recordEvent({
+              level: "info",
+              type: `config.${event.type}`,
+              message: event.message,
+              workspaceId,
+              metadata: { ...event.metadata, workspaceId },
+            });
+          },
+          onMutation: async (mutation) => {
+            workspaceConfigs.set(workspaceId, {
+              config: mutation.config,
+              configDigest: mutation.configDigest,
+            });
+            const current = registry.getSync(workspaceId);
+            if (current) {
+              await registry.ensure({
+                directory: current.directory,
+                configPath: current.configPath,
+                configScope: current.configScope,
+                configDigest: mutation.configDigest,
+                workspaceId: current.id,
+                profileId: current.profileId,
+              });
+            }
+            if (currentWorkspace?.id === workspaceId) {
+              desiredConfig = mutation.config;
+              desiredConfigRevision = mutation.configDigest;
+              currentWorkspace = {
+                ...currentWorkspace,
+                configDigest: mutation.configDigest,
+                lastSeenAt: new Date().toISOString(),
+              };
+            }
+          },
+        });
+        workspaceManagement.set(workspaceId, management);
+        return management;
+      };
+
+      const getWorkspaceStatus = (
+        workspaceId: string,
+      ): ControlPlaneWorkspaceStatus | null => {
+        const registry = workspaceRegistry;
+        if (!registry) return null;
+        const workspace = registry.getSync(workspaceId, {
+          current: workspaceId === currentWorkspace?.id,
+        });
+        if (!workspace) return null;
+
+        const runtime = workspaceRuntimeManager?.get(workspaceId);
+        const cached = workspaceConfigs.get(workspaceId);
+        const status = createControlPlaneStatus(
+          runtimeManifest,
+          runtime?.gateway ?? null,
+          daemonPaths,
+          httpPort,
+          workspace,
+          cached?.configDigest ?? workspace.configDigest,
+          restartScheduled,
+        );
+        const effectiveStatus = runtime
+          ? status
+          : {
+              ...status,
+              state: status.state === "ready" ? ("offline" as const) : status.state,
+            };
+
+        return {
+          workspace,
+          status: effectiveStatus,
+          servers: createControlPlaneServers(
+            runtime?.gateway ?? null,
+            cached?.config ?? null,
+            cached?.configDigest ?? workspace.configDigest,
+            desiredServerLastChangedAt,
+          ),
+          sessions: runtime
+            ? createControlPlaneSessions(runtime.gateway, runtimeManifest, sessionWorkspaceIds)
+            : [],
+          metrics: controlPlane?.getMetrics() ?? emptyControlPlaneMetrics(),
+        };
+      };
+
       controlPlane = new ControlPlane({
         getStatus: () =>
           createControlPlaneStatus(
@@ -213,12 +391,15 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             desiredServerLastChangedAt,
           ),
         getSessions: () => createControlPlaneSessions(gateway, runtimeManifest, sessionWorkspaceIds),
-        getLeases: () => gateway?.getConnectionLeases() ?? [],
+        getLeases: () => workspaceLeaseTracker?.leases ?? gateway?.getConnectionLeases() ?? [],
         getCurrentWorkspaceId: () => currentWorkspace?.id ?? null,
         getWorkspaces: () =>
           workspaceRegistry
             ? workspaceRegistry.listSync({ currentWorkspaceId: currentWorkspace?.id })
             : [],
+        getWorkspaceStatus,
+        getWorkspaceManagement,
+        getWorkspaceFeatures: (workspaceId) => getWorkspaceManagement(workspaceId)?.getFeatures() ?? null,
         management: createConfigManagementSource({
           getConfigPath: () => daemonPaths?.configPath ?? resolve(configPath),
           getEffectiveMode: () => getExecutionMode(config),
@@ -335,49 +516,155 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       });
     }
 
-    gateway = createGateway({
-      config,
-      mode,
-      httpPort,
-      httpHost: isDaemon
-        ? runtimeManifest?.host ?? options.host ?? config.httpServer?.host ?? "127.0.0.1"
-        : options.host,
-      httpOptions:
-        runtimeManifest === null
-          ? undefined
-          : {
-              authToken: runtimeManifest.localAuthToken,
-              health: () => ({
-                instanceId: runtimeManifest?.instanceId,
-                profileId: runtimeManifest?.profileId,
-                pid: runtimeManifest?.pid,
-                state: runtimeManifest?.state,
-                cliVersion: runtimeManifest?.cliVersion,
-                protocolVersion: runtimeManifest?.protocolVersion,
-                configFingerprint: runtimeManifest?.configFingerprint,
-                host: runtimeManifest?.host,
-                port: runtimeManifest?.port,
-                readyAt: runtimeManifest?.readyAt,
-              }),
-              controlPlane: controlPlane ?? undefined,
-              managementCredentials: managementCredentials ?? undefined,
-              connectionTracker: workspaceLeaseTracker ?? undefined,
-              onSessionInitialize: (
-                sessionId: string,
-                _clientInfo: { name: string; version?: string } | undefined,
-                context?: HttpRequestContext,
-              ) => {
-                if (context?.workspaceId) {
-                  sessionWorkspaceIds.set(sessionId, context.workspaceId);
-                }
+    const isManagedHost = Boolean(
+      isDaemon &&
+        daemonPaths?.runtimeManifest &&
+        workspaceRegistry &&
+        workspaceLeaseTracker &&
+        currentWorkspaceRegistration &&
+        currentWorkspace,
+    );
+
+    if (isManagedHost) {
+      const registry = workspaceRegistry as WorkspaceRegistry;
+      const leaseTracker = workspaceLeaseTracker as WorkspaceLeaseTracker;
+      const primaryRegistration = currentWorkspaceRegistration as WorkspaceRegistrationInput;
+
+      workspaceRuntimeManager = new WorkspaceRuntimeManager({
+        gatewayOptions: {
+          verbose,
+          clearOpenApiCache: clearCache,
+        },
+      });
+
+      const resolveRuntimeInput = async (
+        context?: HttpRequestContext,
+      ): Promise<WorkspaceRuntimeInput> => {
+        const workspaceId = context?.workspaceId ?? currentWorkspace?.id;
+        if (!workspaceId) {
+          throw new Error("MCP request is not associated with a registered workspace");
+        }
+
+        const workspace = registry.getSync(workspaceId);
+        if (!workspace) {
+          throw new Error("MCP request workspace is not registered with this daemon");
+        }
+
+        const workspaceConfig = await loadConfig(workspace.configPath, { env: process.env });
+        const configDigest = await fingerprintConfigFile(workspace.configPath).catch(
+          () => workspace.configDigest,
+        );
+        return {
+          directory: workspace.directory,
+          configPath: workspace.configPath,
+          config: workspaceConfig,
+          configDigest,
+          cwd: workspace.directory,
+          env: process.env,
+        };
+      };
+
+      const dispatchMcp = async (
+        message: import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage,
+        sessionId: string,
+        context?: HttpRequestContext,
+      ) => {
+        const input = await resolveRuntimeInput(context);
+        return workspaceRuntimeManager!.withRuntime(input, (runtime) =>
+          runtime.gateway.handleRequestWithSession(message, sessionId),
+        );
+      };
+
+      const httpOptions = {
+        authToken: runtimeManifest?.localAuthToken,
+        health: () => ({
+          instanceId: runtimeManifest?.instanceId,
+          profileId: runtimeManifest?.profileId,
+          pid: runtimeManifest?.pid,
+          state: runtimeManifest?.state,
+          cliVersion: runtimeManifest?.cliVersion,
+          protocolVersion: runtimeManifest?.protocolVersion,
+          configFingerprint: runtimeManifest?.configFingerprint,
+          host: runtimeManifest?.host,
+          port: runtimeManifest?.port,
+          readyAt: runtimeManifest?.readyAt,
+        }),
+        controlPlane: controlPlane ?? undefined,
+        managementCredentials: managementCredentials ?? undefined,
+        connectionTracker: leaseTracker,
+        dispatchMcp,
+        onSessionInitialize: (
+          sessionId: string,
+          _clientInfo: { name: string; version?: string } | undefined,
+          context?: HttpRequestContext,
+        ) => {
+          const workspaceId = context?.workspaceId ?? currentWorkspace?.id;
+          if (workspaceId) sessionWorkspaceIds.set(sessionId, workspaceId);
+        },
+        onSessionClose: (sessionId: string) => {
+          sessionWorkspaceIds.delete(sessionId);
+        },
+      };
+
+      // The first runtime is initialized before the host advertises readiness,
+      // while subsequent workspaces are created lazily on their first request.
+      const primaryRuntime = await workspaceRuntimeManager.getOrCreate({
+        ...primaryRegistration,
+        config,
+        cwd: primaryRegistration.directory,
+        env: process.env,
+      });
+      gateway = primaryRuntime.gateway;
+      hostHttpServer = createHttpServerTransport(
+        httpPort as number,
+        runtimeManifest?.host ?? options.host ?? config.httpServer?.host ?? "127.0.0.1",
+        httpOptions,
+      );
+    } else {
+      gateway = createGateway({
+        config,
+        mode,
+        httpPort,
+        httpHost: isDaemon
+          ? runtimeManifest?.host ?? options.host ?? config.httpServer?.host ?? "127.0.0.1"
+          : options.host,
+        httpOptions:
+          runtimeManifest === null
+            ? undefined
+            : {
+                authToken: runtimeManifest.localAuthToken,
+                health: () => ({
+                  instanceId: runtimeManifest?.instanceId,
+                  profileId: runtimeManifest?.profileId,
+                  pid: runtimeManifest?.pid,
+                  state: runtimeManifest?.state,
+                  cliVersion: runtimeManifest?.cliVersion,
+                  protocolVersion: runtimeManifest?.protocolVersion,
+                  configFingerprint: runtimeManifest?.configFingerprint,
+                  host: runtimeManifest?.host,
+                  port: runtimeManifest?.port,
+                  readyAt: runtimeManifest?.readyAt,
+                }),
+                controlPlane: controlPlane ?? undefined,
+                managementCredentials: managementCredentials ?? undefined,
+                connectionTracker: workspaceLeaseTracker ?? undefined,
+                onSessionInitialize: (
+                  sessionId: string,
+                  _clientInfo: { name: string; version?: string } | undefined,
+                  context?: HttpRequestContext,
+                ) => {
+                  if (context?.workspaceId) {
+                    sessionWorkspaceIds.set(sessionId, context.workspaceId);
+                  }
+                },
+                onSessionClose: (sessionId: string) => {
+                  sessionWorkspaceIds.delete(sessionId);
+                },
               },
-              onSessionClose: (sessionId: string) => {
-                sessionWorkspaceIds.delete(sessionId);
-              },
-            },
-      verbose,
-      clearOpenApiCache: clearCache,
-    });
+        verbose,
+        clearOpenApiCache: clearCache,
+      });
+    }
 
     setupSignalHandlers(
       gateway,
@@ -385,9 +672,15 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       () => runtimeManifest,
       () => controlPlane,
       () => workspaceLeaseTracker,
+      () => hostHttpServer,
+      () => workspaceRuntimeManager,
     );
 
-    await gateway.start();
+    if (!isManagedHost) {
+      await gateway.start();
+    } else {
+      await hostHttpServer?.start();
+    }
 
     if (isDaemon && daemonPaths && runtimeManifest) {
       const actualPort = gateway.getHttpPort() ?? httpPort;
@@ -436,9 +729,12 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       await startupLock.release().catch(() => undefined);
       startupLock = null;
     }
-    if (gateway) {
+    if (workspaceRuntimeManager) {
+      await workspaceRuntimeManager.disposeAll().catch(() => undefined);
+    } else if (gateway) {
       await gateway.stop().catch(() => undefined);
     }
+    if (hostHttpServer) await hostHttpServer.stop().catch(() => undefined);
     await workspaceLeaseTracker?.destroy();
     if (runtimeManifest && daemonPaths?.runtimeManifest) {
       await removeRuntimeManifestIfCurrent(daemonPaths, runtimeManifest);
@@ -754,6 +1050,19 @@ function gatewayStateToControlState(
   }
 }
 
+function emptyControlPlaneMetrics() {
+  return {
+    requestsTotal: 0,
+    requestsPerSecond: 0,
+    errorsTotal: 0,
+    errorRate: 0,
+    toolCallsTotal: 0,
+    activeSessions: 0,
+    activeLeases: 0,
+    latencyMs: { p50: 0, p95: 0, p99: 0 },
+  };
+}
+
 export interface ManagedRestartInvocation {
   command: string;
   args: string[];
@@ -858,6 +1167,8 @@ function setupSignalHandlers(
   getRuntimeManifest: () => RuntimeManifest | null,
   getControlPlane: () => ControlPlane | null,
   getWorkspaceLeaseTracker: () => WorkspaceLeaseTracker | null,
+  getHostHttpServer: () => HttpServerHandle | null = () => null,
+  getWorkspaceRuntimeManager: () => WorkspaceRuntimeManager | null = () => null,
 ): void {
   let shutdownStarted = false;
   const shutdown = async (signal: string) => {
@@ -876,7 +1187,13 @@ function setupSignalHandlers(
           message: `Daemon stopping after ${signal}`,
         });
       }
-      await gateway.stop();
+      const runtimeManager = getWorkspaceRuntimeManager();
+      if (runtimeManager) {
+        await runtimeManager.disposeAll();
+      } else {
+        await gateway.stop();
+      }
+      await getHostHttpServer()?.stop();
       await getWorkspaceLeaseTracker()?.destroy();
       if (manifest && daemonPaths?.runtimeManifest) {
         await removeRuntimeManifestIfCurrent(daemonPaths, manifest);
