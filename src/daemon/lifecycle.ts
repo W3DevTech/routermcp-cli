@@ -45,6 +45,11 @@ export interface DaemonStatus {
   protocolVersion?: string;
   configPath?: string;
   configFingerprint?: string;
+  /** User-scoped host identity when this profile is attached to a host. */
+  hostId?: string;
+  /** Workspace selected for the request that produced this status. */
+  workspaceId?: string;
+  projectPath?: string;
   mcpUrl?: string;
   controlUrl?: string;
   /**

@@ -12,6 +12,8 @@ export interface ManagementCredentialGrant {
   token: string;
   expiresAt: string;
   scope: typeof MANAGEMENT_CREDENTIAL_SCOPE;
+  /** Workspace selected by the local CLI handoff, when available. */
+  workspaceId?: string;
 }
 
 export interface ManagementCredentialStoreOptions {
@@ -19,6 +21,7 @@ export interface ManagementCredentialStoreOptions {
   ttlMs?: number;
   maxCredentials?: number;
   generateToken?: () => string;
+  workspaceId?: string;
 }
 
 interface CredentialRecord {
@@ -40,6 +43,7 @@ export class ManagementCredentialStore {
   private readonly ttlMs: number;
   private readonly maxCredentials: number;
   private readonly generateToken: () => string;
+  private readonly workspaceId: string | undefined;
   private readonly credentials = new Map<string, CredentialRecord>();
 
   constructor(options: ManagementCredentialStoreOptions = {}) {
@@ -49,6 +53,7 @@ export class ManagementCredentialStore {
       options.maxCredentials ?? DEFAULT_MAX_MANAGEMENT_CREDENTIALS,
     );
     this.generateToken = options.generateToken ?? (() => randomBytes(32).toString("base64url"));
+    this.workspaceId = validateWorkspaceId(options.workspaceId);
   }
 
   /** Issue a fresh management grant without persisting it to disk. */
@@ -78,6 +83,7 @@ export class ManagementCredentialStore {
       token,
       expiresAt: new Date(expiresAtMs).toISOString(),
       scope: MANAGEMENT_CREDENTIAL_SCOPE,
+      ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
     };
   }
 
@@ -155,6 +161,14 @@ function validateTtl(value: number): number {
 function validateMaxCredentials(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError("Maximum management credentials must be a positive integer");
+  }
+  return value;
+}
+
+function validateWorkspaceId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[a-z0-9-]{1,256}$/i.test(value)) {
+    throw new RangeError("Management credential workspace ID is invalid");
   }
   return value;
 }

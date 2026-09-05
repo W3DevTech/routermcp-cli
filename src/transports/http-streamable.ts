@@ -104,10 +104,20 @@ export const DEFAULT_DAEMON_CORS_ORIGINS = [
 ] as const;
 
 export interface BridgeLeaseTracker {
-  acquire: () => ConnectionLease;
-  heartbeat: (leaseId: string) => ConnectionLease | null;
-  release: (leaseId: string) => void;
+  acquire: (metadata?: unknown) => ConnectionLease | Promise<ConnectionLease>;
+  heartbeat: (leaseId: string) => ConnectionLease | null | Promise<ConnectionLease | null>;
+  release: (leaseId: string) => void | Promise<void>;
   readonly leases?: readonly ConnectionLease[];
+}
+
+/** Bounded wire metadata used to attribute a bridge to a local workspace. */
+export interface BridgeLeaseMetadata {
+  workspaceId?: string;
+  directory: string;
+  configPath: string;
+  configScope: "project-local" | "user-project" | "user-global";
+  configDigest: string;
+  profileId?: string;
 }
 
 export interface HttpServerOptions {
@@ -401,11 +411,33 @@ export function createHttpServerTransport(
                 }
 
                 if (leaseRoute.kind === "acquire" && request.method === "POST") {
-                  return jsonResponse(options.connectionTracker.acquire(), 201, corsHeaders(request));
+                  let metadata: unknown;
+                  try {
+                    metadata = await readBridgeLeaseMetadata(request);
+                  } catch {
+                    return jsonResponse(
+                      { error: "Invalid bridge lease metadata" },
+                      400,
+                      corsHeaders(request),
+                    );
+                  }
+
+                  try {
+                    const lease = await options.connectionTracker.acquire(metadata);
+                    return jsonResponse(lease, 201, corsHeaders(request));
+                  } catch {
+                    // Do not echo paths, config contents, or upstream details
+                    // from a failed workspace registration to the bridge.
+                    return jsonResponse(
+                      { error: "Bridge workspace registration failed" },
+                      400,
+                      corsHeaders(request),
+                    );
+                  }
                 }
 
                 if (leaseRoute.kind === "heartbeat" && request.method === "POST") {
-                  const lease = options.connectionTracker.heartbeat(leaseRoute.leaseId);
+                  const lease = await options.connectionTracker.heartbeat(leaseRoute.leaseId);
                   return lease
                     ? jsonResponse(lease, 200, corsHeaders(request))
                     : new Response("Lease Not Found", {
@@ -415,7 +447,7 @@ export function createHttpServerTransport(
                 }
 
                 if (leaseRoute.kind === "release" && request.method === "DELETE") {
-                  options.connectionTracker.release(leaseRoute.leaseId);
+                  await options.connectionTracker.release(leaseRoute.leaseId);
                   return new Response(null, { status: 204, headers: corsHeaders(request) });
                 }
 
@@ -601,6 +633,8 @@ type ControlPlaneRoute =
   | { kind: "metrics" }
   | { kind: "events"; limit: number }
   | { kind: "restart" }
+  | { kind: "workspaces" }
+  | { kind: "workspace-status"; workspaceId: string }
   | { kind: "invalid"; message: string };
 
 type ManagementCredentialRoute =
@@ -676,9 +710,29 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
         limit: Math.min(Math.max(parsed, 1), CONTROL_PLANE_MAX_EVENT_LIMIT),
       };
     }
+    case `${CONTROL_PLANE_PATH}/workspaces`:
+      return url.search
+        ? { kind: "invalid", message: "The workspaces endpoint does not accept query parameters" }
+        : { kind: "workspaces" };
     default:
-      return null;
+      break;
   }
+
+  const workspacePrefix = `${CONTROL_PLANE_PATH}/workspaces/`;
+  if (!url.pathname.startsWith(workspacePrefix)) return null;
+  const suffix = url.pathname.slice(workspacePrefix.length);
+  const parts = suffix.split("/");
+  if (parts.length !== 2 || parts[1] !== "status" || !parts[0]) {
+    return { kind: "invalid", message: "Invalid workspace control-plane path" };
+  }
+  if (url.search) {
+    return { kind: "invalid", message: "The workspace status endpoint does not accept query parameters" };
+  }
+  const workspaceId = decodePathPart(parts[0]);
+  if (!workspaceId || workspaceId.includes("/")) {
+    return { kind: "invalid", message: "Invalid workspace ID" };
+  }
+  return { kind: "workspace-status", workspaceId };
 }
 
 async function handleControlPlaneRequest(
@@ -758,6 +812,14 @@ async function handleControlPlaneRequest(
       return jsonResponse({ metrics: controlPlane.getMetrics() }, 200, responseHeaders);
     case "events":
       return jsonResponse({ events: controlPlane.getEvents(route.limit) }, 200, responseHeaders);
+    case "workspaces":
+      return jsonResponse({ workspaces: controlPlane.getWorkspaces() }, 200, responseHeaders);
+    case "workspace-status": {
+      const status = controlPlane.getWorkspaceStatus(route.workspaceId);
+      return status
+        ? jsonResponse(status, 200, responseHeaders)
+        : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
+    }
   }
 }
 
@@ -906,6 +968,68 @@ async function handleManagementCredentialRequest(
 function sanitizeControlError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return sanitizeText(message);
+}
+
+const MAX_BRIDGE_LEASE_METADATA_BYTES = 16 * 1024;
+
+async function readBridgeLeaseMetadata(request: Request): Promise<BridgeLeaseMetadata | undefined> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const bytes = Number(contentLength);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_BRIDGE_LEASE_METADATA_BYTES) {
+      throw new Error("Bridge lease metadata is too large");
+    }
+  }
+
+  if (!request.body) return undefined;
+  const value: unknown = await request.json();
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Bridge lease metadata must be an object");
+  }
+
+  const record = value as Record<string, unknown>;
+  const directory = boundedMetadataString(record.directory, 4_096);
+  const configPath = boundedMetadataString(record.configPath, 4_096);
+  const configDigest = boundedMetadataString(record.configDigest, 128);
+  const configScope = record.configScope;
+  if (
+    !directory ||
+    !configPath ||
+    !configDigest ||
+    (configScope !== "project-local" &&
+      configScope !== "user-project" &&
+      configScope !== "user-global") ||
+    !/^[a-f0-9]{64}$/i.test(configDigest)
+  ) {
+    throw new Error("Bridge lease metadata is incomplete or invalid");
+  }
+
+  const workspaceId = optionalMetadataString(record.workspaceId, 256);
+  const profileId = optionalMetadataString(record.profileId, 256);
+  if (
+    (record.workspaceId !== undefined && !workspaceId) ||
+    (record.profileId !== undefined && !profileId)
+  ) {
+    throw new Error("Bridge lease metadata has an invalid workspace or profile ID");
+  }
+  return {
+    directory,
+    configPath,
+    configScope,
+    configDigest,
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(profileId ? { profileId } : {}),
+  };
+}
+
+function boundedMetadataString(value: unknown, maxLength: number): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength
+    ? value
+    : undefined;
+}
+
+function optionalMetadataString(value: unknown, maxLength: number): string | undefined {
+  return value === undefined ? undefined : boundedMetadataString(value, maxLength);
 }
 
 function parseBridgeLeasePath(pathname: string): BridgeLeaseRoute | null {

@@ -32,6 +32,10 @@ import {
   removeRuntimeManifest,
   type RuntimeManifest,
   transitionReadiness,
+  type WorkspaceRegistrationInput,
+  WorkspaceLeaseTracker,
+  WorkspaceRegistry,
+  type WorkspaceSnapshot,
   writeRuntimeManifest,
 } from "../daemon/index.js";
 import { buildRuntimeInvocation } from "../daemon/lifecycle.js";
@@ -71,6 +75,11 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
   let managementCredentials: ManagementCredentialStore | null = null;
+  let workspaceRegistry: WorkspaceRegistry | null = null;
+  let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
+  let currentWorkspace: WorkspaceSnapshot | null = null;
+  let currentWorkspaceRegistration: WorkspaceRegistrationInput | null = null;
+  let configFingerprint: string | undefined;
   let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
@@ -104,6 +113,23 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       }
       const projectId = getProjectId(projectPath);
       daemonPaths = getDaemonPaths(projectId, resolve(configPath), projectPath);
+      if (daemonPaths.runtimeManifest) {
+        configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
+        workspaceRegistry = new WorkspaceRegistry();
+        currentWorkspaceRegistration = {
+          directory: projectPath,
+          configPath: daemonPaths.configPath,
+          configScope: scope,
+          configDigest: configFingerprint,
+        };
+        currentWorkspace = await workspaceRegistry.ensure(currentWorkspaceRegistration);
+        workspaceLeaseTracker = new WorkspaceLeaseTracker(workspaceRegistry);
+      } else {
+        // Compatibility callers can provide the pre-manifest DaemonPaths
+        // shape. They retain the legacy pid/port lifecycle and have no
+        // workspace registry until they migrate to runtime.json.
+        configFingerprint = undefined;
+      }
 
       // The supervisor keeps this lock while the child reaches ready. A
       // manually launched daemon must acquire it itself so two direct
@@ -131,12 +157,11 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       }
 
       if (daemonPaths.runtimeManifest) {
-        const configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
         runtimeManifest = await createRuntimeManifest({
           projectId,
           profileId: daemonPaths.profileId,
           configPath: daemonPaths.configPath,
-          configFingerprint,
+          configFingerprint: configFingerprint ?? (await fingerprintConfigFile(daemonPaths.configPath)),
           pid: process.pid,
           host: daemonHost,
           port: httpPort,
@@ -159,10 +184,21 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
 
       controlPlane = new ControlPlane({
         getStatus: () =>
-          createControlPlaneStatus(runtimeManifest, gateway, daemonPaths, httpPort),
+          createControlPlaneStatus(
+            runtimeManifest,
+            gateway,
+            daemonPaths,
+            httpPort,
+            currentWorkspace,
+          ),
         getServers: () => createControlPlaneServers(gateway),
         getSessions: () => createControlPlaneSessions(gateway, runtimeManifest),
         getLeases: () => gateway?.getConnectionLeases() ?? [],
+        getCurrentWorkspaceId: () => currentWorkspace?.id ?? null,
+        getWorkspaces: () =>
+          workspaceRegistry
+            ? workspaceRegistry.listSync({ currentWorkspaceId: currentWorkspace?.id })
+            : [],
         management: createConfigManagementSource({
           getConfigPath: () => daemonPaths?.configPath ?? resolve(configPath),
           getEffectiveMode: () => getExecutionMode(config),
@@ -246,7 +282,9 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           };
         },
       });
-      managementCredentials = new ManagementCredentialStore();
+      managementCredentials = new ManagementCredentialStore({
+        workspaceId: currentWorkspace?.id,
+      });
     }
 
     gateway = createGateway({
@@ -275,12 +313,19 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
               }),
               controlPlane: controlPlane ?? undefined,
               managementCredentials: managementCredentials ?? undefined,
+              connectionTracker: workspaceLeaseTracker ?? undefined,
             },
       verbose,
       clearOpenApiCache: clearCache,
     });
 
-    setupSignalHandlers(gateway, daemonPaths, () => runtimeManifest, () => controlPlane);
+    setupSignalHandlers(
+      gateway,
+      daemonPaths,
+      () => runtimeManifest,
+      () => controlPlane,
+      () => workspaceLeaseTracker,
+    );
 
     await gateway.start();
 
@@ -334,6 +379,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     if (gateway) {
       await gateway.stop().catch(() => undefined);
     }
+    await workspaceLeaseTracker?.destroy();
     if (runtimeManifest && daemonPaths?.runtimeManifest) {
       await removeRuntimeManifestIfCurrent(daemonPaths, runtimeManifest);
       runtimeManifest = null;
@@ -387,6 +433,7 @@ function createControlPlaneStatus(
   gateway: Gateway | null,
   paths: DaemonPaths | null,
   requestedPort: number | undefined,
+  workspace: WorkspaceSnapshot | null = null,
 ): ControlPlaneStatus {
   const host = manifest?.host ?? "127.0.0.1";
   const port = manifest?.port ?? gateway?.getHttpPort() ?? requestedPort ?? 0;
@@ -422,6 +469,13 @@ function createControlPlaneStatus(
     controlUrl: manifest?.controlUrl ?? fallbackBaseUrl,
     startedAt,
     uptimeSeconds,
+    ...(workspace
+      ? {
+          workspaceId: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceConfigPath: workspace.configPath,
+        }
+      : {}),
   };
 }
 
@@ -507,7 +561,10 @@ function createControlPlaneSessions(
       id: `bridge:${lease.leaseId}`,
       kind: "bridge",
       clientName: "stdio bridge",
-      ...(profile ? { profile } : {}),
+      ...(lease.profileId ?? profile
+        ? { profile: lease.profileId ?? profile }
+        : {}),
+      ...(lease.workspaceId ? { workspaceId: lease.workspaceId } : {}),
       state: Date.parse(lease.leaseExpiresAt) > now ? "active" : "expired",
       connectedAt: lease.connectedAt,
       lastSeenAt: lease.lastSeenAt,
@@ -651,6 +708,7 @@ function setupSignalHandlers(
   daemonPaths: DaemonPaths | null,
   getRuntimeManifest: () => RuntimeManifest | null,
   getControlPlane: () => ControlPlane | null,
+  getWorkspaceLeaseTracker: () => WorkspaceLeaseTracker | null,
 ): void {
   let shutdownStarted = false;
   const shutdown = async (signal: string) => {
@@ -670,6 +728,7 @@ function setupSignalHandlers(
         });
       }
       await gateway.stop();
+      await getWorkspaceLeaseTracker()?.destroy();
       if (manifest && daemonPaths?.runtimeManifest) {
         await removeRuntimeManifestIfCurrent(daemonPaths, manifest);
       }

@@ -4,7 +4,11 @@ import {
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   type ManagementCredentialGrant,
 } from "../control-plane/index.js";
-import { isLoopbackHost, type DaemonStatus, ensureRunning } from "../daemon/index.js";
+import {
+  ensureWorkspaceRunning,
+  isLoopbackHost,
+  type DaemonStatus,
+} from "../daemon/index.js";
 import { type DaemonCommandOptions, resolveDaemonContext } from "./daemon.js";
 
 export const CLI_CONSOLE_URL = "https://cli.routermcp.com/cli" as const;
@@ -28,7 +32,7 @@ export interface ConsoleHandoff {
  */
 export async function consoleCommand(options: ConsoleCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  const status = await ensureRunning(context.paths, {
+  const status = await ensureWorkspaceRunning(context.workspace, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
     host: options.host ?? context.configuredHost,
@@ -110,6 +114,7 @@ export function createConsoleHandoff(
     endpoint,
     managementToken: grant.token,
     ...(status.profileId ? { profile: status.profileId } : {}),
+    ...(grant.workspaceId ? { workspace: grant.workspaceId } : {}),
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const url = `${CLI_CONSOLE_URL}#rmcp=${encodedPayload}`;

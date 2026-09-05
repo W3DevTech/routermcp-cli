@@ -2,15 +2,19 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { resolveConfig, resolveConfigFromPath } from "../config/loader.js";
+import type { ConfigScope } from "../config/types.js";
 import {
   ensureRunning,
+  ensureWorkspaceRunning,
+  fingerprintConfigFile,
   getDaemonPaths,
   getDaemonStatus,
   getProjectId,
+  getWorkspaceDaemonStatus,
   type DaemonStatus,
 } from "../daemon/index.js";
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
-import { DAEMON_BRIDGE_LEASES_PATH } from "../transports/index.js";
+import { DAEMON_BRIDGE_LEASES_PATH, type BridgeLeaseMetadata } from "../transports/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 
 export interface ConnectCommandOptions {
@@ -36,12 +40,14 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
   try {
     let configPath: string;
+    let configScope: ConfigScope;
     let configuredHost: string | undefined;
     let configuredPort: number | undefined;
 
     if (options.config) {
       const resolved = await resolveConfigFromPath(options.config, projectPath);
       configPath = resolve(resolved.path);
+      configScope = resolved.scope;
       configuredHost = resolved.config.httpServer?.host;
       configuredPort = resolved.config.httpServer?.port;
     } else {
@@ -50,6 +56,7 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
         throw new ConfigError("No config file found. Run 'routermcp config' to create one.");
       }
       configPath = resolve(resolved.path);
+      configScope = resolved.scope;
       configuredHost = resolved.config.httpServer?.host;
       configuredPort = resolved.config.httpServer?.port;
       log(`Resolved config scope: ${resolved.scope}`);
@@ -57,25 +64,42 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
 
     log(`Using config: ${configPath}`);
 
-    const projectId = getProjectId(projectPath);
-    log(`Project ID: ${projectId}`);
-
-    const paths = getDaemonPaths(projectId, configPath, projectPath);
-    log(`Daemon dir: ${paths.dir}`);
+    const profilePaths = getDaemonPaths(getProjectId(projectPath), configPath, projectPath);
+    const useWorkspaceHost = Boolean(profilePaths.runtimeManifest && profilePaths.profileId);
+    const configFingerprint = useWorkspaceHost
+      ? await fingerprintConfigFile(configPath)
+      : "0".repeat(64);
+    const workspace = {
+      directory: projectPath,
+      configPath,
+      configScope,
+      configDigest: configFingerprint,
+    };
+    log(`Project ID: ${getProjectId(projectPath)}`);
+    log(`Workspace directory: ${projectPath}`);
 
     // Keep the status probe for useful diagnostics while ensureRunning owns
     // the authoritative check/start/readiness window under its profile lock.
-    const previousStatus = await getDaemonStatus(paths);
+    const previousStatus = useWorkspaceHost
+      ? await getWorkspaceDaemonStatus(workspace)
+      : await getDaemonStatus(profilePaths);
     log(`Daemon status: ${previousStatus.running ? "running" : "stopped"}`);
     const wasRunning = previousStatus.running;
     if (!wasRunning) info("Starting daemon...");
 
-    const status = await ensureRunning(paths, {
-      projectPath,
-      host: options.host ?? configuredHost,
-      preferredPort: options.preferredPort ?? configuredPort,
-      verbose,
-    });
+    const status = useWorkspaceHost
+      ? await ensureWorkspaceRunning(workspace, {
+          projectPath,
+          host: options.host ?? configuredHost,
+          preferredPort: options.preferredPort ?? configuredPort,
+          verbose,
+        })
+      : await ensureRunning(profilePaths, {
+          projectPath,
+          host: options.host ?? configuredHost,
+          preferredPort: options.preferredPort ?? configuredPort,
+          verbose,
+        });
     if (!status.running) {
       throw new Error(status.reason ?? "Daemon did not become ready");
     }
@@ -90,7 +114,17 @@ export async function connectCommand(options: ConnectCommandOptions): Promise<vo
     } else {
       info(`Daemon started at ${projectPath} (pid: ${status.pid}, url: ${mcpUrl})`);
     }
-    await proxyStdioToHttp(mcpUrl, log, status.authToken);
+    await proxyStdioToHttp(mcpUrl, log, status.authToken, {
+      directory: projectPath,
+      configPath,
+      configScope,
+      // The status for a reused host describes its primary profile. Lease
+      // metadata must describe the workspace requested by this bridge, or a
+      // second directory using the same config would be attributed to the
+      // primary profile. The daemon recomputes the profile ID after resolving
+      // symlinks, so this request intentionally omits the optional claim.
+      configDigest: configFingerprint,
+    });
   } catch (err) {
     if (err instanceof ConfigError || err instanceof RouterMcpError) {
       console.error(`Error: ${err.message}`);
@@ -121,6 +155,7 @@ export async function proxyStdioToHttp(
   url: string,
   log: (msg: string) => void,
   authToken?: string,
+  workspace?: BridgeLeaseMetadata,
 ): Promise<void> {
   const mcpUrl = new URL(url);
   const leaseUrl = new URL(DAEMON_BRIDGE_LEASES_PATH, mcpUrl.origin).toString();
@@ -128,7 +163,7 @@ export async function proxyStdioToHttp(
     ? { Authorization: `Bearer ${authToken}` }
     : {};
 
-  const lease = await acquireBridgeLease(leaseUrl, authHeaders);
+  const lease = await acquireBridgeLease(leaseUrl, authHeaders, workspace);
   let activeLease = lease;
   let sessionId: string = randomUUID();
   let acceptingInput = true;
@@ -255,10 +290,15 @@ export async function proxyStdioToHttp(
 async function acquireBridgeLease(
   leaseUrl: string,
   authHeaders: Record<string, string>,
+  workspace?: BridgeLeaseMetadata,
 ): Promise<ConnectionLease> {
+  const headers: Record<string, string> = { ...authHeaders };
+  const body = workspace ? JSON.stringify(workspace) : undefined;
+  if (body) headers["Content-Type"] = "application/json";
   const response = await fetch(leaseUrl, {
     method: "POST",
-    headers: authHeaders,
+    headers,
+    ...(body ? { body } : {}),
   });
   if (!response.ok) {
     throw new Error(`Unable to acquire daemon bridge lease (${response.status})`);

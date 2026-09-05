@@ -18,6 +18,7 @@ export {
   DEFAULT_DAEMON_CORS_ORIGIN,
   DEFAULT_DAEMON_CORS_ORIGINS,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  type BridgeLeaseMetadata,
   type BridgeLeaseTracker,
   createHttpServerTransport,
   type HttpClientTransportOptions,

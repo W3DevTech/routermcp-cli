@@ -3,12 +3,24 @@ import { randomUUID } from "node:crypto";
 export const DEFAULT_BRIDGE_LEASE_TTL_MS = 30_000;
 export const DEFAULT_CONNECTION_IDLE_TIMEOUT_MS = 10_000;
 
+/** Context metadata carried by a bridge lease. Paths are accepted by the
+ * workspace-aware transport and validated there; the in-memory tracker only
+ * keeps opaque IDs so a lease response cannot accidentally echo local paths. */
+export interface ConnectionLeaseMetadata {
+  workspaceId?: string;
+  profileId?: string;
+}
+
+export type ConnectionLeaseRemovalReason = "released" | "expired" | "destroyed";
+
 export interface ConnectionLease {
   leaseId: string;
   connectedAt: string;
   lastSeenAt: string;
   leaseExpiresAt: string;
   leaseTtlMs: number;
+  workspaceId?: string;
+  profileId?: string;
 }
 
 interface TrackedConnection {
@@ -30,11 +42,19 @@ export class ConnectionTracker {
   private readonly idleTimeout: number;
   private readonly leaseTtlMs: number;
   private readonly onIdle: () => void;
+  private readonly onLeaseRemoved: (
+    lease: ConnectionLease,
+    reason: ConnectionLeaseRemovalReason,
+  ) => void;
 
   constructor(
     idleTimeout: number = DEFAULT_CONNECTION_IDLE_TIMEOUT_MS,
     onIdle: () => void = () => undefined,
     leaseTtlMs: number = DEFAULT_BRIDGE_LEASE_TTL_MS,
+    onLeaseRemoved: (
+      lease: ConnectionLease,
+      reason: ConnectionLeaseRemovalReason,
+    ) => void = () => undefined,
   ) {
     if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {
       throw new Error("Connection idle timeout must be a non-negative number");
@@ -46,17 +66,20 @@ export class ConnectionTracker {
     this.idleTimeout = idleTimeout;
     this.leaseTtlMs = leaseTtlMs;
     this.onIdle = onIdle;
+    this.onLeaseRemoved = onLeaseRemoved;
   }
 
   /** Acquire a server-generated lease for one stdio bridge. */
-  acquire(connectionId: string = randomUUID()): ConnectionLease {
+  acquire(input: unknown = undefined, explicitMetadata?: ConnectionLeaseMetadata): ConnectionLease {
+    const connectionId = typeof input === "string" && input.length > 0 ? input : randomUUID();
+    const metadata = explicitMetadata ?? normalizeMetadata(input);
     const existing = this.connections.get(connectionId);
     if (existing) {
       return this.heartbeat(connectionId) ?? existing.lease;
     }
 
     const now = new Date();
-    const lease = createLease(connectionId, now, this.leaseTtlMs);
+    const lease = createLease(connectionId, now, this.leaseTtlMs, metadata);
     const tracked: TrackedConnection = {
       lease,
       expiryTimer: this.createExpiryTimer(connectionId, this.leaseTtlMs),
@@ -70,8 +93,8 @@ export class ConnectionTracker {
    * Backwards-compatible alias for callers that only need to mark a
    * connection active. New bridge code should use acquire().
    */
-  add(connectionId: string): void {
-    this.acquire(connectionId);
+  add(connectionId: string, metadata?: ConnectionLeaseMetadata): void {
+    this.acquire(connectionId, metadata);
   }
 
   /** Extend a live lease, returning its public snapshot. */
@@ -91,15 +114,17 @@ export class ConnectionTracker {
   }
 
   /** Release one bridge lease. Releasing an unknown lease is idempotent. */
-  remove(connectionId: string): void {
+  remove(connectionId: string): ConnectionLease | null {
     const tracked = this.connections.get(connectionId);
-    if (!tracked) return;
+    if (!tracked) return null;
 
     clearTimeout(tracked.expiryTimer);
     this.connections.delete(connectionId);
+    this.onLeaseRemoved(tracked.lease, "released");
     if (this.connections.size === 0) {
       this.startIdleTimer();
     }
+    return { ...tracked.lease };
   }
 
   release(connectionId: string): void {
@@ -120,8 +145,9 @@ export class ConnectionTracker {
 
   destroy(): void {
     this.clearIdleTimer();
-    for (const { expiryTimer } of this.connections.values()) {
+    for (const { lease, expiryTimer } of this.connections.values()) {
       clearTimeout(expiryTimer);
+      this.onLeaseRemoved(lease, "destroyed");
     }
     this.connections.clear();
   }
@@ -138,6 +164,7 @@ export class ConnectionTracker {
       }
 
       this.connections.delete(connectionId);
+      this.onLeaseRemoved(tracked.lease, "expired");
       if (this.connections.size === 0) {
         this.startIdleTimer();
       }
@@ -169,7 +196,12 @@ export class ConnectionTracker {
   }
 }
 
-function createLease(connectionId: string, now: Date, leaseTtlMs: number): ConnectionLease {
+function createLease(
+  connectionId: string,
+  now: Date,
+  leaseTtlMs: number,
+  metadata: ConnectionLeaseMetadata,
+): ConnectionLease {
   const timestamp = now.toISOString();
   return {
     leaseId: connectionId,
@@ -177,5 +209,22 @@ function createLease(connectionId: string, now: Date, leaseTtlMs: number): Conne
     lastSeenAt: timestamp,
     leaseExpiresAt: new Date(now.getTime() + leaseTtlMs).toISOString(),
     leaseTtlMs,
+    ...(metadata.workspaceId ? { workspaceId: metadata.workspaceId } : {}),
+    ...(metadata.profileId ? { profileId: metadata.profileId } : {}),
   };
+}
+
+function normalizeMetadata(input: unknown): ConnectionLeaseMetadata {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const value = input as Record<string, unknown>;
+  const workspaceId = normalizeId(value.workspaceId);
+  const profileId = normalizeId(value.profileId);
+  return {
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(profileId ? { profileId } : {}),
+  };
+}
+
+function normalizeId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
 }

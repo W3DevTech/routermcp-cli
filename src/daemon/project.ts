@@ -100,6 +100,30 @@ export function getRuntimeProjectsDir(): string {
 }
 
 /**
+ * Get the user-scoped daemon-host directory.
+ *
+ * A host is deliberately separate from the per-project/profile runtime
+ * directories. The host owns the process/port identity and the local
+ * workspace registry; individual workspace contexts can then be associated
+ * with that one process without making a project path part of the host path.
+ */
+export function getDaemonHostDir(): string {
+  return resolve(getRouterMcpRuntimeDir(), "host");
+}
+
+/**
+ * Return the stable identity for this user's local daemon host.
+ *
+ * The state directory is already user-scoped by the platform convention, but
+ * hashing it keeps the identity bounded and avoids exposing local paths in
+ * protocol/status payloads. Changing XDG_STATE_HOME intentionally creates a
+ * new host identity, which is useful for isolated test/dev environments.
+ */
+export function getDaemonHostId(): string {
+  return createHash("sha256").update(resolve(getDaemonHostDir())).digest("hex").slice(0, 32);
+}
+
+/**
  * Get the daemon directory for a specific project.
  */
 export function getDaemonDir(projectId: string, profileId?: string): string {

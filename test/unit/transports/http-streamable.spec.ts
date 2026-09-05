@@ -11,6 +11,7 @@ import {
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   ManagementCredentialStore,
 } from "../../../src/control-plane/index.js";
+import type { ControlPlaneWorkspace } from "../../../src/control-plane/index.js";
 import {
   DAEMON_BRIDGE_LEASES_PATH,
   createHttpServerTransport,
@@ -633,6 +634,74 @@ describe("createHttpServerTransport control-plane routes", () => {
       errorRate: 100,
       toolCallsTotal: 1,
     });
+
+    await handle.stop();
+  });
+
+  it("serves authenticated workspace inventory and context status", async () => {
+    const workspace: ControlPlaneWorkspace = {
+      id: "workspace-1",
+      directory: "/tmp/project-a",
+      configPath: "/tmp/project-a/routermcp.jsonc",
+      configScope: "project-local",
+      profileId: "profile-1",
+      configDigest: "a".repeat(64),
+      state: "known",
+      activeConnections: 0,
+      firstSeenAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+    };
+    const controlPlane = new ControlPlane({
+      getStatus: () => ({
+        state: "ready",
+        instanceId: "instance-1",
+        version: "0.2.1",
+        protocolVersion: "1",
+        profile: "profile-1",
+        configDigest: workspace.configDigest,
+        host: "127.0.0.1",
+        port: 7858,
+        mcpUrl: "http://127.0.0.1:7858/mcp",
+        controlUrl: "http://127.0.0.1:7858",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        uptimeSeconds: 1,
+      }),
+      getServers: () => [],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => workspace.id,
+      getWorkspaces: () => [workspace],
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "secret",
+      controlPlane,
+    });
+    await handle.start();
+
+    const headers = { Authorization: "Bearer secret" };
+    const inventory = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces", { headers }),
+    );
+    expect(inventory.status).toBe(200);
+    expect((await inventory.json()).workspaces).toEqual([
+      expect.objectContaining({ id: workspace.id, state: "current", directory: workspace.directory }),
+    ]);
+
+    const status = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${workspace.id}/status`, { headers }),
+    );
+    expect(status.status).toBe(200);
+    const statusPayload = await status.json();
+    expect(statusPayload).toEqual(
+      expect.objectContaining({
+        workspace: expect.objectContaining({ id: workspace.id, state: "current" }),
+        status: expect.objectContaining({ instanceId: "instance-1" }),
+      }),
+    );
+
+    const missing = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/unknown/status", { headers }),
+    );
+    expect(missing.status).toBe(404);
 
     await handle.stop();
   });

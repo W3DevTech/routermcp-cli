@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 import { resolveConfigFromPath } from "../config/loader.js";
 import {
-  ensureRunning,
   fingerprintConfigFile,
   getDaemonPaths,
-  getDaemonStatus,
   getProjectId,
-  restartDaemon,
-  stopDaemon,
+  ensureWorkspaceRunning,
+  getWorkspaceDaemonStatus,
+  restartWorkspaceDaemon,
+  stopWorkspaceDaemon,
   type DaemonStatus,
 } from "../daemon/index.js";
 
@@ -22,7 +22,7 @@ export interface DaemonCommandOptions {
 
 export async function startCommand(options: DaemonCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  const status = await ensureRunning(context.paths, {
+  const status = await ensureWorkspaceRunning(context.workspace, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
     host: options.host ?? context.configuredHost,
@@ -34,15 +34,15 @@ export async function startCommand(options: DaemonCommandOptions): Promise<void>
 
 export async function statusCommand(options: DaemonCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  const status = await getDaemonStatus(context.paths, {
-    configFingerprint: context.configFingerprint,
+  const status = await getWorkspaceDaemonStatus(context.workspace, {
+    healthTimeoutMs: 1_000,
   });
   printStatus(status, options.json);
 }
 
 export async function stopCommand(options: DaemonCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  await stopDaemon(context.paths);
+  await stopWorkspaceDaemon(context.workspace);
   const status: DaemonStatus = {
     running: false,
     state: "stopped",
@@ -53,7 +53,7 @@ export async function stopCommand(options: DaemonCommandOptions): Promise<void> 
 
 export async function restartCommand(options: DaemonCommandOptions): Promise<void> {
   const context = await resolveDaemonContext(options);
-  const status = await restartDaemon(context.paths, {
+  const status = await restartWorkspaceDaemon(context.workspace, {
     configFingerprint: context.configFingerprint,
     projectPath: context.projectPath,
     host: options.host ?? context.configuredHost,
@@ -66,10 +66,17 @@ export async function restartCommand(options: DaemonCommandOptions): Promise<voi
 export interface DaemonContext {
   configFingerprint: string;
   configPath: string;
+  configScope: import("../config/types.js").ConfigScope;
   configuredHost?: string;
   configuredPort?: number;
   paths: ReturnType<typeof getDaemonPaths>;
   projectPath: string;
+  workspace: {
+    directory: string;
+    configPath: string;
+    configScope: import("../config/types.js").ConfigScope;
+    configDigest: string;
+  };
 }
 
 export async function resolveDaemonContext(options: DaemonCommandOptions): Promise<DaemonContext> {
@@ -82,10 +89,17 @@ export async function resolveDaemonContext(options: DaemonCommandOptions): Promi
   return {
     configFingerprint,
     configPath,
+    configScope: resolved.scope,
     configuredHost: resolved.config.httpServer?.host,
     configuredPort: resolved.config.httpServer?.port,
     paths,
     projectPath,
+    workspace: {
+      directory: projectPath,
+      configPath,
+      configScope: resolved.scope,
+      configDigest: configFingerprint,
+    },
   };
 }
 

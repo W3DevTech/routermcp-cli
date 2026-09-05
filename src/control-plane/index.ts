@@ -70,6 +70,12 @@ export type ControlPlaneSessionKind = "bridge" | "mcp" | "control";
 export type ControlPlaneSessionState = "active" | "idle" | "expired" | "closing";
 export type ControlPlaneEventLevel = "debug" | "info" | "warn" | "error";
 export type ControlPlaneServerKind = "mcp" | "openapi";
+export type ControlPlaneWorkspaceState =
+  | "current"
+  | "active"
+  | "known"
+  | "stale"
+  | "unavailable";
 
 export interface ControlPlaneStatus {
   state: ControlPlaneDaemonState;
@@ -85,6 +91,10 @@ export interface ControlPlaneStatus {
   controlUrl: string;
   startedAt: string;
   uptimeSeconds: number;
+  /** Current workspace selected by the CLI handoff, when one is known. */
+  workspaceId?: string;
+  workspaceDirectory?: string;
+  workspaceConfigPath?: string;
 }
 
 export interface ControlPlaneServer {
@@ -114,10 +124,26 @@ export interface ControlPlaneSession {
   clientName?: string;
   clientVersion?: string;
   profile?: string;
+  workspaceId?: string;
   state: ControlPlaneSessionState;
   connectedAt: string;
   lastSeenAt: string;
   leaseExpiresAt?: string;
+}
+
+/** Local-only workspace identity exposed to authenticated management clients. */
+export interface ControlPlaneWorkspace {
+  id: string;
+  directory: string;
+  configPath: string;
+  configScope: "project-local" | "user-project" | "user-global";
+  profileId: string;
+  configDigest: string;
+  state: ControlPlaneWorkspaceState;
+  activeConnections: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastError?: string;
 }
 
 export interface ControlPlaneMetrics {
@@ -133,6 +159,15 @@ export interface ControlPlaneMetrics {
     p95: number;
     p99: number;
   };
+}
+
+/** Complete context snapshot returned by a workspace status route. */
+export interface ControlPlaneWorkspaceStatus {
+  workspace: ControlPlaneWorkspace;
+  status: ControlPlaneStatus;
+  servers: ControlPlaneServer[];
+  sessions: ControlPlaneSession[];
+  metrics: ControlPlaneMetrics;
 }
 
 export interface ControlPlaneEvent {
@@ -157,6 +192,12 @@ export interface ControlPlaneSource {
   getLeases?: () => readonly ConnectionLease[];
   /** Context-bound config/mode management; absent on unmanaged servers. */
   management?: ControlPlaneManagementSource;
+  /** Optional multi-directory registry snapshots. */
+  getWorkspaces?: () => ControlPlaneWorkspace[];
+  /** Return a fully scoped snapshot, or null when the workspace is unknown. */
+  getWorkspaceStatus?: (workspaceId: string) => ControlPlaneWorkspaceStatus | null;
+  /** Workspace attached to the current CLI handoff, if one was supplied. */
+  getCurrentWorkspaceId?: () => string | null;
   restart?: () => Promise<ControlPlaneRestartResult> | ControlPlaneRestartResult;
   now?: () => number;
 }
@@ -193,51 +234,11 @@ export class ControlPlane {
   }
 
   getStatus(): ControlPlaneStatus {
-    const status = this.source.getStatus();
-    return {
-      state: status.state,
-      instanceId: sanitizeText(status.instanceId),
-      ...(isSafePid(status.pid) ? { pid: status.pid } : {}),
-      version: sanitizeText(status.version),
-      protocolVersion: sanitizeText(status.protocolVersion),
-      profile: sanitizeText(status.profile),
-      configDigest: sanitizeText(status.configDigest),
-      host: sanitizeText(status.host),
-      port: normalizeCount(status.port),
-      mcpUrl: sanitizeUrl(status.mcpUrl) ?? "",
-      controlUrl: sanitizeUrl(status.controlUrl) ?? "",
-      startedAt: sanitizeText(status.startedAt),
-      uptimeSeconds: normalizeMetric(status.uptimeSeconds),
-    };
+    return sanitizeStatus(this.source.getStatus());
   }
 
   getServers(): ControlPlaneServer[] {
-    return this.source.getServers().map((server) => {
-      const url = server.url ? sanitizeUrl(server.url) : undefined;
-      const lastCheckedAt = server.lastCheckedAt
-        ? sanitizeText(server.lastCheckedAt)
-        : undefined;
-      const lastError = server.lastError ? sanitizeText(server.lastError) : undefined;
-
-      return {
-        id: sanitizeText(server.id),
-        name: sanitizeText(server.name),
-        ...(server.kind ? { kind: server.kind } : {}),
-        ...(url ? { url } : {}),
-        ...(server.transport ? { transport: sanitizeText(server.transport) } : {}),
-        ...(server.enabled === undefined ? {} : { enabled: server.enabled }),
-        ...(server.observedState ? { observedState: server.observedState } : {}),
-        ...(server.configRevision
-          ? { configRevision: sanitizeText(server.configRevision) }
-          : {}),
-        ...(server.lastChangedAt ? { lastChangedAt: sanitizeText(server.lastChangedAt) } : {}),
-        state: server.state,
-        toolCount: normalizeCount(server.toolCount),
-        ...(isFiniteMetric(server.latencyMs) ? { latencyMs: normalizeMetric(server.latencyMs) } : {}),
-        ...(lastCheckedAt ? { lastCheckedAt } : {}),
-        ...(lastError ? { lastError } : {}),
-      };
-    });
+    return sanitizeServers(this.source.getServers());
   }
 
   async getFeatures(): Promise<ControlPlaneFeatures | null> {
@@ -290,17 +291,75 @@ export class ControlPlane {
   }
 
   getSessions(): ControlPlaneSession[] {
-    return this.source.getSessions().map((session) => ({
-      id: sanitizeText(session.id),
-      kind: session.kind,
-      ...(session.clientName ? { clientName: sanitizeText(session.clientName) } : {}),
-      ...(session.clientVersion ? { clientVersion: sanitizeText(session.clientVersion) } : {}),
-      ...(session.profile ? { profile: sanitizeText(session.profile) } : {}),
-      state: session.state,
-      connectedAt: sanitizeText(session.connectedAt),
-      lastSeenAt: sanitizeText(session.lastSeenAt),
-      ...(session.leaseExpiresAt ? { leaseExpiresAt: sanitizeText(session.leaseExpiresAt) } : {}),
-    }));
+    return sanitizeSessions(this.source.getSessions());
+  }
+
+  /**
+   * Return local workspace records newest/current first. The current marker
+   * is derived from the handoff context and is never persisted in the
+   * registry, so a browser cannot make an arbitrary directory current by
+   * changing its own state.
+   */
+  getWorkspaces(): ControlPlaneWorkspace[] {
+    const currentWorkspaceId = this.source.getCurrentWorkspaceId?.() ?? null;
+    const workspaces = this.source.getWorkspaces?.() ?? [];
+
+    return workspaces
+      .map((workspace) => sanitizeWorkspace(workspace, workspace.id === currentWorkspaceId))
+      .sort(compareWorkspaces);
+  }
+
+  /** Return a redacted, context-scoped snapshot for a known workspace. */
+  getWorkspaceStatus(workspaceId: string): ControlPlaneWorkspaceStatus | null {
+    const currentWorkspaceId = this.source.getCurrentWorkspaceId?.() ?? null;
+    if (this.source.getWorkspaceStatus) {
+      const status = this.source.getWorkspaceStatus(workspaceId);
+      if (!status) return null;
+      return {
+        workspace: sanitizeWorkspace(
+          status.workspace,
+          status.workspace.id === currentWorkspaceId,
+        ),
+        status: sanitizeStatus(status.status),
+        servers: sanitizeServers(status.servers),
+        sessions: sanitizeSessions(status.sessions),
+        metrics: sanitizeMetrics(status.metrics),
+      };
+    }
+
+    const workspace = this.getWorkspaces().find((candidate) => candidate.id === workspaceId);
+    if (!workspace) return null;
+
+    // Until isolated contexts are mounted, a non-current workspace is
+    // represented explicitly as offline rather than receiving another
+    // directory's servers or credentials. This is the safe incremental
+    // behavior for clients that discover multiple known directories.
+    if (currentWorkspaceId && currentWorkspaceId !== workspaceId) {
+      const currentStatus = this.getStatus();
+      return {
+        workspace,
+        status: sanitizeStatus({
+          ...currentStatus,
+          state: "offline",
+          profile: workspace.profileId,
+          configDigest: workspace.configDigest,
+          workspaceId: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceConfigPath: workspace.configPath,
+        }),
+        servers: [],
+        sessions: [],
+        metrics: emptyMetrics(),
+      };
+    }
+
+    return {
+      workspace,
+      status: this.getStatus(),
+      servers: this.getServers(),
+      sessions: this.getSessions(),
+      metrics: this.getMetrics(),
+    };
   }
 
   getMetrics(): ControlPlaneMetrics {
@@ -379,6 +438,123 @@ export class ControlPlane {
       });
     return this.restartInFlight;
   }
+}
+
+function sanitizeStatus(status: ControlPlaneStatus): ControlPlaneStatus {
+  return {
+    state: status.state,
+    instanceId: sanitizeText(status.instanceId),
+    ...(isSafePid(status.pid) ? { pid: status.pid } : {}),
+    version: sanitizeText(status.version),
+    protocolVersion: sanitizeText(status.protocolVersion),
+    profile: sanitizeText(status.profile),
+    configDigest: sanitizeText(status.configDigest),
+    host: sanitizeText(status.host),
+    port: normalizeCount(status.port),
+    mcpUrl: sanitizeUrl(status.mcpUrl) ?? "",
+    controlUrl: sanitizeUrl(status.controlUrl) ?? "",
+    startedAt: sanitizeText(status.startedAt),
+    uptimeSeconds: normalizeMetric(status.uptimeSeconds),
+    ...(status.workspaceId ? { workspaceId: sanitizeText(status.workspaceId) } : {}),
+    ...(status.workspaceDirectory
+      ? { workspaceDirectory: sanitizeText(status.workspaceDirectory) }
+      : {}),
+    ...(status.workspaceConfigPath
+      ? { workspaceConfigPath: sanitizeText(status.workspaceConfigPath) }
+      : {}),
+  };
+}
+
+function sanitizeServers(servers: readonly ControlPlaneServer[]): ControlPlaneServer[] {
+  return servers.map((server) => {
+    const url = server.url ? sanitizeUrl(server.url) : undefined;
+    const lastCheckedAt = server.lastCheckedAt ? sanitizeText(server.lastCheckedAt) : undefined;
+    const lastError = server.lastError ? sanitizeText(server.lastError) : undefined;
+
+    return {
+      id: sanitizeText(server.id),
+      name: sanitizeText(server.name),
+      ...(url ? { url } : {}),
+      ...(server.transport ? { transport: sanitizeText(server.transport) } : {}),
+      state: server.state,
+      toolCount: normalizeCount(server.toolCount),
+      ...(isFiniteMetric(server.latencyMs) ? { latencyMs: normalizeMetric(server.latencyMs) } : {}),
+      ...(lastCheckedAt ? { lastCheckedAt } : {}),
+      ...(lastError ? { lastError } : {}),
+    };
+  });
+}
+
+function sanitizeSessions(sessions: readonly ControlPlaneSession[]): ControlPlaneSession[] {
+  return sessions.map((session) => ({
+    id: sanitizeText(session.id),
+    kind: session.kind,
+    ...(session.clientName ? { clientName: sanitizeText(session.clientName) } : {}),
+    ...(session.clientVersion ? { clientVersion: sanitizeText(session.clientVersion) } : {}),
+    ...(session.profile ? { profile: sanitizeText(session.profile) } : {}),
+    ...(session.workspaceId ? { workspaceId: sanitizeText(session.workspaceId) } : {}),
+    state: session.state,
+    connectedAt: sanitizeText(session.connectedAt),
+    lastSeenAt: sanitizeText(session.lastSeenAt),
+    ...(session.leaseExpiresAt ? { leaseExpiresAt: sanitizeText(session.leaseExpiresAt) } : {}),
+  }));
+}
+
+function sanitizeMetrics(metrics: ControlPlaneMetrics): ControlPlaneMetrics {
+  return {
+    requestsTotal: normalizeCount(metrics.requestsTotal),
+    requestsPerSecond: normalizeMetric(metrics.requestsPerSecond),
+    errorsTotal: normalizeCount(metrics.errorsTotal),
+    errorRate: normalizeMetric(metrics.errorRate),
+    toolCallsTotal: normalizeCount(metrics.toolCallsTotal),
+    activeSessions: normalizeCount(metrics.activeSessions),
+    activeLeases: normalizeCount(metrics.activeLeases),
+    latencyMs: {
+      p50: normalizeMetric(metrics.latencyMs.p50),
+      p95: normalizeMetric(metrics.latencyMs.p95),
+      p99: normalizeMetric(metrics.latencyMs.p99),
+    },
+  };
+}
+
+function emptyMetrics(): ControlPlaneMetrics {
+  return {
+    requestsTotal: 0,
+    requestsPerSecond: 0,
+    errorsTotal: 0,
+    errorRate: 0,
+    toolCallsTotal: 0,
+    activeSessions: 0,
+    activeLeases: 0,
+    latencyMs: { p50: 0, p95: 0, p99: 0 },
+  };
+}
+
+function sanitizeWorkspace(
+  workspace: ControlPlaneWorkspace,
+  current: boolean,
+): ControlPlaneWorkspace {
+  return {
+    id: sanitizeText(workspace.id),
+    directory: sanitizeText(workspace.directory),
+    configPath: sanitizeText(workspace.configPath),
+    configScope: workspace.configScope,
+    profileId: sanitizeText(workspace.profileId),
+    configDigest: sanitizeText(workspace.configDigest),
+    state: current ? "current" : workspace.state,
+    activeConnections: normalizeCount(workspace.activeConnections),
+    firstSeenAt: sanitizeText(workspace.firstSeenAt),
+    lastSeenAt: sanitizeText(workspace.lastSeenAt),
+    ...(workspace.lastError ? { lastError: sanitizeText(workspace.lastError) } : {}),
+  };
+}
+
+function compareWorkspaces(left: ControlPlaneWorkspace, right: ControlPlaneWorkspace): number {
+  if (left.state === "current" && right.state !== "current") return -1;
+  if (left.state !== "current" && right.state === "current") return 1;
+  if (left.state === "active" && right.state !== "active") return -1;
+  if (left.state !== "active" && right.state === "active") return 1;
+  return Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt);
 }
 
 export function boundEventLimit(value: number): number {
