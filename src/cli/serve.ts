@@ -529,6 +529,10 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         getSessions: () => createControlPlaneSessions(gateway, runtimeManifest, sessionWorkspaceIds),
         getLeases: () => workspaceLeaseTracker?.leases ?? gateway?.getConnectionLeases() ?? [],
         getCurrentWorkspaceId: () => currentWorkspace?.id ?? null,
+        execution: {
+          getWorkspaceExecution: (workspaceId) =>
+            workspaceRuntimeManager?.get(workspaceId)?.gateway.getExecutionService() ?? null,
+        },
         getWorkspaces: () =>
           workspaceRegistry
             ? workspaceRegistry.listSync({ currentWorkspaceId: currentWorkspace?.id })

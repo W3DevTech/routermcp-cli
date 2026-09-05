@@ -20,6 +20,7 @@ import {
   type ServerTransportHandle,
 } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
+import { ExecutionService } from "./execution-service.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
 import type { RuntimeExecutionContext } from "./execution-context.js";
 import {
@@ -69,6 +70,7 @@ export class Gateway {
   private openApiHandler: OpenApiHandler | null = null;
   private readonly connectionTracker: BridgeLeaseTracker | null;
   private readonly ownedConnectionTracker: ConnectionTracker | null;
+  private readonly executionService: ExecutionService;
 
   constructor(options: GatewayOptions) {
     this.options = options;
@@ -99,6 +101,15 @@ export class Gateway {
       undefined,
       options.executionContext,
     );
+
+    this.executionService = new ExecutionService({
+      getCapabilities: () => this.cachedCapabilities,
+      getSession: (sessionId) => this.getSessionForExecution(sessionId),
+      callTool: (sessionId, name, args) => this.callToolForExecution(sessionId, name, args),
+      cleanupSession: (sessionId) => this.sessionManager?.cleanup(sessionId) ?? Promise.resolve(),
+      getCodeModeConfig: () => this.options.config.codeMode,
+      getToolSearchConfig: () => this.options.config.mcpToolSearch,
+    });
 
     this.registerHandlers();
   }
@@ -502,6 +513,11 @@ export class Gateway {
     return this.serverTransport?.getPort?.() ?? this.options.httpPort ?? null;
   }
 
+  /** Shared tool/search/code surface used by the authenticated control plane. */
+  getExecutionService(): ExecutionService {
+    return this.executionService;
+  }
+
   private log(message: string): void {
     if (this.options.verbose) {
       console.error(`[gateway] ${message}`);
@@ -537,6 +553,20 @@ export class Gateway {
           isError: true,
         };
     }
+  }
+
+  private getSessionForExecution(sessionId: string): VirtualSession {
+    if (!this.sessionManager) throw new Error("Session manager not initialized");
+    return this.sessionManager.getOrCreate(sessionId);
+  }
+
+  private async callToolForExecution(
+    sessionId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<CallToolResult> {
+    if (this.openApiHandler?.hasTool(name)) return this.openApiHandler.callTool(name, args);
+    return this.getSessionForExecution(sessionId).aggregator.callTool(name, args);
   }
 
   private async handleToolSearchMetaTool(

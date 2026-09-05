@@ -1,5 +1,9 @@
 import type { SandboxOptions } from "@sebastianwessel/quickjs";
-import type { Aggregator } from "../aggregator.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+export interface ToolCallDispatcher {
+  callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult>;
+}
 
 export interface ToolCallRecord {
   tool: string;
@@ -57,7 +61,7 @@ function formatValue(value: unknown): string {
 
 export async function executeCodeMode(
   code: string,
-  aggregator: Aggregator,
+  aggregator: ToolCallDispatcher,
   toolsByServer: Map<string, string[]>,
   config: SandboxConfig = {},
 ): Promise<CodeModeResult> {

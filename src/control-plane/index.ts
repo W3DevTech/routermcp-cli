@@ -1,4 +1,14 @@
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
+import {
+  ExecutionJobManager,
+  type ExecutionJobSnapshot,
+} from "../core/execution-jobs.js";
+import type {
+  ExecutionSearchResult,
+  ExecutionService,
+  ExecutionTool,
+} from "../core/execution-service.js";
+import { ExecutionError } from "../core/execution-service.js";
 import type {
   ControlPlaneFeatures,
   ControlPlaneManagementSource,
@@ -203,6 +213,15 @@ export interface ControlPlaneWorkspaceStatus {
   features?: ControlPlaneFeatures;
 }
 
+export interface ControlPlaneExecutionSource {
+  /** Returns only the runtime bound to the requested registered workspace. */
+  getWorkspaceExecution: (workspaceId: string) => ExecutionService | null;
+}
+
+export type ControlPlaneExecutionRequest =
+  | { operation: "tool-call"; name: string; arguments?: unknown }
+  | { operation: "code-run"; code: string };
+
 export interface ControlPlaneEvent {
   id: string;
   timestamp: string;
@@ -267,6 +286,8 @@ export interface ControlPlaneSource {
     | Promise<ControlPlaneWorkspaceActivationResult>;
   /** Workspace attached to the current CLI handoff, if one was supplied. */
   getCurrentWorkspaceId?: () => string | null;
+  /** Optional execution adapter for authenticated workspace control routes. */
+  execution?: ControlPlaneExecutionSource;
   restart?: () => Promise<ControlPlaneRestartResult> | ControlPlaneRestartResult;
   now?: () => number;
 }
@@ -313,11 +334,73 @@ export class ControlPlane {
   private errorsTotal = 0;
   private toolCallsTotal = 0;
   private restartInFlight: Promise<ControlPlaneRestartResult> | null = null;
+  private readonly executionJobs: ExecutionJobManager;
 
   constructor(source: ControlPlaneSource) {
     this.source = source;
     this.now = source.now ?? Date.now;
     this.startedAt = this.now();
+    this.executionJobs = new ExecutionJobManager({
+      onEvent: (event) => {
+        const level = event.status === "failed" ? "error" : event.status === "cancelled" ? "warn" : "debug";
+        this.recordEvent({
+          level,
+          type: `execution.${event.status}`,
+          message: `Execution job ${event.status}`,
+          workspaceId: event.workspaceId,
+          metadata: {
+            operation: event.operation,
+            jobId: event.jobId,
+            status: event.status,
+            ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+            ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+          },
+        });
+      },
+    });
+  }
+
+  getWorkspaceExecution(workspaceId: string): ExecutionService | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    return this.source.execution?.getWorkspaceExecution(workspaceId) ?? null;
+  }
+
+  listWorkspaceTools(workspaceId: string, filter = ""): { tools: ExecutionTool[]; typeDefinitions: string } | null {
+    return this.getWorkspaceExecution(workspaceId)?.listTools(filter) ?? null;
+  }
+
+  searchWorkspaceTools(workspaceId: string, task: string): ExecutionSearchResult | null {
+    return this.getWorkspaceExecution(workspaceId)?.searchTools(task) ?? null;
+  }
+
+  submitWorkspaceExecution(
+    workspaceId: string,
+    request: ControlPlaneExecutionRequest,
+  ): ExecutionJobSnapshot {
+    if (!this.isWorkspaceRegistered(workspaceId)) throw new ControlPlaneWorkspaceNotFoundError();
+    const execution = this.getWorkspaceExecution(workspaceId);
+    if (!execution) throw new ExecutionError("Workspace runtime is not ready", "not-ready", 409);
+    const sessionId = `control:${crypto.randomUUID()}`;
+    return this.executionJobs.submit(workspaceId, request.operation, async () => {
+      try {
+        if (request.operation === "tool-call") {
+          return await execution.callTool(sessionId, request.name, request.arguments);
+        }
+        return await execution.executeCode(sessionId, request.code);
+      } finally {
+        await execution.cleanupSession(sessionId);
+      }
+    });
+  }
+
+  getWorkspaceJob(workspaceId: string, jobId: string): ExecutionJobSnapshot | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    return this.executionJobs.get(workspaceId, jobId);
+  }
+
+  cancelWorkspaceJob(workspaceId: string, jobId: string): ExecutionJobSnapshot | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    return this.executionJobs.cancel(workspaceId, jobId);
   }
 
   getStatus(): ControlPlaneStatus {

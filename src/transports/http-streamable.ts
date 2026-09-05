@@ -34,6 +34,8 @@ import {
   type BrowserManagementSessionStore,
 } from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
+import { ExecutionError } from "../core/execution-service.js";
+import { ExecutionJobQueueFullError } from "../core/execution-jobs.js";
 
 export {
   CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
@@ -811,6 +813,11 @@ type ControlPlaneRoute =
   | { kind: "workspace-sessions"; workspaceId: string }
   | { kind: "workspace-metrics"; workspaceId: string }
   | { kind: "workspace-events"; workspaceId: string; limit: number }
+  | { kind: "workspace-tools"; workspaceId: string; filter: string }
+  | { kind: "workspace-tool-search"; workspaceId: string }
+  | { kind: "workspace-tool-call"; workspaceId: string }
+  | { kind: "workspace-code-run"; workspaceId: string }
+  | { kind: "workspace-job"; workspaceId: string; jobId: string }
   | { kind: "invalid"; message: string };
 
 type ManagementCredentialRoute =
@@ -857,7 +864,7 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
   const workspacePrefix = `${CONTROL_PLANE_PATH}/workspaces/`;
   if (url.pathname.startsWith(workspacePrefix)) {
     const rawParts = url.pathname.slice(workspacePrefix.length).split("/");
-    if (url.search && rawParts[1] !== "events") {
+    if (url.search && rawParts[1] !== "events" && rawParts[1] !== "tools") {
       return {
         kind: "invalid",
         message: "Workspace control-plane endpoints do not accept query parameters",
@@ -911,6 +918,30 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
             limit: Math.min(Math.max(parsed, 1), CONTROL_PLANE_MAX_EVENT_LIMIT),
           };
         }
+        case "tools": {
+          const rawFilter = url.searchParams.get("filter");
+          if (url.searchParams.size > (rawFilter === null ? 0 : 1)) {
+            return { kind: "invalid", message: "Only the filter query parameter is supported" };
+          }
+          if (rawFilter !== null && (rawFilter.length === 0 || rawFilter.length > 256)) {
+            return { kind: "invalid", message: "The filter query parameter is invalid" };
+          }
+          return { kind: "workspace-tools", workspaceId, filter: rawFilter ?? "" };
+        }
+        case "tool-calls":
+          return url.search
+            ? { kind: "invalid", message: "The tool-calls endpoint does not accept query parameters" }
+            : { kind: "workspace-tool-call", workspaceId };
+        case "code-runs":
+          return url.search
+            ? { kind: "invalid", message: "The code-runs endpoint does not accept query parameters" }
+            : { kind: "workspace-code-run", workspaceId };
+        case "jobs": {
+          if (url.search) {
+            return { kind: "invalid", message: "The jobs endpoint does not accept query parameters" };
+          }
+          return { kind: "invalid", message: "A job ID is required" };
+        }
         default:
           return { kind: "invalid", message: "Invalid workspace control-plane path" };
       }
@@ -922,6 +953,17 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
         return { kind: "invalid", message: "The workspace server endpoint requires one server ID" };
       }
       return { kind: "workspace-server", workspaceId, serverId };
+    }
+
+    if (parts.length === 3 && parts[1] === "jobs") {
+      if (url.search) {
+        return { kind: "invalid", message: "Job endpoints do not accept query parameters" };
+      }
+      const jobId = parts[2] ? decodePathPart(parts[2]) : null;
+      if (!jobId || jobId.length > 128 || jobId.includes("/")) {
+        return { kind: "invalid", message: "The job endpoint requires one job ID" };
+      }
+      return { kind: "workspace-job", workspaceId, jobId };
     }
 
     return { kind: "invalid", message: "Invalid workspace control-plane path" };
@@ -1065,6 +1107,59 @@ async function handleControlPlaneRequest(
         responseHeaders,
       );
     }
+  }
+
+  if (route.kind === "workspace-tools") {
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    try {
+      const tools = controlPlane.listWorkspaceTools(route.workspaceId, route.filter);
+      return tools ? jsonResponse(tools, 200, responseHeaders) : executionUnavailableResponse(responseHeaders);
+    } catch (error) {
+      return executionErrorResponse(error, responseHeaders);
+    }
+  }
+
+  if (route.kind === "workspace-tool-search") {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    try {
+      const body = await parseManagementJsonBody(request);
+      const task = parseExecutionTask(body);
+      const result = controlPlane.searchWorkspaceTools(route.workspaceId, task);
+      return result ? jsonResponse(result, 200, responseHeaders) : executionUnavailableResponse(responseHeaders);
+    } catch (error) {
+      return executionErrorResponse(error, responseHeaders);
+    }
+  }
+
+  if (route.kind === "workspace-tool-call" || route.kind === "workspace-code-run") {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    try {
+      const body = await parseManagementJsonBody(request);
+      const executionRequest =
+        route.kind === "workspace-tool-call" ? parseExecutionToolCall(body) : parseExecutionCodeRun(body);
+      const job = controlPlane.submitWorkspaceExecution(route.workspaceId, executionRequest);
+      return jsonResponse({ job }, 202, responseHeaders);
+    } catch (error) {
+      return executionErrorResponse(error, responseHeaders);
+    }
+  }
+
+  if (route.kind === "workspace-job") {
+    if (request.method === "GET" || request.method === "DELETE") {
+      const job = request.method === "GET"
+        ? controlPlane.getWorkspaceJob(route.workspaceId, route.jobId)
+        : controlPlane.cancelWorkspaceJob(route.workspaceId, route.jobId);
+      return job
+        ? jsonResponse({ job }, 200, responseHeaders)
+        : jsonResponse({ error: "job-not-found", message: "Execution job was not found" }, 404, responseHeaders);
+    }
+    return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
   }
 
   if (route.kind === "features") {
@@ -1477,6 +1572,76 @@ function managementErrorResponse(
     500,
     headers,
   );
+}
+
+function executionUnavailableResponse(headers: Record<string, string>): Response {
+  return jsonResponse(
+    { error: "not-ready", message: "Workspace runtime is not ready for execution" },
+    409,
+    headers,
+  );
+}
+
+function executionErrorResponse(error: unknown, headers: Record<string, string>): Response {
+  if (error instanceof ExecutionError) {
+    return jsonResponse({ error: error.code, message: error.message }, error.status, headers);
+  }
+  if (error instanceof ExecutionJobQueueFullError) {
+    return jsonResponse({ error: error.code, message: error.message }, error.status, headers);
+  }
+  if (error instanceof RequestBodyLimitError) {
+    return jsonResponse(
+      { error: "request-too-large", message: "Execution request body is too large" },
+      413,
+      headers,
+    );
+  }
+  return jsonResponse(
+    { error: "execution-failed", message: "The execution request could not be accepted" },
+    500,
+    headers,
+  );
+}
+
+function parseExecutionTask(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExecutionError("Request body must be a JSON object", "invalid-request", 400);
+  }
+  const task = (value as Record<string, unknown>).task;
+  if (typeof task !== "string" || task.trim().length === 0 || task.length > 2_048) {
+    throw new ExecutionError("task is required and must be at most 2048 characters", "invalid-request", 400);
+  }
+  return task;
+}
+
+function parseExecutionToolCall(value: unknown): {
+  operation: "tool-call";
+  name: string;
+  arguments?: unknown;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExecutionError("Request body must be a JSON object", "invalid-request", 400);
+  }
+  const body = value as Record<string, unknown>;
+  if (typeof body.name !== "string" || body.name.trim().length === 0 || body.name.length > 512) {
+    throw new ExecutionError("name is required and must be at most 512 characters", "invalid-request", 400);
+  }
+  return {
+    operation: "tool-call",
+    name: body.name,
+    ...(body.arguments !== undefined ? { arguments: body.arguments } : {}),
+  };
+}
+
+function parseExecutionCodeRun(value: unknown): { operation: "code-run"; code: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExecutionError("Request body must be a JSON object", "invalid-request", 400);
+  }
+  const code = (value as Record<string, unknown>).code;
+  if (typeof code !== "string" || code.trim().length === 0 || code.length > 64 * 1024) {
+    throw new ExecutionError("code is required and must be at most 65536 characters", "invalid-request", 400);
+  }
+  return { operation: "code-run", code };
 }
 
 function sanitizeMutationResult(result: ControlPlaneMutationResult): ControlPlaneMutationResult {
