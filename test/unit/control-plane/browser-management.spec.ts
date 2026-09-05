@@ -130,6 +130,25 @@ describe("BrowserManagementSessionStore", () => {
     expect(persisted).not.toContain("privateKey");
   });
 
+  it("serializes concurrent persisted device updates", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "routermcp-browser-management-concurrent-"));
+    const path = join(temp, "devices.json");
+    const store = new BrowserManagementSessionStore({ instanceId: "daemon-instance", path });
+    const browsers = Array.from({ length: 8 }, () => createBrowserKey());
+
+    const devices = await Promise.all(
+      browsers.map((browser, index) => store.register({
+        publicKey: browser.publicKey,
+        label: `Browser ${index}`,
+      })),
+    );
+
+    const reloaded = new BrowserManagementSessionStore({ instanceId: "new-daemon-instance", path });
+    await reloaded.initialize();
+    expect(reloaded.list()).toHaveLength(devices.length);
+    expect(reloaded.list()).toEqual(expect.arrayContaining(devices));
+  });
+
   it("does not permit a workspace-scoped credential store to issue a browser host grant", async () => {
     const browser = createBrowserKey();
     const credentials = new ManagementCredentialStore({

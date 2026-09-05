@@ -420,14 +420,24 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       const getWorkspaceStatusAsync = async (
         workspaceId: string,
       ): Promise<ControlPlaneWorkspaceStatus | null> => {
-        const workspace = workspaceRegistry?.getSync(workspaceId);
+        const registry = workspaceRegistry;
+        const workspace = registry?.getSync(workspaceId);
         if (!workspace) return null;
 
         // Registration is intentionally separate from runtime creation. Load
         // the desired config for management reads so a newly registered
         // workspace exposes its configured servers before its first MCP call.
         if (!workspaceConfigs.has(workspaceId)) {
-          await loadWorkspaceConfigSnapshot(workspace);
+          try {
+            await loadWorkspaceConfigSnapshot(workspace);
+          } catch (error) {
+            // A registered directory can disappear or become invalid after
+            // its bridge disconnects. Keep polling useful to the hosted
+            // console by retaining the inventory record and exposing a
+            // sanitized unavailable snapshot instead of propagating a file or
+            // config-parser error as HTTP 500.
+            await registry?.markUnavailable(workspaceId, error).catch(() => undefined);
+          }
         }
         return getWorkspaceStatus(workspaceId);
       };

@@ -105,7 +105,12 @@ export async function resolveDaemonContext(options: DaemonCommandOptions): Promi
 
 function printStatus(status: DaemonStatus, json = false): void {
   if (json) {
-    console.log(JSON.stringify(status.manifest ?? status, null, 2));
+    // `authToken` is intentionally retained on the internal status object so
+    // connect/console can authenticate against the reused host. It must never
+    // cross the CLI output boundary, especially for host status responses that
+    // do not have a profile manifest to select.
+    const { authToken: _authToken, ...safeStatus } = status;
+    console.log(JSON.stringify(safeStatus.manifest ?? safeStatus, null, 2));
     return;
   }
 

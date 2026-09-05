@@ -100,6 +100,7 @@ export class BrowserManagementSessionStore {
   private readonly maxChallenges: number;
   private readonly devices = new Map<string, StoredBrowserDevice>();
   private readonly challenges = new Map<string, PendingChallenge>();
+  private persistenceTail: Promise<void> = Promise.resolve();
   private initialized = false;
 
   constructor(options: BrowserManagementSessionStoreOptions) {
@@ -322,7 +323,15 @@ export class BrowserManagementSessionStore {
     }
   }
 
-  private async persist(): Promise<void> {
+  private persist(): Promise<void> {
+    if (!this.path) return Promise.resolve();
+
+    const operation = this.persistenceTail.then(() => this.persistSnapshot());
+    this.persistenceTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async persistSnapshot(): Promise<void> {
     if (!this.path) return;
     const directory = dirname(this.path);
     await mkdir(directory, { recursive: true, mode: 0o700 });

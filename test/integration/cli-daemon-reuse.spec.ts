@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -69,11 +69,18 @@ describe("CLI daemon reuse", () => {
 
     const status = await runCli(entrypoint, ["status", ...common], env);
     expect(status.code).toBe(0);
+    const hostManifest = JSON.parse(
+      await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+    ) as { localAuthToken: string };
+    expect(hostManifest.localAuthToken).toBeTypeOf("string");
+    expect(status.stdout).not.toContain(hostManifest.localAuthToken);
     const statusManifest = JSON.parse(status.stdout) as {
       pid?: number;
       instanceId?: string;
       state?: string;
+      authToken?: string;
     };
+    expect(statusManifest).not.toHaveProperty("authToken");
     expect(statusManifest.pid).toBe(startedStatus.pid);
     expect(statusManifest.instanceId).toBe(startedStatus.instanceId);
     expect(statusManifest.state).toBe("ready");
@@ -292,6 +299,86 @@ describe("CLI daemon reuse", () => {
         ),
       );
       expect(concurrent.map((response) => response.status)).toEqual([200, 200, 200]);
+    } finally {
+      const stopped = await runCli(
+        entrypoint,
+        ["stop", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
+      await cleanupTempDir(secondProjectDir);
+    }
+  }, 45_000);
+
+  it("returns an unavailable workspace snapshot when its config is missing or malformed", async () => {
+    const secondProjectDir = await createTempDir();
+    const secondConfigPath = await writeConfigFile(secondProjectDir, {
+      mcpServers: { second: { transport: "stdio", command: "true" } },
+    });
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
+
+    try {
+      const first = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+
+      const second = await runCli(
+        entrypoint,
+        ["start", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(second.code, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+      const hostManifest = JSON.parse(
+        await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+      ) as { controlUrl: string; localAuthToken: string };
+      const handoff = await fetch(new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
+      });
+      expect(handoff.status).toBe(201);
+      const grant = (await handoff.json()) as { token: string };
+      const headers = { Authorization: `Bearer ${grant.token}` };
+      const workspaceId = getWorkspaceId(secondProjectDir, secondConfigPath);
+      const endpoint = new URL(
+        `/api/v1/workspaces/${workspaceId}/status`,
+        `${hostManifest.controlUrl}/`,
+      );
+
+      await unlink(secondConfigPath);
+      const missing = await fetch(endpoint, { headers });
+      expect(missing.status).toBe(200);
+      const missingPayload = (await missing.json()) as {
+        workspace: { state: string; lastError?: string };
+        status: { state: string };
+        servers: unknown[];
+      };
+      expect(missingPayload.workspace.state).toBe("unavailable");
+      expect(missingPayload.workspace.lastError).toEqual(expect.any(String));
+      expect(missingPayload.status.state).toBe("offline");
+      expect(missingPayload.servers).toEqual([]);
+
+      await writeFile(secondConfigPath, "{\"mcpServers\":", "utf8");
+      const malformed = await fetch(endpoint, { headers });
+      expect(malformed.status).toBe(200);
+      const malformedPayload = (await malformed.json()) as {
+        workspace: { state: string; lastError?: string };
+        status: { state: string };
+        servers: unknown[];
+      };
+      expect(malformedPayload.workspace.state).toBe("unavailable");
+      expect(malformedPayload.workspace.lastError).toEqual(expect.any(String));
+      expect(malformedPayload.status.state).toBe("offline");
+      expect(malformedPayload.servers).toEqual([]);
     } finally {
       const stopped = await runCli(
         entrypoint,
