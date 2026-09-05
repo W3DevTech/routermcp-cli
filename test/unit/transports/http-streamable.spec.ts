@@ -207,6 +207,54 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     tracker.destroy();
   });
 
+  it.each(["http://localhost:7953", "http://127.0.0.1:7953"])(
+    "allows the documented local Next.js origin (%s) without enabling wildcard CORS",
+    async (origin) => {
+      const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
+      await handle.start();
+
+      const response = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/status", {
+          headers: {
+            Authorization: "Bearer secret",
+            Origin: origin,
+          },
+        }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+      expect(response.headers.get("Access-Control-Allow-Origin")).not.toBe("*");
+
+      await handle.stop();
+    },
+  );
+
+  it("does not broaden the authenticated CORS policy to nearby or arbitrary origins", async () => {
+    const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
+    await handle.start();
+
+    for (const origin of [
+      "http://localhost:7954",
+      "http://127.0.0.1:3000",
+      "https://localhost:7953",
+      "https://evil.example",
+    ]) {
+      const response = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/status", {
+          headers: {
+            Authorization: "Bearer secret",
+            Origin: origin,
+          },
+        }),
+      );
+
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    }
+
+    await handle.stop();
+  });
+
   it("calls the session cleanup callback for DELETE /mcp", async () => {
     const onSessionClose = vi.fn().mockResolvedValue(undefined);
     const handle = createHttpServerTransport(7858, "127.0.0.1", { onSessionClose });

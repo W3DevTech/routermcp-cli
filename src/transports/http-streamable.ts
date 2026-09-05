@@ -83,6 +83,16 @@ export const DAEMON_HEALTH_PATH_LEGACY = "/__routermcp/health";
 export const DAEMON_BRIDGE_LEASES_PATH = "/api/v1/bridge-leases";
 /** Default hosted management origin for a token-protected local daemon. */
 export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
+/**
+ * Exact browser origins used by the hosted console in production and by the
+ * RouterMCP Next.js app during local development. Keep this list finite: the
+ * authenticated daemon must never reflect arbitrary origins or use `*`.
+ */
+export const DEFAULT_DAEMON_CORS_ORIGINS = [
+  DEFAULT_DAEMON_CORS_ORIGIN,
+  "http://localhost:7953",
+  "http://127.0.0.1:7953",
+] as const;
 
 export interface BridgeLeaseTracker {
   acquire: () => ConnectionLease;
@@ -790,7 +800,7 @@ function createCorsPolicy(options: HttpServerOptions): CorsPolicy {
   if (options.authToken) {
     return {
       wildcard: false,
-      origins: new Set([DEFAULT_DAEMON_CORS_ORIGIN]),
+      origins: new Set(DEFAULT_DAEMON_CORS_ORIGINS.map(normalizeOrigin)),
     };
   }
 

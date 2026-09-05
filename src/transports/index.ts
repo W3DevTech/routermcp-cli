@@ -16,6 +16,7 @@ export {
   DAEMON_HEALTH_PATH,
   DAEMON_HEALTH_PATH_LEGACY,
   DEFAULT_DAEMON_CORS_ORIGIN,
+  DEFAULT_DAEMON_CORS_ORIGINS,
   type BridgeLeaseTracker,
   createHttpServerTransport,
   type HttpClientTransportOptions,
