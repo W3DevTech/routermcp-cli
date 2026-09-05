@@ -871,6 +871,83 @@ describe("createHttpServerTransport control-plane routes", () => {
     await handle.stop();
   });
 
+  it("exposes explicit workspace activation without making status reads create runtimes", async () => {
+    const workspace = createTestWorkspace("workspace-activation");
+    const activateWorkspace = vi.fn().mockResolvedValue({
+      workspaceId: workspace.id,
+      state: "initializing" as const,
+      message: "Workspace runtime initialization started",
+    });
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(workspace),
+      getServers: () => [],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => workspace.id,
+      getWorkspaces: () => [workspace],
+      activateWorkspace,
+    });
+    const credentials = new ManagementCredentialStore({
+      authority: "host",
+      workspaceId: workspace.id,
+      generateToken: () => "activation-management-token",
+    });
+    const grant = credentials.issue(workspace.id);
+    const managementHeaders = { Authorization: `Bearer ${grant.token}` };
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "secret",
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const unauthenticated = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${workspace.id}/activate`, {
+        method: "POST",
+      }),
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const read = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${workspace.id}/status`, {
+        headers: managementHeaders,
+      }),
+    );
+    expect(read.status).toBe(200);
+    expect(activateWorkspace).not.toHaveBeenCalled();
+
+    const activate = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${workspace.id}/activate`, {
+        method: "POST",
+        headers: managementHeaders,
+      }),
+    );
+    expect(activate.status).toBe(202);
+    expect(await activate.json()).toEqual({
+      workspaceId: workspace.id,
+      state: "initializing",
+      message: "Workspace runtime initialization started",
+    });
+    expect(activateWorkspace).toHaveBeenCalledWith(workspace.id);
+
+    const wrongMethod = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${workspace.id}/activate`, {
+        headers: managementHeaders,
+      }),
+    );
+    expect(wrongMethod.status).toBe(405);
+
+    const unknown = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/unknown/activate", {
+        method: "POST",
+        headers: managementHeaders,
+      }),
+    );
+    expect(unknown.status).toBe(404);
+    expect(activateWorkspace).toHaveBeenCalledTimes(1);
+
+    await handle.stop();
+  });
+
   it("scopes workspace routes and supports explicitly claimed handoffs", async () => {
     const currentWorkspace = createTestWorkspace("workspace-current", "2026-01-01T00:00:02.000Z");
     const otherWorkspace = createTestWorkspace("workspace-other", "2026-01-01T00:00:01.000Z");

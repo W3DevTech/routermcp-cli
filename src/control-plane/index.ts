@@ -199,6 +199,15 @@ export interface ControlPlaneRestartResult {
   state?: ControlPlaneDaemonState;
 }
 
+/** Result of explicitly materializing one registered workspace runtime. */
+export type ControlPlaneWorkspaceActivationState = "initializing" | "ready" | "error";
+
+export interface ControlPlaneWorkspaceActivationResult {
+  workspaceId: string;
+  state: ControlPlaneWorkspaceActivationState;
+  message: string;
+}
+
 export interface ControlPlaneSource {
   getStatus: () => ControlPlaneStatus;
   getServers: () => ControlPlaneServer[];
@@ -229,6 +238,12 @@ export interface ControlPlaneSource {
   getWorkspaceFeatures?: (
     workspaceId: string,
   ) => ControlPlaneFeatures | null | Promise<ControlPlaneFeatures | null>;
+  /** Explicitly materialize a registered workspace runtime; reads stay pure. */
+  activateWorkspace?: (
+    workspaceId: string,
+  ) =>
+    | ControlPlaneWorkspaceActivationResult
+    | Promise<ControlPlaneWorkspaceActivationResult>;
   /** Workspace attached to the current CLI handoff, if one was supplied. */
   getCurrentWorkspaceId?: () => string | null;
   restart?: () => Promise<ControlPlaneRestartResult> | ControlPlaneRestartResult;
@@ -269,6 +284,10 @@ export class ControlPlane {
   private readonly events: ControlPlaneEvent[] = [];
   private readonly latencySamples: number[] = [];
   private readonly workspaceMetrics = new Map<string, MetricsAccumulator>();
+  private readonly workspaceActivationInFlight = new Map<
+    string,
+    Promise<ControlPlaneWorkspaceActivationResult>
+  >();
   private requestsTotal = 0;
   private errorsTotal = 0;
   private toolCallsTotal = 0;
@@ -339,6 +358,41 @@ export class ControlPlane {
     return this.source.management
       ? this.source.management.updateFeatures(patch, expectedDigest)
       : managementUnavailableMutation("Feature management is not available for this daemon");
+  }
+
+  /** Materialize one registered workspace without making status reads lazy writes. */
+  async activateWorkspace(workspaceId: string): Promise<ControlPlaneWorkspaceActivationResult> {
+    if (!isValidWorkspaceId(workspaceId) || !this.isWorkspaceRegistered(workspaceId)) {
+      throw new ControlPlaneWorkspaceNotFoundError();
+    }
+
+    const existing = this.workspaceActivationInFlight.get(workspaceId);
+    if (existing) return existing;
+
+    const activation = Promise.resolve()
+      .then(() =>
+        this.source.activateWorkspace
+          ? this.source.activateWorkspace(workspaceId)
+          : {
+              workspaceId,
+              state: "error" as const,
+              message: "Workspace activation is not available for this daemon",
+            },
+      )
+      .catch((error) => ({
+        workspaceId,
+        state: "error" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }))
+      .then((result) => sanitizeWorkspaceActivationResult(result, workspaceId));
+    this.workspaceActivationInFlight.set(workspaceId, activation);
+    try {
+      return await activation;
+    } finally {
+      if (this.workspaceActivationInFlight.get(workspaceId) === activation) {
+        this.workspaceActivationInFlight.delete(workspaceId);
+      }
+    }
   }
 
   /** Return the sanitized server snapshot for a known workspace. */
@@ -808,6 +862,21 @@ function sanitizeWorkspace(
     firstSeenAt: sanitizeText(workspace.firstSeenAt),
     lastSeenAt: sanitizeText(workspace.lastSeenAt),
     ...(workspace.lastError ? { lastError: sanitizeText(workspace.lastError) } : {}),
+  };
+}
+
+function sanitizeWorkspaceActivationResult(
+  result: ControlPlaneWorkspaceActivationResult,
+  workspaceId: string,
+): ControlPlaneWorkspaceActivationResult {
+  const state: ControlPlaneWorkspaceActivationState =
+    result.state === "ready" || result.state === "initializing" || result.state === "error"
+      ? result.state
+      : "error";
+  return {
+    workspaceId,
+    state,
+    message: sanitizeText(result.message),
   };
 }
 

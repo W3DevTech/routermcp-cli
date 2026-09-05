@@ -748,6 +748,7 @@ type ControlPlaneRoute =
   | { kind: "events"; limit: number }
   | { kind: "restart" }
   | { kind: "workspaces" }
+  | { kind: "workspace-activate"; workspaceId: string }
   | { kind: "workspace-status"; workspaceId: string }
   | { kind: "workspace-servers"; workspaceId: string }
   | { kind: "workspace-server"; workspaceId: string; serverId: string }
@@ -787,6 +788,8 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
 
     if (parts.length === 2) {
       switch (parts[1]) {
+        case "activate":
+          return { kind: "workspace-activate", workspaceId };
         case "status":
           return { kind: "workspace-status", workspaceId };
         case "servers":
@@ -936,6 +939,20 @@ async function handleControlPlaneRequest(
       404,
       responseHeaders,
     );
+  }
+
+  if (route.kind === "workspace-activate") {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+
+    try {
+      const result = await controlPlane.activateWorkspace(route.workspaceId);
+      const status = result.state === "ready" ? 200 : result.state === "initializing" ? 202 : 409;
+      return jsonResponse(result, status, responseHeaders);
+    } catch (error) {
+      return managementErrorResponse(error, responseHeaders);
+    }
   }
 
   if (route.kind === "restart") {

@@ -98,6 +98,74 @@ describe("ControlPlane", () => {
     ]);
   });
 
+  it("deduplicates concurrent workspace activation and rejects unknown workspaces", async () => {
+    const workspace: ControlPlaneWorkspace = {
+      id: "workspace-activation",
+      directory: "/tmp/workspace-activation",
+      configPath: "/tmp/workspace-activation/routermcp.jsonc",
+      configScope: "project-local",
+      profileId: "profile-activation",
+      configDigest: "a".repeat(64),
+      state: "known",
+      activeConnections: 0,
+      firstSeenAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+    };
+    let resolveActivation!: (value: {
+      workspaceId: string;
+      state: "ready";
+      message: string;
+    }) => void;
+    const activateWorkspace = vi.fn(
+      () =>
+        new Promise<{
+          workspaceId: string;
+          state: "ready";
+          message: string;
+        }>((resolve) => {
+          resolveActivation = resolve;
+        }),
+    );
+    const controlPlane = new ControlPlane({
+      getStatus: () => ({
+        state: "ready",
+        instanceId: "instance",
+        version: "0.2.1",
+        protocolVersion: "1",
+        profile: workspace.profileId,
+        configDigest: workspace.configDigest,
+        host: "127.0.0.1",
+        port: 7858,
+        mcpUrl: "http://127.0.0.1:7858/mcp",
+        controlUrl: "http://127.0.0.1:7858",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        uptimeSeconds: 1,
+      }),
+      getServers: () => [],
+      getSessions: () => [],
+      getWorkspaces: () => [workspace],
+      activateWorkspace,
+    });
+
+    const first = controlPlane.activateWorkspace(workspace.id);
+    const second = controlPlane.activateWorkspace(workspace.id);
+    await vi.waitFor(() => expect(activateWorkspace).toHaveBeenCalledTimes(1));
+    resolveActivation({
+      workspaceId: workspace.id,
+      state: "ready",
+      message: "ready",
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { workspaceId: workspace.id, state: "ready", message: "ready" },
+      { workspaceId: workspace.id, state: "ready", message: "ready" },
+    ]);
+
+    await expect(controlPlane.activateWorkspace("unknown")).rejects.toMatchObject({
+      code: "not-found",
+      status: 404,
+    });
+  });
+
   it("keeps workspace snapshots and mutations scoped to the requested claim", async () => {
     const workspaceA: ControlPlaneWorkspace = {
       id: "workspace-a",

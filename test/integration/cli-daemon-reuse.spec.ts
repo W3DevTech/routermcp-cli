@@ -8,7 +8,7 @@ import {
   getAvailablePort,
   writeConfigFile,
 } from "../helpers/test-utils.js";
-import { getWorkspaceId } from "../../src/daemon/workspace-registry.js";
+import { getWorkspaceId } from "../../src/daemon/index.js";
 
 interface CliResult {
   code: number | null;
@@ -187,6 +187,111 @@ describe("CLI daemon reuse", () => {
       expect(secondConnected.code, `${secondConnected.stdout}\n${secondConnected.stderr}`).toBe(0);
       expect(secondConnected.stderr).toContain(`pid: ${firstStatus.pid}`);
       expect(secondConnected.stdout).toContain('"jsonrpc"');
+    } finally {
+      const stopped = await runCli(
+        entrypoint,
+        ["stop", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(stopped.code, `${stopped.stdout}\n${stopped.stderr}`).toBe(0);
+      await cleanupTempDir(secondProjectDir);
+    }
+  }, 45_000);
+
+  it("explicitly activates a registered workspace and reuses its healthy runtime", async () => {
+    const secondProjectDir = await createTempDir();
+    const secondConfigPath = await writeConfigFile(secondProjectDir, {
+      mcpServers: { second: { transport: "stdio", command: "true" } },
+    });
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: stateDir,
+      ROUTERMCP_TELEMETRY: "0",
+    };
+    const preferredPort = await getAvailablePort();
+    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
+
+    try {
+      const first = await runCli(
+        entrypoint,
+        ["start", "--config", configPath, "--project", projectDir, ...common],
+        env,
+      );
+      expect(first.code, `${first.stdout}\n${first.stderr}`).toBe(0);
+
+      const second = await runCli(
+        entrypoint,
+        ["start", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
+        env,
+      );
+      expect(second.code, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+      const hostManifest = JSON.parse(
+        await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+      ) as { controlUrl: string; localAuthToken: string };
+      const handoff = await fetch(new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
+      });
+      expect(handoff.status).toBe(201);
+      const grant = (await handoff.json()) as { token: string };
+      const headers = { Authorization: `Bearer ${grant.token}` };
+      const workspaceId = getWorkspaceId(secondProjectDir, secondConfigPath);
+
+      const before = await fetch(
+        new URL(`/api/v1/workspaces/${workspaceId}/status`, `${hostManifest.controlUrl}/`),
+        { headers },
+      );
+      expect(before.status).toBe(200);
+      expect((await before.json()).status.state).toBe("offline");
+
+      const activation = await fetch(
+        new URL(`/api/v1/workspaces/${workspaceId}/activate`, `${hostManifest.controlUrl}/`),
+        { method: "POST", headers },
+      );
+      expect(activation.status).toBe(202);
+      expect(await activation.json()).toMatchObject({
+        workspaceId,
+        state: "initializing",
+      });
+
+      const deadline = Date.now() + 10_000;
+      let after = await fetch(
+        new URL(`/api/v1/workspaces/${workspaceId}/status`, `${hostManifest.controlUrl}/`),
+        { headers },
+      );
+      let afterPayload = await after.json();
+      while (Date.now() < deadline) {
+        if (afterPayload.status.state === "ready" || afterPayload.status.state === "degraded") break;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+        after = await fetch(
+          new URL(`/api/v1/workspaces/${workspaceId}/status`, `${hostManifest.controlUrl}/`),
+          { headers },
+        );
+        afterPayload = await after.json();
+      }
+      expect(after.status).toBe(200);
+      expect(["ready", "degraded"]).toContain(afterPayload.status.state);
+      expect(afterPayload.servers).toEqual([
+        expect.objectContaining({ id: "mcp:second", name: "second" }),
+      ]);
+
+      const repeated = await fetch(
+        new URL(`/api/v1/workspaces/${workspaceId}/activate`, `${hostManifest.controlUrl}/`),
+        { method: "POST", headers },
+      );
+      expect(repeated.status).toBe(200);
+      expect(await repeated.json()).toMatchObject({ workspaceId, state: "ready" });
+
+      const concurrent = await Promise.all(
+        Array.from({ length: 3 }, () =>
+          fetch(
+            new URL(`/api/v1/workspaces/${workspaceId}/activate`, `${hostManifest.controlUrl}/`),
+            { method: "POST", headers },
+          ),
+        ),
+      );
+      expect(concurrent.map((response) => response.status)).toEqual([200, 200, 200]);
     } finally {
       const stopped = await runCli(
         entrypoint,

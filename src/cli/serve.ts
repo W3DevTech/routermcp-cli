@@ -98,6 +98,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let desiredConfigRevision: string | undefined;
   const desiredServerLastChangedAt = new Map<string, string>();
   const sessionWorkspaceIds = new Map<string, string>();
+  const workspaceActivations = new Map<string, Promise<void>>();
   let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
@@ -347,6 +348,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         if (!workspace) return null;
 
         const runtime = workspaceRuntimeManager?.get(workspaceId);
+        const runtimeSnapshot = workspaceRuntimeManager?.getSnapshot(workspaceId);
         const cached = workspaceConfigs.get(workspaceId);
         const workspaceMetrics =
           controlPlane?.getMetricsForWorkspace(workspaceId) ?? emptyControlPlaneMetrics();
@@ -369,7 +371,17 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           ? status
           : {
               ...status,
-              state: status.state === "ready" ? ("offline" as const) : status.state,
+              state:
+                runtimeSnapshot?.state === "loading"
+                  ? ("starting" as const)
+                  : runtimeSnapshot?.state === "failed"
+                    ? ("failed" as const)
+                    : status.state === "ready"
+                      ? ("offline" as const)
+                      : status.state,
+              ...(runtimeSnapshot?.lastError
+                ? { restartMessage: runtimeSnapshot.lastError }
+                : {}),
             };
 
         return {
@@ -414,6 +426,72 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         return getWorkspaceStatus(workspaceId);
       };
 
+      const activateWorkspace = async (workspaceId: string) => {
+        const registry = workspaceRegistry;
+        const runtimeManager = workspaceRuntimeManager;
+        const workspace = registry?.getSync(workspaceId);
+        if (!registry || !runtimeManager || !workspace) {
+          return {
+            workspaceId,
+            state: "error" as const,
+            message: "Workspace runtime is not available",
+          };
+        }
+
+        const existing = runtimeManager.getSnapshot(workspaceId);
+        if (existing?.state === "ready" || existing?.state === "idle") {
+          return {
+            workspaceId,
+            state: "ready" as const,
+            message: "Workspace runtime is ready",
+          };
+        }
+
+        let activation = workspaceActivations.get(workspaceId);
+        if (!activation) {
+          activation = (async () => {
+            try {
+              const input = await loadWorkspaceRuntimeInput(workspace);
+              await runtimeManager.getOrCreate(input);
+            } catch (error) {
+              await registry.markUnavailable(workspaceId, error).catch(() => undefined);
+              throw error;
+            }
+          })();
+          workspaceActivations.set(workspaceId, activation);
+          // Activation is deliberately asynchronous so the control plane can
+          // report `initializing` while a config or upstream is starting.
+          void activation
+            .catch(() => undefined)
+            .finally(() => {
+              if (workspaceActivations.get(workspaceId) === activation) {
+                workspaceActivations.delete(workspaceId);
+              }
+            });
+        }
+
+        const snapshot = runtimeManager.getSnapshot(workspaceId);
+        if (snapshot?.state === "ready" || snapshot?.state === "idle") {
+          return {
+            workspaceId,
+            state: "ready" as const,
+            message: "Workspace runtime is ready",
+          };
+        }
+        if (snapshot?.state === "failed") {
+          return {
+            workspaceId,
+            state: "error" as const,
+            message: snapshot.lastError ?? "Workspace runtime failed to initialize",
+          };
+        }
+        return {
+          workspaceId,
+          state: "initializing" as const,
+          message: "Workspace runtime initialization started",
+        };
+      };
+
       controlPlane = new ControlPlane({
         getStatus: () =>
           createControlPlaneStatus(
@@ -441,6 +519,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             : [],
         getWorkspaceStatus,
         getWorkspaceStatusAsync,
+        activateWorkspace,
         getWorkspaceManagement,
         getWorkspaceFeatures: (workspaceId) => getWorkspaceManagement(workspaceId)?.getFeatures() ?? null,
         management: createConfigManagementSource({
