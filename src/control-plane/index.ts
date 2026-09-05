@@ -39,6 +39,7 @@ export {
   createConfigManagementSource,
   type ConfigManagementSourceOptions,
   type ControlPlaneFeatures,
+  type ControlPlaneManagementReloadResult,
   type ControlPlaneManagementRestartResult,
   type ControlPlaneManagementSource,
   type ControlPlaneMutationResult,
@@ -50,10 +51,13 @@ export {
   DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS,
   DEFAULT_MAX_MANAGEMENT_CREDENTIALS,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  MANAGEMENT_CREDENTIAL_AUTHORITIES,
   MANAGEMENT_CREDENTIAL_SCOPE,
   MAX_MANAGEMENT_CREDENTIAL_TTL_MS,
   ManagementCredentialStore,
   isValidWorkspaceId,
+  type ManagementCredentialAuthorization,
+  type ManagementCredentialAuthority,
   type ManagementCredentialGrant,
   type ManagementCredentialStoreOptions,
 } from "./management-credentials.js";
@@ -206,6 +210,12 @@ export interface ControlPlaneSource {
   getWorkspaces?: () => ControlPlaneWorkspace[];
   /** Return a fully scoped snapshot, or null when the workspace is unknown. */
   getWorkspaceStatus?: (workspaceId: string) => ControlPlaneWorkspaceStatus | null;
+  /** Optional context-scoped session snapshots for hosts that do not build a full status. */
+  getWorkspaceSessions?: (workspaceId: string) => ControlPlaneSession[] | null;
+  /** Optional context-scoped metrics for hosts that do not build a full status. */
+  getWorkspaceMetrics?: (workspaceId: string) => ControlPlaneMetrics | null;
+  /** Optional context-scoped activity feed; inventory events must not cross contexts. */
+  getWorkspaceEvents?: (workspaceId: string, limit: number) => ControlPlaneEvent[] | null;
   /** Return the management adapter for a known workspace, if available. */
   getWorkspaceManagement?: (workspaceId: string) => ControlPlaneManagementSource | null;
   /** Optional read-only feature snapshot for a known workspace. */
@@ -216,6 +226,17 @@ export interface ControlPlaneSource {
   getCurrentWorkspaceId?: () => string | null;
   restart?: () => Promise<ControlPlaneRestartResult> | ControlPlaneRestartResult;
   now?: () => number;
+}
+
+/** Sanitized 404 used when a browser selects an unregistered context. */
+export class ControlPlaneWorkspaceNotFoundError extends Error {
+  readonly status = 404;
+  readonly code = "not-found" as const;
+
+  constructor() {
+    super("Workspace is not registered with this daemon host");
+    this.name = "ControlPlaneWorkspaceNotFoundError";
+  }
 }
 
 export interface ControlPlaneRequestObservation {
@@ -272,6 +293,20 @@ export class ControlPlane {
     return this.getCurrentWorkspaceId() === workspaceId ? (this.source.management ?? null) : null;
   }
 
+  /** Return whether the host has registered this workspace ID. */
+  isWorkspaceRegistered(workspaceId: string): boolean {
+    if (!isValidWorkspaceId(workspaceId)) return false;
+
+    const workspaces = this.source.getWorkspaces?.();
+    if (workspaces) return workspaces.some((workspace) => workspace.id === workspaceId);
+
+    if (this.source.getWorkspaceStatus) {
+      return this.source.getWorkspaceStatus(workspaceId) !== null;
+    }
+
+    return this.getCurrentWorkspaceId() === workspaceId;
+  }
+
   async getFeatures(): Promise<ControlPlaneFeatures | null> {
     if (!this.source.management) return null;
     return sanitizeFeatures(await this.source.management.getFeatures());
@@ -316,6 +351,36 @@ export class ControlPlane {
     return this.getWorkspaceStatus(workspaceId)?.features ?? null;
   }
 
+  /** Return sessions for one registered workspace without falling back to another context. */
+  getWorkspaceSessions(workspaceId: string): ControlPlaneSession[] | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    const sessions = this.source.getWorkspaceSessions?.(workspaceId);
+    if (sessions) return sanitizeSessions(sessions);
+    return this.getWorkspaceStatus(workspaceId)?.sessions ?? null;
+  }
+
+  /** Return metrics for one registered workspace without falling back globally. */
+  getWorkspaceMetrics(workspaceId: string): ControlPlaneMetrics | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    const metrics = this.source.getWorkspaceMetrics?.(workspaceId);
+    if (metrics) return sanitizeMetrics(metrics);
+    return this.getWorkspaceStatus(workspaceId)?.metrics ?? null;
+  }
+
+  /** Return activity for one registered workspace with an explicit context boundary. */
+  getWorkspaceEvents(
+    workspaceId: string,
+    limit = CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
+  ): ControlPlaneEvent[] | null {
+    if (!this.isWorkspaceRegistered(workspaceId)) return null;
+    const events = this.source.getWorkspaceEvents?.(workspaceId, boundEventLimit(limit));
+    if (events) return sanitizeEvents(events);
+
+    // Legacy event sources may only have a host-wide buffer. Keep events
+    // without an explicit workspace attribution out of a context route.
+    return this.getEvents(boundEventLimit(limit)).filter((event) => event.workspaceId === workspaceId);
+  }
+
   /** Update one server while keeping the selected workspace as the scope. */
   async updateWorkspaceServer(
     workspaceId: string,
@@ -323,6 +388,9 @@ export class ControlPlane {
     patch: ServerEnabledPatch,
     expectedDigest: string,
   ): Promise<ControlPlaneMutationResult> {
+    if (!this.isWorkspaceRegistered(workspaceId)) {
+      throw new ControlPlaneWorkspaceNotFoundError();
+    }
     const management = this.getWorkspaceManagement(workspaceId);
     return management
       ? management.updateServer(serverId, patch, expectedDigest)
@@ -335,6 +403,9 @@ export class ControlPlane {
     patch: Parameters<ControlPlaneManagementSource["updateFeatures"]>[0],
     expectedDigest: string,
   ): Promise<ControlPlaneMutationResult> {
+    if (!this.isWorkspaceRegistered(workspaceId)) {
+      throw new ControlPlaneWorkspaceNotFoundError();
+    }
     const management = this.getWorkspaceManagement(workspaceId);
     return management
       ? management.updateFeatures(patch, expectedDigest)
@@ -698,6 +769,20 @@ function cloneEvent(event: ControlPlaneEvent): ControlPlaneEvent {
     ...(event.metadata ? { metadata: { ...event.metadata } } : {}),
     ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
   };
+}
+
+function sanitizeEvents(events: readonly ControlPlaneEvent[]): ControlPlaneEvent[] {
+  return events.map((event) => ({
+    id: sanitizeText(event.id),
+    timestamp: sanitizeText(event.timestamp),
+    level: event.level,
+    type: sanitizeText(event.type),
+    message: sanitizeText(event.message),
+    ...(event.workspaceId && isValidWorkspaceId(event.workspaceId)
+      ? { workspaceId: event.workspaceId }
+      : {}),
+    ...(event.metadata ? { metadata: sanitizeMetadata(event.metadata) } : {}),
+  }));
 }
 
 function sanitizeMetadata(

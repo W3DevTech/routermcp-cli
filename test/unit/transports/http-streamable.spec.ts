@@ -765,6 +765,11 @@ describe("createHttpServerTransport control-plane routes", () => {
     expect(currentGrant.workspaceId).toBe(currentWorkspace.id);
 
     const currentHeaders = { Authorization: `Bearer ${currentGrant.token}` };
+    const currentInventory = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces", { headers: currentHeaders }),
+    );
+    expect(currentInventory.status).toBe(401);
+
     const currentServers = await fetchHandler(
       new Request(`http://127.0.0.1/api/v1/workspaces/${currentWorkspace.id}/servers`, {
         headers: currentHeaders,
@@ -777,8 +782,7 @@ describe("createHttpServerTransport control-plane routes", () => {
         headers: currentHeaders,
       }),
     );
-    expect(otherWithCurrentGrant.status).toBe(200);
-    expect((await otherWithCurrentGrant.json()).workspace.id).toBe(otherWorkspace.id);
+    expect(otherWithCurrentGrant.status).toBe(401);
 
     const rootOtherStatus = await fetchHandler(
       new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, {
@@ -819,7 +823,174 @@ describe("createHttpServerTransport control-plane routes", () => {
         headers: otherHeaders,
       }),
     );
-    expect(otherServers.status).toBe(401);
+    expect(otherServers.status).toBe(200);
+
+    await handle.stop();
+  });
+
+  it("allows a host grant to read and mutate every registered workspace", async () => {
+    const currentWorkspace = createTestWorkspace("workspace-host-current", "2026-01-01T00:00:02.000Z");
+    const otherWorkspace = createTestWorkspace("workspace-host-other", "2026-01-01T00:00:01.000Z");
+    const workspaceStatus = (workspace: ControlPlaneWorkspace) => ({
+      workspace,
+      status: createTestStatus(workspace),
+      servers: [],
+      sessions: [],
+      metrics: createTestMetrics(),
+    });
+    const updateServer = vi.fn().mockResolvedValue({
+      accepted: true,
+      changed: true,
+      mutationId: "mutation-host",
+      configDigest: "b".repeat(64),
+      previousConfigDigest: otherWorkspace.configDigest,
+      restartState: "scheduled" as const,
+      reload: {
+        accepted: true,
+        message: "Bearer reload-secret https://user:password@example.test/?token=secret",
+        reloadId: "reload-host",
+      },
+    });
+    const management = {
+      getFeatures: vi.fn().mockResolvedValue({
+        mode: "standard" as const,
+        effectiveMode: "standard" as const,
+        codeMode: { timeout: 30_000, allowFetch: false },
+        configDigest: otherWorkspace.configDigest,
+        restartState: "idle" as const,
+      }),
+      updateServer,
+      updateFeatures: vi.fn(),
+    };
+    const credentials = new ManagementCredentialStore({
+      authority: "host",
+      workspaceId: currentWorkspace.id,
+      canIssueWorkspace: (workspaceId) =>
+        workspaceId === currentWorkspace.id || workspaceId === otherWorkspace.id,
+      generateToken: () => "host-management-token",
+    });
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(currentWorkspace),
+      getServers: () => [],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => currentWorkspace.id,
+      getWorkspaces: () => [currentWorkspace, otherWorkspace],
+      getWorkspaceStatus: (workspaceId) =>
+        workspaceId === currentWorkspace.id
+          ? workspaceStatus(currentWorkspace)
+          : workspaceId === otherWorkspace.id
+            ? workspaceStatus(otherWorkspace)
+            : null,
+      getWorkspaceManagement: (workspaceId) =>
+        workspaceId === currentWorkspace.id || workspaceId === otherWorkspace.id ? management : null,
+      getWorkspaceEvents: (workspaceId) =>
+        workspaceId === otherWorkspace.id
+          ? [
+              {
+                id: "event-other",
+                timestamp: "2026-01-01T00:00:03.000Z",
+                level: "info" as const,
+                type: "workspace.reload",
+                message: "Bearer event-secret https://user:password@example.test/?api_key=secret",
+                workspaceId,
+              },
+            ]
+          : [],
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "local-token",
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const handoff = await fetchHandler(
+      new Request(`http://127.0.0.1${MANAGEMENT_CREDENTIAL_HANDOFF_PATH}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+    expect(handoff.status).toBe(201);
+    const grant = await handoff.json();
+    expect(grant).toMatchObject({ authority: "host", workspaceId: currentWorkspace.id });
+
+    const headers = {
+      Authorization: `Bearer ${grant.token}`,
+      "Content-Type": "application/json",
+    };
+    const otherStatus = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, { headers }),
+    );
+    expect(otherStatus.status).toBe(200);
+
+    const otherFeatures = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/features`, { headers }),
+    );
+    expect(otherFeatures.status).toBe(200);
+
+    const otherServers = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/servers`, { headers }),
+    );
+    expect(otherServers.status).toBe(200);
+
+    const otherSessions = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/sessions`, { headers }),
+    );
+    expect(otherSessions.status).toBe(200);
+
+    const otherMetrics = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/metrics`, { headers }),
+    );
+    expect(otherMetrics.status).toBe(200);
+
+    const otherEvents = await fetchHandler(
+      new Request(
+        `http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/events?limit=5`,
+        { headers },
+      ),
+    );
+    expect(otherEvents.status).toBe(200);
+    expect((await otherEvents.json()).events).toEqual([
+      expect.objectContaining({
+        id: "event-other",
+        workspaceId: otherWorkspace.id,
+        message: "Bearer [redacted] https://[redacted]@example.test/?api_key=[redacted]",
+      }),
+    ]);
+
+    const patchResponse = await fetchHandler(
+      new Request(
+        `http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/servers/mcp%3Ademo`,
+        {
+          method: "PATCH",
+          headers: { ...headers, "If-Match": otherWorkspace.configDigest },
+          body: JSON.stringify({ enabled: false }),
+        },
+      ),
+    );
+    expect(patchResponse.status).toBe(202);
+    expect(await patchResponse.json()).toMatchObject({
+      accepted: true,
+      reload: {
+        accepted: true,
+        message: "Bearer [redacted] https://[redacted]@example.test/?token=[redacted]",
+        reloadId: "reload-host",
+      },
+    });
+    expect(updateServer).toHaveBeenCalledWith(
+      "mcp:demo",
+      { enabled: false },
+      otherWorkspace.configDigest,
+    );
+
+    const unknown = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/unknown/status", { headers }),
+    );
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({
+      error: "workspace-not-found",
+      message: "Workspace is not registered with this daemon host",
+    });
 
     await handle.stop();
   });

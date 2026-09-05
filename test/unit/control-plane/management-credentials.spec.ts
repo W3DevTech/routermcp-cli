@@ -20,6 +20,7 @@ describe("ManagementCredentialStore", () => {
       token: "management-token",
       expiresAt: new Date(now + DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS).toISOString(),
       scope: MANAGEMENT_CREDENTIAL_SCOPE,
+      authority: "host",
     });
     expect(store.authorize(grant.token)).toBe(true);
     expect(store.size).toBe(1);
@@ -82,6 +83,8 @@ describe("ManagementCredentialStore", () => {
 
     expect(first.workspaceId).toBe("workspace-a");
     expect(second.workspaceId).toBe("workspace-b");
+    expect(first.authority).toBe("workspace");
+    expect(second.authority).toBe("workspace");
     expect(store.authorize(first.token, "workspace-a")).toBe(true);
     expect(store.authorize(first.token, "workspace-b")).toBe(false);
     expect(store.authorize(second.token, "workspace-b")).toBe(true);
@@ -104,6 +107,46 @@ describe("ManagementCredentialStore", () => {
 
     allowed.delete("workspace-b");
     expect(store.canIssueForWorkspace("workspace-b")).toBe(false);
+  });
+
+  it("lets an explicitly host-authorized grant select every registered workspace", () => {
+    const registered = new Set(["workspace-a", "workspace-b"]);
+    const store = new ManagementCredentialStore({
+      authority: "host",
+      workspaceId: "workspace-a",
+      canIssueWorkspace: (workspaceId) => registered.has(workspaceId),
+      generateToken: () => "host-management-token",
+    });
+
+    const grant = store.issue("workspace-a");
+
+    expect(grant).toMatchObject({ authority: "host", workspaceId: "workspace-a" });
+    expect(store.getAuthorization(grant.token)).toEqual({
+      authority: "host",
+      workspaceId: "workspace-a",
+    });
+    expect(store.authorize(grant.token, "workspace-a")).toBe(true);
+    expect(store.authorize(grant.token, "workspace-b")).toBe(true);
+
+    registered.delete("workspace-b");
+    expect(store.canIssueForWorkspace("workspace-b")).toBe(false);
+    expect(store.authorize(grant.token, "workspace-b")).toBe(true);
+  });
+
+  it("keeps workspace-authorized grants confined to their claim", () => {
+    const store = new ManagementCredentialStore({
+      authority: "workspace",
+      workspaceId: "workspace-a",
+      generateToken: () => "workspace-management-token",
+    });
+    const grant = store.issue();
+
+    expect(store.getAuthorization(grant.token)).toEqual({
+      authority: "workspace",
+      workspaceId: "workspace-a",
+    });
+    expect(store.authorize(grant.token, "workspace-a")).toBe(true);
+    expect(store.authorize(grant.token, "workspace-b")).toBe(false);
   });
 
   it("rejects malformed workspace claims at construction and issuance", () => {

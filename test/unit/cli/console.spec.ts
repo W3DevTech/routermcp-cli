@@ -17,6 +17,7 @@ describe("console handoff", () => {
         token: "management-token",
         expiresAt: "2026-01-01T00:05:00.000Z",
         scope: MANAGEMENT_CREDENTIAL_SCOPE,
+        authority: "host",
       },
     );
 
@@ -43,6 +44,7 @@ describe("console handoff", () => {
           token: "management-token",
           expiresAt: "2026-01-01T00:05:00.000Z",
           scope: MANAGEMENT_CREDENTIAL_SCOPE,
+          authority: "host",
         }),
         { status: 201 },
       ),
@@ -73,6 +75,7 @@ describe("console handoff", () => {
           token: "management-token",
           expiresAt: "2026-01-01T00:05:00.000Z",
           scope: MANAGEMENT_CREDENTIAL_SCOPE,
+          authority: "host",
           workspaceId: "workspace-other",
         }),
         { status: 201 },
@@ -105,6 +108,7 @@ describe("console handoff", () => {
           token: "management-token",
           expiresAt: "2026-01-01T00:05:00.000Z",
           scope: MANAGEMENT_CREDENTIAL_SCOPE,
+          authority: "host",
         }),
         { status: 201 },
       ),

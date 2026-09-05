@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   CONTROL_PLANE_PATH,
+  MANAGEMENT_CREDENTIAL_AUTHORITIES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   isValidWorkspaceId,
   type ManagementCredentialGrant,
@@ -200,6 +201,8 @@ function isManagementCredentialGrant(value: unknown): value is ManagementCredent
     typeof grant.expiresAt === "string" &&
     Number.isFinite(Date.parse(grant.expiresAt)) &&
     grant.scope === "management" &&
+    (grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[0] ||
+      grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[1]) &&
     (grant.workspaceId === undefined || isValidWorkspaceId(grant.workspaceId))
   );
 }

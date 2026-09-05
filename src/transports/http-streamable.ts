@@ -23,6 +23,7 @@ import {
   parseManagementJsonBody,
   parseServerEnabledPatch,
   sanitizeText,
+  ControlPlaneWorkspaceNotFoundError,
   type ControlPlane,
   type ControlPlaneMutationResult,
   type ManagementCredentialStore,
@@ -714,6 +715,9 @@ type ControlPlaneRoute =
   | { kind: "workspace-servers"; workspaceId: string }
   | { kind: "workspace-server"; workspaceId: string; serverId: string }
   | { kind: "workspace-features"; workspaceId: string }
+  | { kind: "workspace-sessions"; workspaceId: string }
+  | { kind: "workspace-metrics"; workspaceId: string }
+  | { kind: "workspace-events"; workspaceId: string; limit: number }
   | { kind: "invalid"; message: string };
 
 type ManagementCredentialRoute =
@@ -730,14 +734,15 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
 function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
   const workspacePrefix = `${CONTROL_PLANE_PATH}/workspaces/`;
   if (url.pathname.startsWith(workspacePrefix)) {
-    if (url.search) {
+    const rawParts = url.pathname.slice(workspacePrefix.length).split("/");
+    if (url.search && rawParts[1] !== "events") {
       return {
         kind: "invalid",
         message: "Workspace control-plane endpoints do not accept query parameters",
       };
     }
 
-    const parts = url.pathname.slice(workspacePrefix.length).split("/");
+    const parts = rawParts;
     const workspaceId = parts[0] ? decodePathPart(parts[0]) : null;
     if (!workspaceId || workspaceId.includes("/") || !isValidWorkspaceId(workspaceId)) {
       return { kind: "invalid", message: "Invalid workspace ID" };
@@ -751,6 +756,35 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
           return { kind: "workspace-servers", workspaceId };
         case "features":
           return { kind: "workspace-features", workspaceId };
+        case "sessions":
+          return { kind: "workspace-sessions", workspaceId };
+        case "metrics":
+          return { kind: "workspace-metrics", workspaceId };
+        case "events": {
+          const rawLimit = url.searchParams.get("limit");
+          if (url.searchParams.size > (rawLimit === null ? 0 : 1)) {
+            return { kind: "invalid", message: "Only the limit query parameter is supported" };
+          }
+          if (rawLimit === null) {
+            return {
+              kind: "workspace-events",
+              workspaceId,
+              limit: CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
+            };
+          }
+          if (!/^\d+$/.test(rawLimit)) {
+            return { kind: "invalid", message: "The limit query parameter must be a positive integer" };
+          }
+          const parsed = Number(rawLimit);
+          if (!Number.isSafeInteger(parsed)) {
+            return { kind: "invalid", message: "The limit query parameter is too large" };
+          }
+          return {
+            kind: "workspace-events",
+            workspaceId,
+            limit: Math.min(Math.max(parsed, 1), CONTROL_PLANE_MAX_EVENT_LIMIT),
+          };
+        }
         default:
           return { kind: "invalid", message: "Invalid workspace control-plane path" };
       }
@@ -858,6 +892,15 @@ async function handleControlPlaneRequest(
     );
   }
 
+  const workspaceId = getControlPlaneRouteWorkspaceId(route);
+  if (workspaceId && !controlPlane.isWorkspaceRegistered(workspaceId)) {
+    return jsonResponse(
+      { error: "workspace-not-found", message: "Workspace is not registered with this daemon host" },
+      404,
+      responseHeaders,
+    );
+  }
+
   if (route.kind === "restart") {
     if (request.method !== "POST") {
       return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
@@ -914,6 +957,57 @@ async function handleControlPlaneRequest(
     }
 
     return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+  }
+
+  if (route.kind === "workspace-sessions") {
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    const sessions = controlPlane.getWorkspaceSessions(route.workspaceId);
+    return sessions
+      ? jsonResponse({ sessions }, 200, responseHeaders)
+      : jsonResponse(
+          {
+            error: "workspace-not-found",
+            message: "Workspace is not registered with this daemon host",
+          },
+          404,
+          responseHeaders,
+        );
+  }
+
+  if (route.kind === "workspace-metrics") {
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    const metrics = controlPlane.getWorkspaceMetrics(route.workspaceId);
+    return metrics
+      ? jsonResponse({ metrics }, 200, responseHeaders)
+      : jsonResponse(
+          {
+            error: "workspace-not-found",
+            message: "Workspace is not registered with this daemon host",
+          },
+          404,
+          responseHeaders,
+        );
+  }
+
+  if (route.kind === "workspace-events") {
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    const events = controlPlane.getWorkspaceEvents(route.workspaceId, route.limit);
+    return events
+      ? jsonResponse({ events }, 200, responseHeaders)
+      : jsonResponse(
+          {
+            error: "workspace-not-found",
+            message: "Workspace is not registered with this daemon host",
+          },
+          404,
+          responseHeaders,
+        );
   }
 
   if (route.kind === "server") {
@@ -1038,6 +1132,14 @@ function managementErrorResponse(
   error: unknown,
   headers: Record<string, string>,
 ): Response {
+  if (error instanceof ControlPlaneWorkspaceNotFoundError) {
+    return jsonResponse(
+      { error: error.code, message: "Workspace is not registered with this daemon host" },
+      error.status,
+      headers,
+    );
+  }
+
   if (error instanceof ConfigMutationError) {
     return jsonResponse(
       {
@@ -1066,6 +1168,14 @@ function sanitizeMutationResult(result: ControlPlaneMutationResult): ControlPlan
         ...(result.restart.restartId ? { restartId: sanitizeText(result.restart.restartId) } : {}),
       }
     : undefined;
+  const reload = result.reload
+    ? {
+        accepted: result.reload.accepted === true,
+        message: sanitizeText(result.reload.message),
+        ...(result.reload.state ? { state: result.reload.state } : {}),
+        ...(result.reload.reloadId ? { reloadId: sanitizeText(result.reload.reloadId) } : {}),
+      }
+    : undefined;
 
   return {
     accepted: result.accepted === true,
@@ -1075,6 +1185,7 @@ function sanitizeMutationResult(result: ControlPlaneMutationResult): ControlPlan
     previousConfigDigest: sanitizeText(result.previousConfigDigest),
     restartState: isManagementRestartState(result.restartState) ? result.restartState : "failed",
     ...(restart ? { restart } : {}),
+    ...(reload ? { reload } : {}),
   };
 }
 
@@ -1462,35 +1573,38 @@ function isControlPlaneAuthorized(
 ): boolean {
   const workspaceId = getControlPlaneRouteWorkspaceId(route);
   if (workspaceId) {
-    return isWorkspaceControlPlaneAuthorized(request, options, workspaceId, route);
+    return isWorkspaceControlPlaneAuthorized(request, options, workspaceId);
   }
   if (isLocalAuthorized(request, options.authToken)) return true;
 
   const credentials = options.managementCredentials;
   if (!credentials) return false;
 
-  // The inventory endpoint is intentionally readable by any short-lived
-  // management grant so a handoff for a known (non-current) workspace can
-  // still render the workspace switcher. Every other unqualified alias is
-  // scoped to the daemon's current handoff workspace; a grant claimed for a
-  // different directory must never read or mutate the primary context.
+  // The inventory endpoint is a host-level operation because it reveals all
+  // registered directories to the workspace switcher. Every other
+  // unqualified alias is scoped to the daemon's current handoff workspace; a
+  // grant claimed for a different directory must never read or mutate the
+  // primary context.
   const token = getBearerToken(request);
-  if (route.kind === "workspaces") return credentials.authorize(token);
+  if (route.kind === "workspaces") {
+    return credentials.getAuthorization(token)?.authority === "host";
+  }
   const currentWorkspaceId = options.controlPlane?.getCurrentWorkspaceId();
-  return currentWorkspaceId
-    ? credentials.authorize(token, currentWorkspaceId)
-    : credentials.authorize(token);
+  const authorization = credentials.getAuthorization(token);
+  if (!authorization) return false;
+  return (
+    authorization.authority === "host" ||
+    (currentWorkspaceId !== null && currentWorkspaceId !== undefined &&
+      authorization.workspaceId === currentWorkspaceId)
+  );
 }
 
 function isWorkspaceControlPlaneAuthorized(
   request: Request,
   options: HttpServerOptions,
   workspaceId: string,
-  route: ControlPlaneRoute,
 ): boolean {
   const currentWorkspaceId = options.controlPlane?.getCurrentWorkspaceId();
-  const requiresCurrentWorkspace = route.kind !== "workspace-status";
-  if (requiresCurrentWorkspace && currentWorkspaceId !== workspaceId) return false;
 
   // Root daemon credentials are accepted for the authenticated current
   // workspace only. A workspace route must never turn the private root token
@@ -1503,20 +1617,15 @@ function isWorkspaceControlPlaneAuthorized(
   const credentials = options.managementCredentials;
   if (!credentials) return false;
 
-  // Status is the read-only inventory view used by the hosted workspace
-  // switcher. A valid short-lived management grant may inspect any workspace
-  // already known to this daemon; it does not thereby gain access to that
-  // workspace's servers, features, or mutation routes.
-  if (route.kind === "workspace-status") {
-    return credentials.authorize(token);
-  }
+  const authorization = credentials.getAuthorization(token);
+  if (!authorization) return false;
 
-  // New grants carry a workspace claim. The fallback keeps grants issued by
-  // older unscoped daemons usable for the current context while still making
-  // a claimed grant fail closed for another workspace.
+  // A host grant is explicitly minted by the user-scoped daemon host and may
+  // select any registered workspace. A workspace grant retains its original
+  // claim and cannot be used to switch contexts.
   return (
-    credentials.authorize(token, workspaceId) ||
-    (currentWorkspaceId === workspaceId && credentials.authorize(token))
+    authorization.authority === "host" ||
+    authorization.workspaceId === workspaceId
   );
 }
 

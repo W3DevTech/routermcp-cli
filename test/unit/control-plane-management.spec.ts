@@ -122,4 +122,48 @@ describe("context-scoped config management source", () => {
       await cleanupTempDir(directory);
     }
   });
+
+  it("reconciles only the selected context after a mutation", async () => {
+    const directory = await createTempDir();
+    try {
+      const configPath = await writeConfigFile(directory, {
+        mcpServers: { demo: { transport: "stdio", command: "true" } },
+      });
+      const reload = vi.fn().mockResolvedValue({
+        accepted: true,
+        message: "context reload scheduled",
+        state: "starting" as const,
+        reloadId: "reload-1",
+      });
+      const restart = vi.fn();
+      const source = createConfigManagementSource({
+        getConfigPath: () => configPath,
+        reload,
+        restart,
+      });
+      const initial = await source.getFeatures();
+
+      const mutation = await source.updateServer(
+        "mcp:demo",
+        { enabled: false },
+        initial.configDigest,
+      );
+
+      expect(mutation).toMatchObject({
+        accepted: true,
+        changed: true,
+        restartState: "scheduled",
+        reload: {
+          accepted: true,
+          message: "context reload scheduled",
+          state: "starting",
+          reloadId: "reload-1",
+        },
+      });
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(restart).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTempDir(directory);
+    }
+  });
 });

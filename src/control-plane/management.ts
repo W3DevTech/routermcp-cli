@@ -35,6 +35,19 @@ export interface ControlPlaneManagementRestartResult {
   restartId?: string;
 }
 
+/**
+ * Result of reconciling one workspace after a persisted configuration edit.
+ * The callback is context-bound and must not replace the daemon host process
+ * or its listener. `restartId` is retained as a wire-compatible identifier
+ * until hosted clients migrate to `reloadId`.
+ */
+export interface ControlPlaneManagementReloadResult {
+  accepted: boolean;
+  message: string;
+  state?: "starting" | "ready" | "degraded" | "failed" | "stopping" | "offline";
+  reloadId?: string;
+}
+
 export interface ControlPlaneMutationResult {
   accepted: boolean;
   changed: boolean;
@@ -43,6 +56,7 @@ export interface ControlPlaneMutationResult {
   previousConfigDigest: string;
   restartState: ManagementRestartState;
   restart?: ControlPlaneManagementRestartResult;
+  reload?: ControlPlaneManagementReloadResult;
 }
 
 export interface ControlPlaneManagementSource {
@@ -78,6 +92,15 @@ export interface ConfigManagementSourceOptions {
   restart?: () =>
     | ControlPlaneManagementRestartResult
     | Promise<ControlPlaneManagementRestartResult>;
+  /**
+   * Controlled reload/reconciliation callback for one isolated workspace.
+   * Implementations must retain the host PID/listener and reconcile only the
+   * context bound to this source. Prefer this callback for multi-workspace
+   * daemon hosts; `restart` remains for legacy single-profile daemons.
+   */
+  reload?: () =>
+    | ControlPlaneManagementReloadResult
+    | Promise<ControlPlaneManagementReloadResult>;
   /** Sanitized audit sink; it must not receive config contents or secrets. */
   onAuditEvent?: (event: {
     type: "server.enabled" | "features.mode";
@@ -169,6 +192,7 @@ async function finishMutation(
   },
 ): Promise<ControlPlaneMutationResult> {
   let restart: ControlPlaneManagementRestartResult | undefined;
+  let reload: ControlPlaneManagementReloadResult | undefined;
   let restartState: ManagementRestartState = "idle";
 
   // The mutation result contains the validated config read from disk after
@@ -188,18 +212,30 @@ async function finishMutation(
 
   if (mutation.changed) {
     try {
-      restart = options.restart
-        ? await options.restart()
-        : {
-            accepted: false,
-            message: "Controlled context restart is not configured",
-          };
-      restartState = restart.accepted ? "scheduled" : "failed";
+      if (options.reload) {
+        reload = await options.reload();
+        restartState = reload.accepted ? "scheduled" : "failed";
+      } else {
+        restart = options.restart
+          ? await options.restart()
+          : {
+              accepted: false,
+              message: "Controlled context restart is not configured",
+            };
+        restartState = restart.accepted ? "scheduled" : "failed";
+      }
     } catch {
-      restart = {
-        accepted: false,
-        message: "Configuration changed, but context restart could not be scheduled",
-      };
+      if (options.reload) {
+        reload = {
+          accepted: false,
+          message: "Configuration changed, but context reload could not be scheduled",
+        };
+      } else {
+        restart = {
+          accepted: false,
+          message: "Configuration changed, but context restart could not be scheduled",
+        };
+      }
       restartState = "failed";
     }
   }
@@ -229,5 +265,6 @@ async function finishMutation(
     previousConfigDigest: mutation.previousConfigDigest,
     restartState,
     ...(restart ? { restart } : {}),
+    ...(reload ? { reload } : {}),
   };
 }

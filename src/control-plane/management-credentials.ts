@@ -8,11 +8,30 @@ export const DEFAULT_MAX_MANAGEMENT_CREDENTIALS = 8;
 export const MANAGEMENT_CREDENTIAL_SCOPE = "management" as const;
 export const MANAGEMENT_CREDENTIAL_HANDOFF_PATH = "/api/v1/management/handoff" as const;
 
+/**
+ * Authority carried by a short-lived browser handoff.
+ *
+ * A workspace grant can inspect and mutate only its claimed workspace. A host
+ * grant is issued by the user-scoped daemon host and can select any workspace
+ * already registered with that host. Keeping this separate from `scope`
+ * leaves room for the future peering scopes without widening management
+ * credentials accidentally.
+ */
+export const MANAGEMENT_CREDENTIAL_AUTHORITIES = ["workspace", "host"] as const;
+export type ManagementCredentialAuthority = (typeof MANAGEMENT_CREDENTIAL_AUTHORITIES)[number];
+
 export interface ManagementCredentialGrant {
   token: string;
   expiresAt: string;
   scope: typeof MANAGEMENT_CREDENTIAL_SCOPE;
+  authority: ManagementCredentialAuthority;
   /** Workspace selected by the local CLI handoff, when available. */
+  workspaceId?: string;
+}
+
+/** Sanitized authorization details used by the HTTP transport for scope checks. */
+export interface ManagementCredentialAuthorization {
+  authority: ManagementCredentialAuthority;
   workspaceId?: string;
 }
 
@@ -23,6 +42,13 @@ export interface ManagementCredentialStoreOptions {
   generateToken?: () => string;
   /** Workspace claim attached to every grant issued by this store. */
   workspaceId?: string;
+  /**
+   * Authority attached to new grants. Stores bound to one workspace default
+   * to workspace authority for backwards compatibility; a host store must
+   * opt into host authority explicitly, even when it includes an initial
+   * workspace selection in the grant.
+   */
+  authority?: ManagementCredentialAuthority;
   /** Additional workspace claims that a trusted local handoff may request. */
   allowedWorkspaceIds?: readonly string[];
   /** Dynamic registry gate for claims that may be issued by this store. */
@@ -33,6 +59,7 @@ interface CredentialRecord {
   digest: Uint8Array;
   expiresAtMs: number;
   issuedAtMs: number;
+  authority: ManagementCredentialAuthority;
   workspaceId?: string;
 }
 
@@ -50,6 +77,7 @@ export class ManagementCredentialStore {
   private readonly maxCredentials: number;
   private readonly generateToken: () => string;
   private readonly workspaceId: string | undefined;
+  private readonly authority: ManagementCredentialAuthority;
   private readonly allowedWorkspaceIds: Set<string>;
   private readonly canIssueWorkspace: ((workspaceId: string) => boolean) | undefined;
   private readonly credentials = new Map<string, CredentialRecord>();
@@ -62,6 +90,7 @@ export class ManagementCredentialStore {
     );
     this.generateToken = options.generateToken ?? (() => randomBytes(32).toString("base64url"));
     this.workspaceId = validateWorkspaceId(options.workspaceId);
+    this.authority = options.authority ?? (this.workspaceId ? "workspace" : "host");
     this.allowedWorkspaceIds = new Set(
       (options.allowedWorkspaceIds ?? []).map((workspaceId) => validateRequiredWorkspaceId(workspaceId)),
     );
@@ -85,6 +114,9 @@ export class ManagementCredentialStore {
    */
   issue(workspaceId?: string): ManagementCredentialGrant {
     const claim = workspaceId === undefined ? this.workspaceId : validateRequiredWorkspaceId(workspaceId);
+    if (this.authority === "workspace" && claim === undefined) {
+      throw new RangeError("Workspace management credentials require a workspace claim");
+    }
     if (claim !== undefined && !this.canIssueClaim(claim)) {
       throw new RangeError("Management credential workspace claim is not allowed");
     }
@@ -108,6 +140,7 @@ export class ManagementCredentialStore {
       digest,
       expiresAtMs,
       issuedAtMs,
+      authority: this.authority,
       ...(claim ? { workspaceId: claim } : {}),
     });
 
@@ -115,6 +148,7 @@ export class ManagementCredentialStore {
       token,
       expiresAt: new Date(expiresAtMs).toISOString(),
       scope: MANAGEMENT_CREDENTIAL_SCOPE,
+      authority: this.authority,
       ...(claim ? { workspaceId: claim } : {}),
     };
   }
@@ -130,11 +164,25 @@ export class ManagementCredentialStore {
 
   /** Validate a grant without consuming it; the hosted console may poll. */
   authorize(token: string | undefined, expectedWorkspaceId?: string): boolean {
-    if (!token) return false;
-
+    const authorization = this.getAuthorization(token);
+    if (!authorization) return false;
     if (expectedWorkspaceId !== undefined && !isValidWorkspaceId(expectedWorkspaceId)) {
       return false;
     }
+    return (
+      authorization.authority === "host" ||
+      expectedWorkspaceId === undefined ||
+      authorization.workspaceId === expectedWorkspaceId
+    );
+  }
+
+  /**
+   * Resolve one active credential without exposing the token or digest.
+   * Callers use the authority to distinguish host-wide browser handoffs from
+   * legacy workspace-scoped grants before selecting a context.
+   */
+  getAuthorization(token: string | undefined): ManagementCredentialAuthorization | null {
+    if (!token) return null;
 
     const nowMs = this.now();
     this.prune(nowMs);
@@ -143,15 +191,15 @@ export class ManagementCredentialStore {
     for (const record of this.credentials.values()) {
       if (record.expiresAtMs <= nowMs) continue;
       if (record.digest.length !== candidate.length) continue;
-      if (
-        timingSafeEqual(record.digest, candidate) &&
-        (expectedWorkspaceId === undefined || record.workspaceId === expectedWorkspaceId)
-      ) {
-        return true;
+      if (timingSafeEqual(record.digest, candidate)) {
+        return {
+          authority: record.authority,
+          ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+        };
       }
     }
 
-    return false;
+    return null;
   }
 
   /** Revoke one grant when a console session is explicitly closed. */
