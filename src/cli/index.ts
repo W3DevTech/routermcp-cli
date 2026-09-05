@@ -385,7 +385,10 @@ export function parseArgs(args: string[]): {
           options.proxyStdio = args[++i];
         } else {
           options.stdio = true;
-          if (!explicitCommand) command = "serve";
+          // The bare transport flag is the default MCP client mode. It must
+          // use the reusable host just like a bare `routermcp` invocation;
+          // explicit `routermcp serve --stdio` remains the foreground path.
+          if (!explicitCommand) command = "connect";
         }
         break;
 
@@ -400,7 +403,6 @@ export function parseArgs(args: string[]): {
 
       case "--host":
         options.host = args[++i];
-        if (!explicitCommand) command = "serve";
         if (!options.host) {
           console.error("Error: --host requires a host name");
           process.exit(1);

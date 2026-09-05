@@ -113,7 +113,7 @@ describe("CLI daemon reuse", () => {
     expect(finalManifest.running).toBe(false);
   }, 45_000);
 
-  it("reuses one host across directories for the same config and rejects a conflicting profile", async () => {
+  it("reuses one host across directories with different config profiles", async () => {
     const secondProjectDir = await createTempDir();
     const secondConfigPath = await writeConfigFile(secondProjectDir, {
       mcpServers: { second: { transport: "stdio", command: "true" } },
@@ -165,13 +165,28 @@ describe("CLI daemon reuse", () => {
         ]),
       );
 
-      const conflict = await runCli(
+      const secondProfile = await runCli(
         entrypoint,
         ["start", "--config", secondConfigPath, "--project", secondProjectDir, ...common],
         env,
       );
-      expect(conflict.code).not.toBe(0);
-      expect(conflict.stderr).toContain("already serving another config profile");
+      expect(secondProfile.code, `${secondProfile.stdout}\n${secondProfile.stderr}`).toBe(0);
+      const secondProfileStatus = JSON.parse(secondProfile.stdout) as {
+        pid?: number;
+        instanceId?: string;
+      };
+      expect(secondProfileStatus.pid).toBe(firstStatus.pid);
+      expect(secondProfileStatus.instanceId).toBe(firstStatus.instanceId);
+
+      const secondConnected = await runCli(
+        entrypoint,
+        ["connect", "--config", secondConfigPath, "--project", secondProjectDir],
+        env,
+        '{"jsonrpc":"2.0","id":2,"method":"ping"}\n',
+      );
+      expect(secondConnected.code, `${secondConnected.stdout}\n${secondConnected.stderr}`).toBe(0);
+      expect(secondConnected.stderr).toContain(`pid: ${firstStatus.pid}`);
+      expect(secondConnected.stdout).toContain('"jsonrpc"');
     } finally {
       const stopped = await runCli(
         entrypoint,
