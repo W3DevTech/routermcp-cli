@@ -21,13 +21,19 @@ export interface ManagementCredentialStoreOptions {
   ttlMs?: number;
   maxCredentials?: number;
   generateToken?: () => string;
+  /** Workspace claim attached to every grant issued by this store. */
   workspaceId?: string;
+  /** Additional workspace claims that a trusted local handoff may request. */
+  allowedWorkspaceIds?: readonly string[];
+  /** Dynamic registry gate for claims that may be issued by this store. */
+  canIssueWorkspace?: (workspaceId: string) => boolean;
 }
 
 interface CredentialRecord {
   digest: Uint8Array;
   expiresAtMs: number;
   issuedAtMs: number;
+  workspaceId?: string;
 }
 
 /**
@@ -44,6 +50,8 @@ export class ManagementCredentialStore {
   private readonly maxCredentials: number;
   private readonly generateToken: () => string;
   private readonly workspaceId: string | undefined;
+  private readonly allowedWorkspaceIds: Set<string>;
+  private readonly canIssueWorkspace: ((workspaceId: string) => boolean) | undefined;
   private readonly credentials = new Map<string, CredentialRecord>();
 
   constructor(options: ManagementCredentialStoreOptions = {}) {
@@ -54,10 +62,33 @@ export class ManagementCredentialStore {
     );
     this.generateToken = options.generateToken ?? (() => randomBytes(32).toString("base64url"));
     this.workspaceId = validateWorkspaceId(options.workspaceId);
+    this.allowedWorkspaceIds = new Set(
+      (options.allowedWorkspaceIds ?? []).map((workspaceId) => validateRequiredWorkspaceId(workspaceId)),
+    );
+    if (this.workspaceId) this.allowedWorkspaceIds.add(this.workspaceId);
+    this.canIssueWorkspace = options.canIssueWorkspace;
   }
 
-  /** Issue a fresh management grant without persisting it to disk. */
-  issue(): ManagementCredentialGrant {
+  /** Workspace claim attached to grants issued by this store, if any. */
+  get claimedWorkspaceId(): string | undefined {
+    return this.workspaceId;
+  }
+
+  /**
+   * Issue a fresh management grant without persisting it to disk.
+   *
+   * A requested workspace claim is accepted only when it is the store's
+   * default claim or has been explicitly allowed by the host. The callback is
+   * intended for a live workspace registry; the static allowlist is useful
+   * for embedders and deterministic tests. An unscoped store cannot mint a
+   * scoped grant unless the caller opts into one of those gates.
+   */
+  issue(workspaceId?: string): ManagementCredentialGrant {
+    const claim = workspaceId === undefined ? this.workspaceId : validateRequiredWorkspaceId(workspaceId);
+    if (claim !== undefined && !this.canIssueClaim(claim)) {
+      throw new RangeError("Management credential workspace claim is not allowed");
+    }
+
     const issuedAtMs = this.now();
     this.prune(issuedAtMs);
 
@@ -77,19 +108,33 @@ export class ManagementCredentialStore {
       digest,
       expiresAtMs,
       issuedAtMs,
+      ...(claim ? { workspaceId: claim } : {}),
     });
 
     return {
       token,
       expiresAt: new Date(expiresAtMs).toISOString(),
       scope: MANAGEMENT_CREDENTIAL_SCOPE,
-      ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
+      ...(claim ? { workspaceId: claim } : {}),
     };
   }
 
+  /** Return whether a workspace claim may be requested for a new grant. */
+  canIssueForWorkspace(workspaceId: string | undefined): boolean {
+    if (workspaceId === undefined) {
+      return this.workspaceId === undefined || this.canIssueClaim(this.workspaceId);
+    }
+    if (!isValidWorkspaceId(workspaceId)) return false;
+    return this.canIssueClaim(workspaceId);
+  }
+
   /** Validate a grant without consuming it; the hosted console may poll. */
-  authorize(token: string | undefined): boolean {
+  authorize(token: string | undefined, expectedWorkspaceId?: string): boolean {
     if (!token) return false;
+
+    if (expectedWorkspaceId !== undefined && !isValidWorkspaceId(expectedWorkspaceId)) {
+      return false;
+    }
 
     const nowMs = this.now();
     this.prune(nowMs);
@@ -98,7 +143,12 @@ export class ManagementCredentialStore {
     for (const record of this.credentials.values()) {
       if (record.expiresAtMs <= nowMs) continue;
       if (record.digest.length !== candidate.length) continue;
-      if (timingSafeEqual(record.digest, candidate)) return true;
+      if (
+        timingSafeEqual(record.digest, candidate) &&
+        (expectedWorkspaceId === undefined || record.workspaceId === expectedWorkspaceId)
+      ) {
+        return true;
+      }
     }
 
     return false;
@@ -139,6 +189,11 @@ export class ManagementCredentialStore {
 
     if (oldestKey) this.credentials.delete(oldestKey);
   }
+
+  private canIssueClaim(workspaceId: string): boolean {
+    if (!this.allowedWorkspaceIds.has(workspaceId) && !this.canIssueWorkspace) return false;
+    return this.canIssueWorkspace?.(workspaceId) ?? true;
+  }
 }
 
 function digestToken(token: string): Uint8Array {
@@ -165,10 +220,19 @@ function validateMaxCredentials(value: number): number {
   return value;
 }
 
-function validateWorkspaceId(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  if (!/^[a-z0-9-]{1,256}$/i.test(value)) {
+/** Validate the bounded, path-safe workspace claim used by local management. */
+export function isValidWorkspaceId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9-]{1,256}$/i.test(value);
+}
+
+function validateRequiredWorkspaceId(value: string): string {
+  if (!isValidWorkspaceId(value)) {
     throw new RangeError("Management credential workspace ID is invalid");
   }
   return value;
+}
+
+function validateWorkspaceId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return validateRequiredWorkspaceId(value);
 }

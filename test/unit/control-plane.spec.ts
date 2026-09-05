@@ -6,6 +6,7 @@ import {
   sanitizeUrl,
   type ControlPlaneServer,
   type ControlPlaneStatus,
+  type ControlPlaneWorkspace,
 } from "../../src/control-plane/index.js";
 
 describe("ControlPlane", () => {
@@ -97,6 +98,135 @@ describe("ControlPlane", () => {
     ]);
   });
 
+  it("keeps workspace snapshots and mutations scoped to the requested claim", async () => {
+    const workspaceA: ControlPlaneWorkspace = {
+      id: "workspace-a",
+      directory: "/tmp/project-a",
+      configPath: "/tmp/project-a/routermcp.jsonc",
+      configScope: "project-local",
+      profileId: "profile-a",
+      configDigest: "a".repeat(64),
+      state: "current",
+      activeConnections: 1,
+      firstSeenAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+    };
+    const workspaceB: ControlPlaneWorkspace = {
+      ...workspaceA,
+      id: "workspace-b",
+      directory: "/tmp/project-b",
+      configPath: "/tmp/project-b/routermcp.jsonc",
+      profileId: "profile-b",
+      configDigest: "b".repeat(64),
+      state: "known",
+      activeConnections: 0,
+    };
+    const features = {
+      mode: "standard" as const,
+      effectiveMode: "standard" as const,
+      codeMode: { timeout: 30_000, allowFetch: false },
+      configDigest: workspaceA.configDigest,
+      restartState: "idle" as const,
+    };
+    const server: ControlPlaneServer = {
+      id: "mcp:demo",
+      name: "demo",
+      kind: "mcp",
+      enabled: true,
+      observedState: "online",
+      configRevision: workspaceA.configDigest,
+      lastChangedAt: "2026-01-01T00:00:00.000Z",
+      state: "online",
+      toolCount: 2,
+    };
+    const management = {
+      getFeatures: vi.fn().mockResolvedValue(features),
+      updateServer: vi.fn().mockResolvedValue({
+        accepted: true,
+        changed: true,
+        mutationId: "mutation-1",
+        configDigest: "c".repeat(64),
+        previousConfigDigest: workspaceA.configDigest,
+        restartState: "scheduled" as const,
+      }),
+      updateFeatures: vi.fn(),
+    };
+    const status: ControlPlaneStatus = {
+      state: "ready",
+      instanceId: "instance-a",
+      version: "0.2.1",
+      protocolVersion: "1",
+      profile: workspaceA.profileId,
+      configDigest: workspaceA.configDigest,
+      host: "127.0.0.1",
+      port: 7858,
+      mcpUrl: "http://127.0.0.1:7858/mcp",
+      controlUrl: "http://127.0.0.1:7858",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      uptimeSeconds: 1,
+      workspaceId: workspaceA.id,
+    };
+    const controlPlane = new ControlPlane({
+      getStatus: () => status,
+      getServers: () => [server],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => workspaceA.id,
+      getWorkspaces: () => [workspaceA, workspaceB],
+      getWorkspaceStatus: (workspaceId) =>
+        workspaceId === workspaceA.id
+          ? {
+              workspace: workspaceA,
+              status,
+              servers: [server],
+              sessions: [],
+              metrics: emptyMetrics(),
+              features,
+            }
+          : null,
+      getWorkspaceManagement: (workspaceId) =>
+        workspaceId === workspaceA.id ? management : null,
+    });
+
+    expect(controlPlane.getCurrentWorkspaceId()).toBe(workspaceA.id);
+    expect(controlPlane.getWorkspaceManagement(workspaceB.id)).toBeNull();
+    expect(controlPlane.getWorkspaceManagement("workspace/a")).toBeNull();
+    expect(controlPlane.getWorkspaceServers(workspaceA.id)).toEqual([
+      expect.objectContaining({
+        id: server.id,
+        enabled: true,
+        observedState: "online",
+        configRevision: workspaceA.configDigest,
+      }),
+    ]);
+    expect(await controlPlane.getWorkspaceFeatures(workspaceA.id)).toEqual(features);
+    expect(await controlPlane.getWorkspaceSnapshot(workspaceA.id)).toEqual(
+      expect.objectContaining({ features }),
+    );
+
+    await expect(
+      controlPlane.updateWorkspaceServer(
+        workspaceA.id,
+        server.id,
+        { enabled: false },
+        workspaceA.configDigest,
+      ),
+    ).resolves.toMatchObject({ accepted: true, changed: true });
+    expect(management.updateServer).toHaveBeenCalledWith(
+      server.id,
+      { enabled: false },
+      workspaceA.configDigest,
+    );
+    await expect(
+      controlPlane.updateWorkspaceServer(
+        workspaceB.id,
+        server.id,
+        { enabled: false },
+        workspaceB.configDigest,
+      ),
+    ).resolves.toMatchObject({ accepted: false, changed: false });
+    expect(management.updateServer).toHaveBeenCalledTimes(1);
+  });
+
   it("allowlists browser-visible snapshots instead of forwarding provider fields", () => {
     const controlPlane = new ControlPlane({
       getStatus: () =>
@@ -137,6 +267,19 @@ describe("ControlPlane", () => {
     expect(controlPlane.getServers()[0]).not.toHaveProperty("headers");
   });
 });
+
+function emptyMetrics() {
+  return {
+    requestsTotal: 0,
+    requestsPerSecond: 0,
+    errorsTotal: 0,
+    errorRate: 0,
+    toolCallsTotal: 0,
+    activeSessions: 0,
+    activeLeases: 0,
+    latencyMs: { p50: 0, p95: 0, p99: 0 },
+  };
+}
 
 describe("control-plane redaction helpers", () => {
   it("removes bearer, URL credential, and query secret material", () => {
