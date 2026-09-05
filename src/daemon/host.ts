@@ -12,7 +12,7 @@ import { acquireProfileLock } from "./lock.js";
 import { getDaemonHostPaths, getDaemonPaths } from "./paths.js";
 import { matchesProcessIdentity } from "./identity.js";
 import { getProjectId } from "./project.js";
-import { readRuntimeManifest } from "./runtime-manifest.js";
+import { DAEMON_HEALTH_PATH } from "../transports/http-streamable.js";
 import {
   createDaemonHostManifest,
   type DaemonHostManifest,
@@ -56,11 +56,11 @@ export interface EnsureWorkspaceDaemonOptions extends EnsureRunningOptions {
 /**
  * Ensure a workspace is reachable through one user-scoped daemon host.
  *
- * The first workspace starts using the existing profile lifecycle. A later
- * workspace may reuse that host only when it resolves to the same config path
- * and digest. Different profiles receive an explicit conflict instead of
- * silently routing requests through another directory's configuration. This
- * is the safe bridge to fully isolated in-process contexts in a later stack.
+ * The first workspace starts using the existing profile lifecycle. Later
+ * workspaces reuse the same user-scoped process regardless of their config
+ * path or revision. The authenticated bridge metadata carries the workspace
+ * identity into the host, where the runtime manager selects the isolated
+ * context for that request.
  */
 export async function ensureWorkspaceRunning(
   input: WorkspaceRegistrationInput,
@@ -85,52 +85,37 @@ export async function ensureWorkspaceRunning(
   try {
     const hostManifest = await readDaemonHostManifest(hostPaths.runtimeManifest);
     if (hostManifest) {
-      const compatible = hostManifestMatchesWorkspace(hostManifest, descriptor);
-      if (!compatible) {
-        const hostProcessAlive = await matchesProcessIdentity(hostManifest.processIdentity);
-        const profileTransitioning =
-          hostProcessAlive &&
-          hostManifestOwnsWorkspace(hostManifest, descriptor) &&
-          (await readProfileTransitionState(hostManifest)) !== null;
-        if (profileTransitioning) {
-          // A managed config/mode change marks the profile manifest as
-          // stopping before the replacement process is launched. Let the
-          // caller enter the normal profile lifecycle path rather than
-          // reporting a misleading cross-profile conflict.
-          await removeDaemonHostManifest(hostPaths.runtimeManifest);
-        } else if (hostProcessAlive) {
-          const conflict = new DaemonHostProfileConflictError(
-            "A RouterMCP daemon host is already serving another config profile; " +
-              "stop it or use an isolated profile before connecting this workspace",
-          );
-          await registry.markUnavailable(workspace.id, conflict);
-          throw conflict;
-        } else {
-          // The host manifest is durable and may outlive a crashed daemon.
-          // Lease counts belong to that process, so clear them only after the
-          // recorded process identity has been proven dead before starting the
-          // replacement host.
-          await registry.resetActiveConnections();
-          await removeDaemonHostManifest(hostPaths.runtimeManifest);
-        }
-      } else {
-        const primaryPaths = getPrimaryProfilePaths(hostManifest);
-        if (primaryPaths) {
-          const existing = await getDaemonStatus(primaryPaths, {
-            configFingerprint: hostManifest.primaryConfigFingerprint,
-            healthTimeoutMs: options.healthTimeoutMs,
-          });
-          if (existing.running) {
-            return attachWorkspaceStatus(existing, hostManifest.hostId, workspace);
-          }
-        }
-        // A compatible host can still have died between the manifest check
-        // and the profile health probe. Its lease counts belong to that dead
-        // process, so clear them before the replacement host is allowed to
-        // inherit the registry.
-        await registry.resetActiveConnections();
-        await removeDaemonHostManifest(hostPaths.runtimeManifest);
+      const existing = await getHostDaemonStatus(hostManifest, options.healthTimeoutMs);
+      if (existing.running) {
+        // Registration and context construction happen in the host process as
+        // part of bridge lease acquisition. Returning the shared endpoint here
+        // keeps the CLI starter independent from runtime-manager internals.
+        return attachWorkspaceStatus(existing, hostManifest.hostId, workspace);
       }
+
+      // A fresh host can briefly be between its durable manifest write and
+      // the first successful health response. Do not start a second process
+      // while that identity is still alive; wait for readiness or fail with a
+      // host-busy error so concurrent projects cannot split the listener.
+      if (await matchesProcessIdentity(hostManifest.processIdentity)) {
+        const ready = await waitForHostReady(
+          hostManifest,
+          options.healthTimeoutMs,
+          options.startupTimeoutMs,
+        );
+        if (ready) return attachWorkspaceStatus(ready, hostManifest.hostId, workspace);
+        throw new DaemonHostBusyError(
+          "A RouterMCP daemon host is running but is not ready for another workspace",
+        );
+      }
+
+      // The host manifest is durable and may outlive a crashed daemon. Lease
+      // counts belong to that process, so clear them only after the recorded
+      // process identity has been proven dead before starting its replacement.
+      if (!(await matchesProcessIdentity(hostManifest.processIdentity))) {
+        await registry.resetActiveConnections();
+      }
+      await removeDaemonHostManifest(hostPaths.runtimeManifest);
     }
 
     const status = await ensureRunning(profilePaths, {
@@ -169,19 +154,6 @@ export async function ensureWorkspaceRunning(
   }
 }
 
-/** Return a profile transition state when a controlled restart is in flight. */
-async function readProfileTransitionState(
-  hostManifest: DaemonHostManifest,
-): Promise<"starting" | "stopping" | null> {
-  const primaryPaths = getPrimaryProfilePaths(hostManifest);
-  if (!primaryPaths) return null;
-  const profileManifest = await readRuntimeManifest(primaryPaths.runtimeManifest);
-  if (profileManifest?.state === "starting" || profileManifest?.state === "stopping") {
-    return profileManifest.state;
-  }
-  return null;
-}
-
 /**
  * Read status through the host when possible. Unknown/stale host state falls
  * back to the profile lifecycle so existing CLI commands remain useful during
@@ -196,21 +168,15 @@ export async function getWorkspaceDaemonStatus(
   await registry.load();
   const hostPaths = getDaemonHostPaths();
   const hostManifest = await readDaemonHostManifest(hostPaths.runtimeManifest);
-  if (hostManifest && hostManifestMatchesWorkspace(hostManifest, descriptor)) {
-    const primaryPaths = getPrimaryProfilePaths(hostManifest);
-    if (primaryPaths) {
-      const status = await getDaemonStatus(primaryPaths, {
-        configFingerprint: hostManifest.primaryConfigFingerprint,
-        healthTimeoutMs: options.healthTimeoutMs,
-      });
-      if (status.running) {
-        const workspace = await registry.get(descriptor.id);
-        return attachWorkspaceStatus(
-          status,
-          hostManifest.hostId,
-          workspace ?? makeUnregisteredWorkspace(descriptor),
-        );
-      }
+  if (hostManifest) {
+    const status = await getHostDaemonStatus(hostManifest, options.healthTimeoutMs);
+    if (status.running) {
+      const workspace = await registry.get(descriptor.id);
+      return attachWorkspaceStatus(
+        status,
+        hostManifest.hostId,
+        workspace ?? makeUnregisteredWorkspace(descriptor),
+      );
     }
   }
 
@@ -223,6 +189,112 @@ export async function getWorkspaceDaemonStatus(
     configFingerprint: descriptor.configDigest,
     healthTimeoutMs: options.healthTimeoutMs,
   });
+}
+
+/**
+ * Probe the user-scoped host without applying a profile/config compatibility
+ * check. A host owns the listener and process identity; individual config
+ * fingerprints are selected by the runtime manager after a bridge lease is
+ * acquired. Keeping this probe separate from getDaemonStatus is what allows a
+ * second project to reuse the first project's process safely.
+ */
+async function getHostDaemonStatus(
+  manifest: DaemonHostManifest,
+  healthTimeoutMs = 1_000,
+): Promise<DaemonStatus> {
+  const baseStatus: DaemonStatus = {
+    running: false,
+    state: manifest.state,
+    pid: manifest.pid,
+    port: manifest.port,
+    host: manifest.host,
+    socket: manifest.socketPath,
+    profileId: manifest.primaryProfileId,
+    instanceId: manifest.instanceId,
+    cliVersion: manifest.cliVersion,
+    protocolVersion: manifest.protocolVersion,
+    configPath: manifest.primaryConfigPath,
+    configFingerprint: manifest.primaryConfigFingerprint,
+    hostId: manifest.hostId,
+    ...(manifest.mcpUrl ? { mcpUrl: manifest.mcpUrl } : {}),
+    ...(manifest.controlUrl ? { controlUrl: manifest.controlUrl } : {}),
+    ...(manifest.localAuthToken ? { authToken: manifest.localAuthToken } : {}),
+  };
+
+  if (manifest.state !== "ready") {
+    return { ...baseStatus, reason: `Daemon host is ${manifest.state}` };
+  }
+  if (!(await matchesProcessIdentity(manifest.processIdentity))) {
+    return { ...baseStatus, reason: "Daemon host process is no longer running" };
+  }
+  if (!manifest.localAuthToken || !manifest.port || !isLoopbackHost(manifest.host)) {
+    return { ...baseStatus, reason: "Daemon host manifest has no valid authenticated endpoint" };
+  }
+
+  const health = await probeHostHealth(manifest, healthTimeoutMs);
+  if (!health) {
+    return { ...baseStatus, reason: "Authenticated daemon host health check failed" };
+  }
+
+  if (
+    (health.instanceId !== undefined && health.instanceId !== manifest.instanceId) ||
+    (health.pid !== undefined && health.pid !== manifest.pid) ||
+    (health.state !== undefined && health.state !== "ready") ||
+    (health.cliVersion !== undefined && health.cliVersion !== manifest.cliVersion) ||
+    (health.protocolVersion !== undefined && health.protocolVersion !== manifest.protocolVersion) ||
+    (health.host !== undefined && health.host !== manifest.host) ||
+    (health.port !== undefined && health.port !== manifest.port)
+  ) {
+    return { ...baseStatus, reason: "Daemon host health descriptor did not match manifest" };
+  }
+
+  return { ...baseStatus, running: true };
+}
+
+async function waitForHostReady(
+  manifest: DaemonHostManifest,
+  healthTimeoutMs = 1_000,
+  startupTimeoutMs = 15_000,
+): Promise<DaemonStatus | null> {
+  const deadline = Date.now() + Math.max(healthTimeoutMs, startupTimeoutMs);
+  while (Date.now() < deadline) {
+    const status = await getHostDaemonStatus(manifest, healthTimeoutMs);
+    if (status.running) return status;
+    if (!(await matchesProcessIdentity(manifest.processIdentity))) return null;
+    await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+  return null;
+}
+
+async function probeHostHealth(
+  manifest: DaemonHostManifest,
+  timeoutMs: number,
+): Promise<Record<string, unknown> | null> {
+  let url: URL;
+  try {
+    const endpoint = manifest.controlUrl ?? `http://${formatHost(manifest.host)}:${manifest.port}`;
+    url = new URL(DAEMON_HEALTH_PATH, endpoint.endsWith("/") ? endpoint : `${endpoint}/`);
+    if (url.protocol !== "http:" || !isLoopbackHost(url.hostname)) return null;
+  } catch {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${manifest.localAuthToken}` },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const payload: unknown = await response.json();
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Stop a host only when no other workspace has an active bridge. */
@@ -242,7 +314,11 @@ export async function stopWorkspaceDaemon(
     // newer than the host manifest while a config mutation is waiting for its
     // controlled restart, but the same host still owns the profile and must
     // be stopped by a request from any attached workspace.
-    if (hostManifest && hostManifestOwnsWorkspace(hostManifest, descriptor)) {
+    // A controlled restart can temporarily fail the health probe while the
+    // process identity remains live. It still owns the shared listener, so
+    // stop it through its primary profile lifecycle rather than falling back
+    // to a second profile and risking an unrelated process.
+    if (hostManifest && (await matchesProcessIdentity(hostManifest.processIdentity))) {
       const activeOther = registry
         .listSync()
         .some((workspace) => workspace.id !== descriptor.id && workspace.activeConnections > 0);
@@ -291,27 +367,6 @@ export async function restartWorkspaceDaemon(
   });
 }
 
-function hostManifestMatchesWorkspace(
-  manifest: DaemonHostManifest,
-  workspace: { configPath: string; configDigest: string },
-): boolean {
-  return (
-    manifest.state === "ready" &&
-    hostManifestOwnsWorkspace(manifest, workspace) &&
-    manifest.primaryConfigFingerprint === workspace.configDigest
-  );
-}
-
-function hostManifestOwnsWorkspace(
-  manifest: DaemonHostManifest,
-  workspace: { configPath: string },
-): boolean {
-  return (
-    !!manifest.primaryConfigPath &&
-    resolve(manifest.primaryConfigPath) === resolve(workspace.configPath)
-  );
-}
-
 function getPrimaryProfilePaths(
   manifest: DaemonHostManifest,
 ) {
@@ -352,4 +407,29 @@ function makeUnregisteredWorkspace(descriptor: {
     firstSeenAt: timestamp,
     lastSeenAt: timestamp,
   };
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.startsWith("[") && host.endsWith("]")
+    ? host.slice(1, -1)
+    : host;
+  if (normalized === "::1") return true;
+  const octets = normalized.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.slice(1).every((octet) => /^\d+$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255)
+  );
+}
+
+function formatHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }

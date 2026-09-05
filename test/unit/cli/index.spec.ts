@@ -368,6 +368,18 @@ describe("parseArgs", () => {
       expect(command).toBe("connect");
       expect(options.config).toBe("routermcp.jsonc");
     });
+
+    it("uses the reusable bridge for a bare stdio selection", () => {
+      const { command, options } = parseArgs(["--stdio"]);
+      expect(command).toBe("connect");
+      expect(options.stdio).toBe(true);
+    });
+
+    it("keeps bare host selection on the reusable bridge", () => {
+      const { command, options } = parseArgs(["--host", "127.0.0.2"]);
+      expect(command).toBe("connect");
+      expect(options.host).toBe("127.0.0.2");
+    });
   });
 });
 
