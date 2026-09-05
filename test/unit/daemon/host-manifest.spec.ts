@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDaemonHostManifest,
+  DAEMON_HOST_CAPABILITIES,
+  DAEMON_HOST_CAPABILITY_VERSION,
+  getDaemonHostCompatibility,
   isDaemonHostManifest,
   readDaemonHostManifest,
   redactDaemonHostManifest,
@@ -40,6 +43,9 @@ describe("daemon host manifest", () => {
     await writeDaemonHostManifest(path, manifest);
 
     expect(await readDaemonHostManifest(path)).toEqual(manifest);
+    expect(manifest.hostProtocolVersion).toBe("1");
+    expect(manifest.hostCapabilityVersion).toBe(DAEMON_HOST_CAPABILITY_VERSION);
+    expect(manifest.hostCapabilities).toEqual(DAEMON_HOST_CAPABILITIES);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(join(tempDir, "host"))).mode & 0o777).toBe(0o700);
     expect(await readdir(join(tempDir, "host"))).toEqual(["runtime.json"]);
@@ -79,5 +85,37 @@ describe("daemon host manifest", () => {
         pid: process.pid + 1,
       }),
     ).toBe(false);
+  });
+
+  it("keeps old host manifests readable but marks them incompatible", async () => {
+    const manifest = await createDaemonHostManifest({
+      hostId: "host-1",
+      pid: process.pid,
+      processIdentity: { pid: process.pid, source: "pid" },
+    });
+    const legacy = { ...manifest };
+    delete legacy.hostProtocolVersion;
+    delete legacy.hostCapabilityVersion;
+    delete legacy.hostCapabilities;
+
+    expect(isDaemonHostManifest(legacy)).toBe(true);
+    expect(getDaemonHostCompatibility(legacy)).toMatchObject({
+      compatible: false,
+      reason: expect.stringContaining("host protocol mismatch"),
+    });
+  });
+
+  it("rejects a host missing one required capability", async () => {
+    const manifest = await createDaemonHostManifest({
+      hostId: "host-1",
+      pid: process.pid,
+      processIdentity: { pid: process.pid, source: "pid" },
+      hostCapabilities: ["workspace-routing"],
+    });
+
+    expect(getDaemonHostCompatibility(manifest)).toMatchObject({
+      compatible: false,
+      reason: expect.stringContaining("required capabilities"),
+    });
   });
 });

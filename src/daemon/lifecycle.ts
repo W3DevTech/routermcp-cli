@@ -279,6 +279,39 @@ export async function stopDaemon(
   }
 }
 
+/**
+ * Stop a process only when it still matches the identity persisted for it.
+ *
+ * This is used for replacing a host whose manifest is from an older CLI and
+ * therefore may not have a usable profile manifest. Every signal is preceded
+ * by an identity check and shutdown completion is checked against the same
+ * identity, so a stale PID cannot cause an unrelated process to be killed.
+ * The return value is false when the recorded process was already gone.
+ */
+export async function stopDaemonProcess(
+  identity: ProcessIdentity,
+  options: StopDaemonOptions = {},
+): Promise<boolean> {
+  // A PID-only identity cannot distinguish a reused PID from the process
+  // recorded in an old manifest. Refuse to signal it; callers can surface a
+  // busy/upgrade-required state instead of risking an unrelated process.
+  if (!identity.startToken) return false;
+  if (!(await matchesProcessIdentity(identity))) return false;
+
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DAEMON_SHUTDOWN_TIMEOUT_MS;
+  if (await signalMatchingProcess(identity, "SIGTERM")) {
+    if (await waitForProcessExit(identity, shutdownTimeoutMs)) return true;
+  } else {
+    return true;
+  }
+
+  const forceTimeoutMs = options.forceShutdownTimeoutMs ?? DAEMON_FORCE_SHUTDOWN_TIMEOUT_MS;
+  if (!(await signalMatchingProcess(identity, "SIGKILL"))) return true;
+  if (await waitForProcessExit(identity, forceTimeoutMs)) return true;
+
+  throw new DaemonStopTimeoutError(identity.pid);
+}
+
 async function readLegacyDaemonStatus(paths: DaemonPaths): Promise<DaemonStatus> {
   const pid = await readPositiveInteger(paths.pid);
   const port = await readPositiveInteger(paths.port);
@@ -587,6 +620,15 @@ async function waitForProcessExit(identity: ProcessIdentity, timeoutMs: number):
     await sleep(100);
   }
   return !(await matchesProcessIdentity(identity));
+}
+
+async function signalMatchingProcess(
+  identity: ProcessIdentity,
+  signal: NodeJS.Signals,
+): Promise<boolean> {
+  if (!(await matchesProcessIdentity(identity))) return false;
+  killProcess(identity.pid, signal);
+  return true;
 }
 
 async function removeManifestIfCurrent(

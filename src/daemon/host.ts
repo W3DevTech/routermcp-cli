@@ -6,6 +6,7 @@ import {
   getDaemonStatus,
   type EnsureRunningOptions,
   type StopDaemonOptions,
+  stopDaemonProcess,
   stopDaemon,
 } from "./lifecycle.js";
 import { acquireProfileLock } from "./lock.js";
@@ -15,6 +16,8 @@ import { getProjectId } from "./project.js";
 import { DAEMON_HEALTH_PATH } from "../transports/http-streamable.js";
 import {
   createDaemonHostManifest,
+  getDaemonHostCompatibility,
+  hasDaemonHostCapabilities,
   type DaemonHostManifest,
   readDaemonHostManifest,
   removeDaemonHostManifest,
@@ -93,11 +96,38 @@ export async function ensureWorkspaceRunning(
         return attachWorkspaceStatus(existing, hostManifest.hostId, workspace);
       }
 
-      // A fresh host can briefly be between its durable manifest write and
-      // the first successful health response. Do not start a second process
-      // while that identity is still alive; wait for readiness or fail with a
-      // host-busy error so concurrent projects cannot split the listener.
-      if (await matchesProcessIdentity(hostManifest.processIdentity)) {
+      const hostProcessAlive = await matchesProcessIdentity(hostManifest.processIdentity);
+      const compatibility = getDaemonHostCompatibility(hostManifest);
+
+      if (!compatibility.compatible && hostProcessAlive) {
+        const activeOther = registry
+          .listSync()
+          .some((registered) => registered.activeConnections > 0);
+        if (activeOther && options.allowActiveWorkspaces !== true) {
+          throw new DaemonHostBusyError(
+            `${compatibility.reason ?? "The RouterMCP daemon host is incompatible"}; ` +
+              "active workspaces must disconnect before it can be upgraded",
+          );
+        }
+
+        // A stale host must be replaced before another process can bind the
+        // shared listener. Stop only the exact recorded process identity;
+        // never infer ownership from a PID or port file alone.
+        await stopDaemonProcess(hostManifest.processIdentity, options);
+        if (await matchesProcessIdentity(hostManifest.processIdentity)) {
+          throw new DaemonHostBusyError(
+            "The incompatible RouterMCP daemon host could not be stopped safely",
+          );
+        }
+        // Lease counts belong to the old host and may be reset only after the
+        // recorded identity has been confirmed dead.
+        await registry.resetActiveConnections();
+        await removeDaemonHostManifest(hostPaths.runtimeManifest);
+      } else if (hostProcessAlive) {
+        // A fresh host can briefly be between its durable manifest write and
+        // the first successful health response. Do not start a second process
+        // while that identity is still alive; wait for readiness or fail with
+        // a host-busy error so concurrent projects cannot split the listener.
         const ready = await waitForHostReady(
           hostManifest,
           options.healthTimeoutMs,
@@ -224,6 +254,10 @@ async function getHostDaemonStatus(
   if (manifest.state !== "ready") {
     return { ...baseStatus, reason: `Daemon host is ${manifest.state}` };
   }
+  const compatibility = getDaemonHostCompatibility(manifest);
+  if (!compatibility.compatible) {
+    return { ...baseStatus, reason: compatibility.reason };
+  }
   if (!(await matchesProcessIdentity(manifest.processIdentity))) {
     return { ...baseStatus, reason: "Daemon host process is no longer running" };
   }
@@ -246,6 +280,17 @@ async function getHostDaemonStatus(
     (health.port !== undefined && health.port !== manifest.port)
   ) {
     return { ...baseStatus, reason: "Daemon host health descriptor did not match manifest" };
+  }
+
+  if (
+    health.hostProtocolVersion !== manifest.hostProtocolVersion ||
+    health.hostCapabilityVersion !== manifest.hostCapabilityVersion ||
+    !hasDaemonHostCapabilities(
+      asStringArray(health.hostCapabilities),
+      manifest.hostCapabilities ?? [],
+    )
+  ) {
+    return { ...baseStatus, reason: "Daemon host capabilities did not match manifest" };
   }
 
   return { ...baseStatus, running: true };
@@ -428,6 +473,12 @@ function formatHost(host: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asStringArray(value: unknown): readonly string[] | undefined {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? value
+    : undefined;
 }
 
 function delay(milliseconds: number): Promise<void> {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { VERSION } from "../version.js";
+import { DAEMON_PROTOCOL_VERSION } from "./runtime-manifest.js";
 import { captureProcessIdentity, type ProcessIdentity } from "./identity.js";
 import {
   type DaemonReadinessState,
@@ -12,7 +13,17 @@ import {
 
 /** Version the host manifest independently from legacy profile manifests. */
 export const DAEMON_HOST_MANIFEST_SCHEMA_VERSION = 1 as const;
+/** Protocol spoken by the user-scoped host lifecycle and control plane. */
 export const DAEMON_HOST_MANIFEST_PROTOCOL_VERSION = "1";
+/** Version of the host capability set, independent from MCP protocol dates. */
+export const DAEMON_HOST_CAPABILITY_VERSION = 1 as const;
+/** Capabilities required by the current multi-workspace host implementation. */
+export const DAEMON_HOST_CAPABILITIES = [
+  "workspace-routing",
+  "workspace-management",
+  "workspace-activation",
+] as const;
+export type DaemonHostCapability = (typeof DAEMON_HOST_CAPABILITIES)[number];
 export const DAEMON_HOST_DEFAULT = "127.0.0.1";
 
 /**
@@ -32,6 +43,11 @@ export interface DaemonHostManifest {
   processIdentity: ProcessIdentity;
   cliVersion: string;
   protocolVersion: string;
+  /** Host lifecycle protocol; absent only in manifests from before negotiation. */
+  hostProtocolVersion?: string;
+  /** Host capability set; absent only in manifests from before negotiation. */
+  hostCapabilityVersion?: number;
+  hostCapabilities?: readonly string[];
   host: string;
   port?: number;
   socketPath?: string;
@@ -61,6 +77,9 @@ export interface CreateDaemonHostManifestOptions {
   processIdentity?: ProcessIdentity;
   cliVersion?: string;
   protocolVersion?: string;
+  hostProtocolVersion?: string;
+  hostCapabilityVersion?: number;
+  hostCapabilities?: readonly string[];
   host?: string;
   port?: number;
   socketPath?: string;
@@ -98,6 +117,9 @@ export async function createDaemonHostManifest(
     processIdentity,
     cliVersion: options.cliVersion ?? VERSION,
     protocolVersion: options.protocolVersion ?? DAEMON_HOST_MANIFEST_PROTOCOL_VERSION,
+    hostProtocolVersion: options.hostProtocolVersion ?? DAEMON_HOST_MANIFEST_PROTOCOL_VERSION,
+    hostCapabilityVersion: options.hostCapabilityVersion ?? DAEMON_HOST_CAPABILITY_VERSION,
+    hostCapabilities: options.hostCapabilities ?? DAEMON_HOST_CAPABILITIES,
     host: options.host ?? DAEMON_HOST_DEFAULT,
     ...(options.port === undefined ? {} : { port: options.port }),
     ...(options.socketPath === undefined ? {} : { socketPath: options.socketPath }),
@@ -192,6 +214,85 @@ export function serializeDaemonHostManifest(manifest: DaemonHostManifest): strin
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
+export interface DaemonHostCompatibility {
+  compatible: boolean;
+  reason?: string;
+}
+
+/**
+ * Check whether this CLI can safely reuse a persisted daemon host.
+ *
+ * `protocolVersion` describes the runtime wire protocol. The host-specific
+ * protocol and capability version are separate because a host can keep the
+ * MCP protocol stable while changing workspace routing or management
+ * semantics. Older manifests intentionally remain readable so their process
+ * identity can be checked and safely retired instead of being mistaken for a
+ * missing host.
+ */
+export function getDaemonHostCompatibility(
+  manifest: DaemonHostManifest,
+  options: {
+    cliVersion?: string;
+    protocolVersion?: string;
+    hostProtocolVersion?: string;
+    hostCapabilityVersion?: number;
+    requiredCapabilities?: readonly string[];
+  } = {},
+): DaemonHostCompatibility {
+  const cliVersion = options.cliVersion ?? VERSION;
+  if (manifest.cliVersion !== cliVersion) {
+    return {
+      compatible: false,
+      reason: `Daemon host CLI version mismatch (running ${manifest.cliVersion}, current ${cliVersion})`,
+    };
+  }
+
+  const protocolVersion = options.protocolVersion ?? DAEMON_PROTOCOL_VERSION;
+  if (manifest.protocolVersion !== protocolVersion) {
+    return {
+      compatible: false,
+      reason: `Daemon host runtime protocol mismatch (running ${manifest.protocolVersion}, current ${protocolVersion})`,
+    };
+  }
+
+  const hostProtocolVersion =
+    options.hostProtocolVersion ?? DAEMON_HOST_MANIFEST_PROTOCOL_VERSION;
+  if (manifest.hostProtocolVersion !== hostProtocolVersion) {
+    return {
+      compatible: false,
+      reason: `Daemon host protocol mismatch (running ${manifest.hostProtocolVersion ?? "unknown"}, current ${hostProtocolVersion})`,
+    };
+  }
+
+  const hostCapabilityVersion = options.hostCapabilityVersion ?? DAEMON_HOST_CAPABILITY_VERSION;
+  if (manifest.hostCapabilityVersion !== hostCapabilityVersion) {
+    return {
+      compatible: false,
+      reason: `Daemon host capability version mismatch (running ${manifest.hostCapabilityVersion ?? "unknown"}, current ${hostCapabilityVersion})`,
+    };
+  }
+
+  const requiredCapabilities = options.requiredCapabilities ?? DAEMON_HOST_CAPABILITIES;
+  if (!hasDaemonHostCapabilities(manifest.hostCapabilities, requiredCapabilities)) {
+    return {
+      compatible: false,
+      reason: "Daemon host does not advertise the required capabilities",
+    };
+  }
+
+  return { compatible: true };
+}
+
+/** Return whether a host advertises every capability required by this CLI. */
+export function hasDaemonHostCapabilities(
+  capabilities: readonly string[] | undefined,
+  required: readonly string[] = DAEMON_HOST_CAPABILITIES,
+): boolean {
+  if (!capabilities) return false;
+  const available = new Set(capabilities);
+  return required.every((capability) => available.has(capability));
+}
+
 export function isDaemonHostManifest(value: unknown): value is DaemonHostManifest {
   if (!isRecord(value)) return false;
   if (
@@ -213,6 +314,24 @@ export function isDaemonHostManifest(value: unknown): value is DaemonHostManifes
   }
 
   if (value.port !== undefined && !isPort(value.port)) return false;
+  if (value.hostProtocolVersion !== undefined && !isNonEmptyString(value.hostProtocolVersion)) {
+    return false;
+  }
+  if (
+    value.hostCapabilityVersion !== undefined &&
+    (typeof value.hostCapabilityVersion !== "number" ||
+      !Number.isSafeInteger(value.hostCapabilityVersion) ||
+      value.hostCapabilityVersion < 1)
+  ) {
+    return false;
+  }
+  if (
+    value.hostCapabilities !== undefined &&
+    (!Array.isArray(value.hostCapabilities) ||
+      value.hostCapabilities.some((capability) => !isNonEmptyString(capability)))
+  ) {
+    return false;
+  }
   for (const key of [
     "socketPath",
     "mcpUrl",

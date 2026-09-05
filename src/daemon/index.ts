@@ -34,10 +34,16 @@ export {
 } from "./identity.js";
 export {
   DAEMON_HOST_DEFAULT,
+  DAEMON_HOST_CAPABILITIES,
+  DAEMON_HOST_CAPABILITY_VERSION,
   DAEMON_HOST_MANIFEST_PROTOCOL_VERSION,
   DAEMON_HOST_MANIFEST_SCHEMA_VERSION,
   createDaemonHostManifest,
+  getDaemonHostCompatibility,
+  hasDaemonHostCapabilities,
   type CreateDaemonHostManifestOptions,
+  type DaemonHostCapability,
+  type DaemonHostCompatibility,
   isDaemonHostManifest,
   readDaemonHostManifest,
   redactDaemonHostManifest,
@@ -71,6 +77,7 @@ export {
   type EnsureRunningOptions,
   restartDaemon,
   startDaemon,
+  stopDaemonProcess,
   stopDaemon,
   type StopDaemonOptions,
 } from "./lifecycle.js";
