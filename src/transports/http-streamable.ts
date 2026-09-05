@@ -83,6 +83,11 @@ export interface BridgeLeaseTracker {
 }
 
 export interface HttpServerOptions {
+  /**
+   * Bearer token for the daemon control surface. A connection tracker makes
+   * the bridge-lease routes part of that control surface, so those routes
+   * require this token even when the standalone MCP endpoint is anonymous.
+   */
   authToken?: string;
   health?: () => Record<string, unknown>;
   connectionTracker?: BridgeLeaseTracker;
@@ -271,7 +276,11 @@ export function createHttpServerTransport(
                   return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
                 }
 
-                if (!isAuthorized(request, options.authToken)) {
+                // Lease state controls the daemon's lifecycle and must never
+                // be exposed by an anonymous standalone HTTP transport. Keep
+                // the MCP endpoint backwards-compatible when no auth token is
+                // configured, but fail closed for every lease mutation.
+                if (!isAuthorized(request, options.authToken, true)) {
                   return new Response("Unauthorized", {
                     status: 401,
                     headers: corsHeaders(request),
@@ -454,8 +463,12 @@ function decodePathPart(value: string): string {
   }
 }
 
-function isAuthorized(request: Request, authToken: string | undefined): boolean {
-  if (!authToken) return true;
+function isAuthorized(
+  request: Request,
+  authToken: string | undefined,
+  requireToken = false,
+): boolean {
+  if (!authToken) return !requireToken;
   return request.headers.get("authorization") === `Bearer ${authToken}`;
 }
 

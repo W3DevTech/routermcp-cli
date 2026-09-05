@@ -104,6 +104,50 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     tracker.destroy();
   });
 
+  it("does not expose lease mutations without an explicit auth contract", async () => {
+    const tracker = new ConnectionTracker(1000, () => undefined, 10_000);
+    const existingLease = tracker.acquire("existing-lease");
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      connectionTracker: tracker,
+    });
+    await handle.start();
+
+    const unauthenticatedAcquire = await fetchHandler(
+      new Request(`http://127.0.0.1${DAEMON_BRIDGE_LEASES_PATH}`, { method: "POST" }),
+    );
+    expect(unauthenticatedAcquire.status).toBe(401);
+
+    const unauthenticatedHeartbeat = await fetchHandler(
+      new Request(
+        `http://127.0.0.1${DAEMON_BRIDGE_LEASES_PATH}/${encodeURIComponent(existingLease.leaseId)}/heartbeat`,
+        { method: "POST" },
+      ),
+    );
+    expect(unauthenticatedHeartbeat.status).toBe(401);
+
+    const unauthenticatedRelease = await fetchHandler(
+      new Request(
+        `http://127.0.0.1${DAEMON_BRIDGE_LEASES_PATH}/${encodeURIComponent(existingLease.leaseId)}`,
+        { method: "DELETE" },
+      ),
+    );
+    expect(unauthenticatedRelease.status).toBe(401);
+    expect(tracker.count).toBe(1);
+
+    // The standalone HTTP MCP surface remains available without a bearer
+    // token; only lifecycle state is protected by the explicit contract.
+    const mcpDelete = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "DELETE",
+        headers: { "Mcp-Session-Id": "standalone-session" },
+      }),
+    );
+    expect(mcpDelete.status).toBe(204);
+
+    await handle.stop();
+    tracker.destroy();
+  });
+
   it("supports CORS preflight for the management routes", async () => {
     const tracker = new ConnectionTracker();
     const handle = createHttpServerTransport(7858, "127.0.0.1", { connectionTracker: tracker });
