@@ -6,6 +6,7 @@ import {
   getConfigLocations,
   loadConfig,
   loadConfigFromPath,
+  resolveConfigPathForScope,
 } from "../../../src/config/loader.js";
 import {
   getLegacyProjectId,
@@ -1008,6 +1009,9 @@ describe("project config identity migration", () => {
       path: legacyConfigPath,
       exists: true,
     });
+    await expect(resolveConfigPathForScope("user-project", projectDir)).resolves.toBe(
+      legacyConfigPath,
+    );
   });
 
   it("prefers the new project ID when both config locations exist", async () => {
@@ -1039,5 +1043,8 @@ describe("project config identity migration", () => {
       path: newConfigPath,
       exists: true,
     });
+    await expect(resolveConfigPathForScope("user-project", projectDir)).resolves.toBe(
+      newConfigPath,
+    );
   });
 });

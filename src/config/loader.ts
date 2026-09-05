@@ -291,6 +291,24 @@ export function getConfigPathForScope(scope: ConfigScope, cwd: string = process.
 }
 
 /**
+ * Resolve the config path to read for a scope, including existing paths from
+ * before project IDs became content-addressed.
+ *
+ * A missing config always resolves to the current path. Callers that save a
+ * config should continue to use getConfigPathForScope so a legacy file is
+ * migrated to the new location on the next write.
+ */
+export async function resolveConfigPathForScope(
+  scope: ConfigScope,
+  cwd: string = process.cwd(),
+): Promise<string> {
+  const location = (await getConfigLocations(cwd)).find(
+    (candidate) => candidate.scope === scope && candidate.exists,
+  );
+  return location?.path ?? getConfigPathForScope(scope, cwd);
+}
+
+/**
  * Check if a config file exists at the given path (supports both .jsonc and .json).
  */
 async function checkConfigExists(basePath: string): Promise<string | null> {
