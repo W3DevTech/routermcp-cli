@@ -112,11 +112,14 @@ export async function requestManagementCredential(
     throw new Error(`The local daemon rejected the console handoff (HTTP ${response.status})`);
   }
 
-  if (!isManagementCredentialGrant(responseBody)) {
-    throw new Error("The local daemon returned an invalid console handoff");
+  const grant = parseManagementCredentialGrant(responseBody);
+  if (!grant) {
+    throw new Error(
+      "The local daemon returned an invalid console handoff; restart it if it predates this CLI",
+    );
   }
 
-  return responseBody;
+  return grant;
 }
 
 /** Build the fragment format consumed by the hosted console without URL query credentials. */
@@ -192,17 +195,50 @@ function normalizeControlEndpoint(value: string | undefined): string {
   return endpoint.origin;
 }
 
-function isManagementCredentialGrant(value: unknown): value is ManagementCredentialGrant {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+/**
+ * Parse the browser grant while retaining compatibility with the first
+ * workspace-aware daemon release. That release already returned a
+ * workspace-scoped grant, but did not include the later `authority` field.
+ * A claimed legacy grant is unambiguously workspace-scoped; an unclaimed
+ * legacy grant is rejected because treating it as host-wide would widen its
+ * authorization beyond what the issuing daemon enforced.
+ */
+function parseManagementCredentialGrant(value: unknown): ManagementCredentialGrant | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const grant = value as Record<string, unknown>;
-  return (
-    typeof grant.token === "string" &&
-    grant.token.length > 0 &&
-    typeof grant.expiresAt === "string" &&
-    Number.isFinite(Date.parse(grant.expiresAt)) &&
-    grant.scope === "management" &&
-    (grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[0] ||
-      grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[1]) &&
-    (grant.workspaceId === undefined || isValidWorkspaceId(grant.workspaceId))
-  );
+  if (
+    typeof grant.token !== "string" ||
+    grant.token.length === 0 ||
+    typeof grant.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(grant.expiresAt)) ||
+    grant.scope !== "management" ||
+    (grant.workspaceId !== undefined && !isValidWorkspaceId(grant.workspaceId))
+  ) {
+    return null;
+  }
+
+  if (
+    grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[0] ||
+    grant.authority === MANAGEMENT_CREDENTIAL_AUTHORITIES[1]
+  ) {
+    return {
+      token: grant.token,
+      expiresAt: grant.expiresAt,
+      scope: "management",
+      authority: grant.authority,
+      ...(grant.workspaceId ? { workspaceId: grant.workspaceId } : {}),
+    };
+  }
+
+  if (grant.authority === undefined && grant.workspaceId !== undefined) {
+    return {
+      token: grant.token,
+      expiresAt: grant.expiresAt,
+      scope: "management",
+      authority: "workspace",
+      workspaceId: grant.workspaceId,
+    };
+  }
+
+  return null;
 }

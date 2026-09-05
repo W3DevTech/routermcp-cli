@@ -101,6 +101,57 @@ describe("console handoff", () => {
     );
   });
 
+  it("accepts a workspace-scoped grant from a pre-authority daemon", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token: "legacy-management-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: MANAGEMENT_CREDENTIAL_SCOPE,
+          workspaceId: "workspace-current",
+        }),
+        { status: 201 },
+      ),
+    );
+
+    const grant = await requestManagementCredential(
+      {
+        controlUrl: "http://127.0.0.1:7858",
+        authToken: "local-root-token",
+      },
+      fetcher,
+      "workspace-current",
+    );
+
+    expect(grant).toEqual({
+      token: "legacy-management-token",
+      expiresAt: "2026-01-01T00:05:00.000Z",
+      scope: MANAGEMENT_CREDENTIAL_SCOPE,
+      authority: "workspace",
+      workspaceId: "workspace-current",
+    });
+  });
+
+  it("does not infer host authority for an unclaimed legacy grant", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token: "legacy-management-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: MANAGEMENT_CREDENTIAL_SCOPE,
+        }),
+        { status: 201 },
+      ),
+    );
+
+    await expect(
+      requestManagementCredential(
+        { controlUrl: "http://127.0.0.1:7858", authToken: "local-root-token" },
+        fetcher,
+      ),
+    ).rejects.toThrow("restart it if it predates this CLI");
+  });
+
   it("normalizes a canonical control-plane endpoint before requesting a handoff", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
