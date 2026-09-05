@@ -29,7 +29,11 @@ vi.mock("../../../src/daemon/index.js", () => ({
 }));
 
 import { createInterface } from "node:readline";
-import { type ConnectCommandOptions, connectCommand } from "../../../src/cli/connect.js";
+import {
+  type ConnectCommandOptions,
+  connectCommand,
+  proxyStdioToHttp,
+} from "../../../src/cli/connect.js";
 import { resolveConfig, resolveConfigFromPath } from "../../../src/config/loader.js";
 import {
   getDaemonPaths,
@@ -37,6 +41,10 @@ import {
   getProjectId,
   ensureRunning,
 } from "../../../src/daemon/index.js";
+import {
+  DAEMON_BRIDGE_LEASE_HEADER,
+  DAEMON_WORKSPACE_HEADER,
+} from "../../../src/transports/index.js";
 
 describe("connectCommand", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -98,6 +106,7 @@ describe("connectCommand", () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -314,6 +323,140 @@ describe("connectCommand", () => {
       await vi.waitFor(() => {
         expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Project ID"));
       });
+    });
+  });
+
+  describe("workspace attribution", () => {
+    it("forwards the acquired lease and workspace identity to MCP requests", async () => {
+      let lineHandler: ((line: string) => void) | undefined;
+      let closeHandler: (() => void) | undefined;
+      mockRl.on.mockImplementation((event: string, callback: (line: string) => void) => {
+        if (event === "line") lineHandler = callback;
+        return mockRl;
+      });
+      mockRl.once.mockImplementation((event: string, callback: () => void) => {
+        if (event === "close") {
+          closeHandler = callback;
+        }
+        return mockRl;
+      });
+
+      vi.useFakeTimers();
+
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/bridge-leases") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              leaseId: "test-lease",
+              connectedAt: new Date(0).toISOString(),
+              lastSeenAt: new Date(0).toISOString(),
+              leaseExpiresAt: new Date(30_000).toISOString(),
+              leaseTtlMs: 30,
+              workspaceId: "workspace-1",
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/bridge-leases/test-lease/heartbeat") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              leaseId: "test-lease",
+              connectedAt: new Date(0).toISOString(),
+              lastSeenAt: new Date(10).toISOString(),
+              leaseExpiresAt: new Date(40).toISOString(),
+              leaseTtlMs: 30,
+              workspaceId: "workspace-1",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/mcp") && init?.method === "POST") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Mcp-Session-Id": "session-1" },
+          });
+        }
+        return new Response(null, { status: 204 });
+      });
+
+      const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const proxyPromise = proxyStdioToHttp(
+        "http://127.0.0.1:5151/mcp",
+        () => undefined,
+        "secret",
+        {
+          directory: "/tmp/project",
+          configPath: "/tmp/project/routermcp.jsonc",
+          configScope: "project-local",
+          configDigest: "a".repeat(64),
+        },
+      );
+      for (let attempt = 0; attempt < 10 && (!lineHandler || !closeHandler); attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(lineHandler).toBeDefined();
+      expect(closeHandler).toBeDefined();
+
+      lineHandler?.(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }));
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await Promise.resolve();
+      }
+      await vi.advanceTimersByTimeAsync(10);
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      closeHandler?.();
+      await proxyPromise;
+      stdoutSpy.mockRestore();
+
+      const leaseRequest = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/bridge-leases") && init?.method === "POST",
+      );
+      expect(JSON.parse(String(leaseRequest?.[1]?.body))).toMatchObject({
+        directory: "/tmp/project",
+        configPath: "/tmp/project/routermcp.jsonc",
+      });
+      const leaseHeaders = new Headers(leaseRequest?.[1]?.headers);
+      expect(leaseHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBeNull();
+      expect(leaseHeaders.get(DAEMON_WORKSPACE_HEADER)).toBeNull();
+
+      const mcpRequest = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/mcp") && init?.method === "POST",
+      );
+      const mcpHeaders = new Headers(mcpRequest?.[1]?.headers);
+      expect(mcpHeaders.get("Authorization")).toBe("Bearer secret");
+      expect(mcpHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe("test-lease");
+      expect(mcpHeaders.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-1");
+
+      const heartbeatRequest = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).endsWith("/bridge-leases/test-lease/heartbeat") && init?.method === "POST",
+      );
+      const heartbeatHeaders = new Headers(heartbeatRequest?.[1]?.headers);
+      expect(heartbeatHeaders.get("Authorization")).toBe("Bearer secret");
+      expect(heartbeatHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe("test-lease");
+      expect(heartbeatHeaders.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-1");
+
+      const closeRequest = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/mcp") && init?.method === "DELETE",
+      );
+      const closeHeaders = new Headers(closeRequest?.[1]?.headers);
+      expect(closeHeaders.get("Authorization")).toBe("Bearer secret");
+      expect(closeHeaders.get("Mcp-Session-Id")).toBe("session-1");
+      expect(closeHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe("test-lease");
+      expect(closeHeaders.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-1");
+
+      const releaseRequest = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).endsWith("/bridge-leases/test-lease") && init?.method === "DELETE",
+      );
+      const releaseHeaders = new Headers(releaseRequest?.[1]?.headers);
+      expect(releaseHeaders.get("Authorization")).toBe("Bearer secret");
+      expect(releaseHeaders.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe("test-lease");
+      expect(releaseHeaders.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-1");
     });
   });
 });

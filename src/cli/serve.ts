@@ -4,8 +4,10 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { getScopeLabel, resolveConfigFromPath } from "../config/loader.js";
+import type { RouterMcpConfig } from "../config/types.js";
 import { createGateway, type Gateway } from "../core/gateway.js";
 import type { UpstreamServer } from "../core/upstream.js";
+import type { HttpRequestContext } from "../transports/http-streamable.js";
 import {
   ControlPlane,
   ManagementCredentialStore,
@@ -80,6 +82,10 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let currentWorkspace: WorkspaceSnapshot | null = null;
   let currentWorkspaceRegistration: WorkspaceRegistrationInput | null = null;
   let configFingerprint: string | undefined;
+  let desiredConfig: RouterMcpConfig | null = null;
+  let desiredConfigRevision: string | undefined;
+  const desiredServerLastChangedAt = new Map<string, string>();
+  const sessionWorkspaceIds = new Map<string, string>();
   let restartScheduled = false;
   let startupLock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
 
@@ -92,6 +98,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     const { config, path: configPath, scope } = await resolveConfigFromPath(options.config);
+    desiredConfig = config;
 
     if (verbose) {
       console.error(`Loaded config from: ${configPath} [${getScopeLabel(scope)}]`);
@@ -115,6 +122,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       daemonPaths = getDaemonPaths(projectId, resolve(configPath), projectPath);
       if (daemonPaths.runtimeManifest) {
         configFingerprint = await fingerprintConfigFile(daemonPaths.configPath);
+        desiredConfigRevision = configFingerprint;
         workspaceRegistry = new WorkspaceRegistry();
         currentWorkspaceRegistration = {
           directory: projectPath,
@@ -190,9 +198,17 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             daemonPaths,
             httpPort,
             currentWorkspace,
+            desiredConfigRevision,
+            restartScheduled,
           ),
-        getServers: () => createControlPlaneServers(gateway),
-        getSessions: () => createControlPlaneSessions(gateway, runtimeManifest),
+        getServers: () =>
+          createControlPlaneServers(
+            gateway,
+            desiredConfig,
+            desiredConfigRevision,
+            desiredServerLastChangedAt,
+          ),
+        getSessions: () => createControlPlaneSessions(gateway, runtimeManifest, sessionWorkspaceIds),
         getLeases: () => gateway?.getConnectionLeases() ?? [],
         getCurrentWorkspaceId: () => currentWorkspace?.id ?? null,
         getWorkspaces: () =>
@@ -214,8 +230,31 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
               level: "info",
               type: `config.${event.type}`,
               message: event.message,
-              metadata: event.metadata,
+              ...(currentWorkspace?.id ? { workspaceId: currentWorkspace.id } : {}),
+              metadata: {
+                ...event.metadata,
+                ...(currentWorkspace?.id ? { workspaceId: currentWorkspace.id } : {}),
+              },
             });
+          },
+          onMutation: async (mutation, context) => {
+            desiredConfig = mutation.config;
+            desiredConfigRevision = mutation.configDigest;
+            if (currentWorkspaceRegistration && currentWorkspace && workspaceRegistry) {
+              currentWorkspaceRegistration = {
+                ...currentWorkspaceRegistration,
+                configDigest: mutation.configDigest,
+              };
+              currentWorkspace = {
+                ...currentWorkspace,
+                configDigest: mutation.configDigest,
+                lastSeenAt: new Date().toISOString(),
+              };
+              await workspaceRegistry.ensure(currentWorkspaceRegistration);
+            }
+            if (mutation.changed && context.serverId) {
+              desiredServerLastChangedAt.set(context.serverId, new Date().toISOString());
+            }
           },
         }),
         restart: async () => {
@@ -284,6 +323,11 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       });
       managementCredentials = new ManagementCredentialStore({
         workspaceId: currentWorkspace?.id,
+        // A console handoff may be requested from a second directory that has
+        // already registered with this host. The registry is the authority for
+        // those claims; credentials never mint arbitrary path-derived IDs.
+        canIssueWorkspace: (workspaceId) =>
+          workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
       });
     }
 
@@ -314,6 +358,18 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
               controlPlane: controlPlane ?? undefined,
               managementCredentials: managementCredentials ?? undefined,
               connectionTracker: workspaceLeaseTracker ?? undefined,
+              onSessionInitialize: (
+                sessionId: string,
+                _clientInfo: { name: string; version?: string } | undefined,
+                context?: HttpRequestContext,
+              ) => {
+                if (context?.workspaceId) {
+                  sessionWorkspaceIds.set(sessionId, context.workspaceId);
+                }
+              },
+              onSessionClose: (sessionId: string) => {
+                sessionWorkspaceIds.delete(sessionId);
+              },
             },
       verbose,
       clearOpenApiCache: clearCache,
@@ -434,6 +490,8 @@ function createControlPlaneStatus(
   paths: DaemonPaths | null,
   requestedPort: number | undefined,
   workspace: WorkspaceSnapshot | null = null,
+  desiredConfigDigest?: string,
+  restartPending = false,
 ): ControlPlaneStatus {
   const host = manifest?.host ?? "127.0.0.1";
   const port = manifest?.port ?? gateway?.getHttpPort() ?? requestedPort ?? 0;
@@ -462,7 +520,7 @@ function createControlPlaneStatus(
     version: manifest?.cliVersion ?? "unknown",
     protocolVersion: manifest?.protocolVersion ?? "unknown",
     profile: manifest?.profileId ?? paths?.profileId ?? "unknown",
-    configDigest: manifest?.configFingerprint ?? "unknown",
+    configDigest: desiredConfigDigest ?? manifest?.configFingerprint ?? "unknown",
     host,
     port,
     mcpUrl: manifest?.mcpUrl ?? (fallbackBaseUrl ? `${fallbackBaseUrl}/mcp` : ""),
@@ -476,51 +534,113 @@ function createControlPlaneStatus(
           workspaceConfigPath: workspace.configPath,
         }
       : {}),
+    ...(restartPending
+      ? { pendingRestart: true, restartState: "scheduled" as const }
+      : { pendingRestart: false, restartState: "idle" as const }),
   };
 }
 
-function createControlPlaneServers(gateway: Gateway | null): ControlPlaneServer[] {
-  if (!gateway) return [];
+function createControlPlaneServers(
+  gateway: Gateway | null,
+  desiredConfig: RouterMcpConfig | null,
+  configRevision: string | undefined,
+  lastChangedAtByServer: ReadonlyMap<string, string>,
+): ControlPlaneServer[] {
+  const observedMcp = new Map(
+    (gateway?.getUpstreamServers() ?? []).map((server) => [server.name, server]),
+  );
+  const mcpNames = new Set([
+    ...Object.keys(desiredConfig?.mcpServers ?? {}),
+    ...observedMcp.keys(),
+  ]);
 
-  const upstreamServers = gateway.getUpstreamServers().map((server) => {
-    const state = upstreamStateToControlState(server);
-    const url = sanitizeUrl(server.config.url);
-    const lastError = server.error ? sanitizeText(server.error.message) : undefined;
+  const mcpServers = Array.from(mcpNames, (name) => {
+    const desired = desiredConfig?.mcpServers[name];
+    const observed = observedMcp.get(name);
+    const configured = desired ?? observed?.config;
+    const enabled = configured?.enabled !== false;
+    const observedState = observed
+      ? upstreamStateToControlState(observed)
+      : enabled
+        ? "unknown"
+        : "offline";
+    const url = sanitizeUrl(configured?.url);
+    const lastError = observed?.error ? sanitizeText(observed.error.message) : undefined;
+    const serverId = `mcp:${sanitizeText(name)}`;
 
     return {
-      id: sanitizeText(server.name),
-      name: sanitizeText(server.name),
+      id: serverId,
+      name: sanitizeText(name),
+      kind: "mcp",
       ...(url ? { url } : {}),
-      transport: server.config.transport,
-      state,
-      toolCount: server.cachedTools.length || server.tools.length,
-      ...(server.lastLatencyMs !== undefined && server.lastLatencyMs !== null
-        ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
+      ...(configured?.transport ? { transport: configured.transport } : {}),
+      enabled,
+      observedState,
+      ...(configRevision ? { configRevision } : {}),
+      ...(lastChangedAtByServer.get(serverId)
+        ? { lastChangedAt: lastChangedAtByServer.get(serverId) }
         : {}),
-      ...(server.lastCheckedAt !== undefined && server.lastCheckedAt !== null
-        ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
+      // `state` is retained as the backwards-compatible alias for clients
+      // that predate the explicit desired/observed fields.
+      state: observedState,
+      toolCount: observed
+        ? Math.max(0, observed.cachedTools.length || observed.tools.length)
+        : 0,
+      ...(observed?.lastLatencyMs !== undefined && observed.lastLatencyMs !== null
+        ? { latencyMs: Math.max(0, Math.round(observed.lastLatencyMs)) }
+        : {}),
+      ...(observed?.lastCheckedAt !== undefined && observed.lastCheckedAt !== null
+        ? { lastCheckedAt: new Date(observed.lastCheckedAt).toISOString() }
         : {}),
       ...(lastError ? { lastError } : {}),
-    };
+    } satisfies ControlPlaneServer;
   });
 
-  const openApiServers = gateway.getOpenApiServerSnapshots().map((server) => ({
-    id: `openapi:${sanitizeText(server.name)}`,
-    name: sanitizeText(server.name),
-    ...(server.baseUrl ? { url: sanitizeUrl(server.baseUrl) } : {}),
-    transport: "openapi",
-    state: openApiStateToControlState(server),
-    toolCount: Math.max(0, Math.floor(server.toolCount)),
-    ...(server.lastLatencyMs !== undefined
-      ? { latencyMs: Math.max(0, Math.round(server.lastLatencyMs)) }
-      : {}),
-    ...(server.lastCheckedAt !== undefined
-      ? { lastCheckedAt: new Date(server.lastCheckedAt).toISOString() }
-      : {}),
-    ...(server.lastError ? { lastError: sanitizeText(server.lastError) } : {}),
-  } satisfies ControlPlaneServer));
+  const observedOpenApi = new Map(
+    (gateway?.getOpenApiServerSnapshots() ?? []).map((server) => [server.name, server]),
+  );
+  const openApiNames = new Set([
+    ...Object.keys(desiredConfig?.openApiServers ?? {}),
+    ...observedOpenApi.keys(),
+  ]);
 
-  return [...upstreamServers, ...openApiServers];
+  const openApiServers = Array.from(openApiNames, (name) => {
+    const desired = desiredConfig?.openApiServers?.[name];
+    const observed = observedOpenApi.get(name);
+    const enabled = desired?.enabled !== false;
+    const observedState = observed
+      ? openApiStateToControlState(observed)
+      : enabled
+        ? "unknown"
+        : "offline";
+    const url = sanitizeUrl(desired?.baseUrl ?? observed?.baseUrl);
+    const serverId = `openapi:${sanitizeText(name)}`;
+
+    return {
+      id: serverId,
+      name: sanitizeText(name),
+      kind: "openapi",
+      ...(url ? { url } : {}),
+      transport: "openapi",
+      enabled,
+      observedState,
+      ...(configRevision ? { configRevision } : {}),
+      ...(lastChangedAtByServer.get(serverId)
+        ? { lastChangedAt: lastChangedAtByServer.get(serverId) }
+        : {}),
+      state: observedState,
+      toolCount: observed ? Math.max(0, Math.floor(observed.toolCount)) : 0,
+      ...(observed?.lastLatencyMs !== undefined
+        ? { latencyMs: Math.max(0, Math.round(observed.lastLatencyMs)) }
+        : {}),
+      ...(observed?.lastCheckedAt !== undefined
+        ? { lastCheckedAt: new Date(observed.lastCheckedAt).toISOString() }
+        : {}),
+      ...(observed?.lastError ? { lastError: sanitizeText(observed.lastError) } : {}),
+    } satisfies ControlPlaneServer;
+  });
+
+  return [...mcpServers, ...openApiServers];
 }
 
 function openApiStateToControlState(
@@ -540,20 +660,31 @@ function openApiStateToControlState(
 function createControlPlaneSessions(
   gateway: Gateway | null,
   manifest: RuntimeManifest | null,
+  sessionWorkspaceIds: Map<string, string> = new Map(),
 ): ControlPlaneSession[] {
   if (!gateway) return [];
 
   const profile = manifest?.profileId;
-  const sessions: ControlPlaneSession[] = gateway.getSessionSnapshots().map((session) => ({
-    id: `mcp:${session.id}`,
-    kind: "mcp",
-    clientName: session.clientName ?? "MCP client",
-    ...(session.clientVersion ? { clientVersion: session.clientVersion } : {}),
-    ...(profile ? { profile } : {}),
-    state: session.state,
-    connectedAt: new Date(session.createdAt).toISOString(),
-    lastSeenAt: new Date(session.lastSeenAt).toISOString(),
-  }));
+  const sessionSnapshots = gateway.getSessionSnapshots();
+  const liveSessionIds = new Set(sessionSnapshots.map((session) => session.id));
+  for (const sessionId of sessionWorkspaceIds.keys()) {
+    if (!liveSessionIds.has(sessionId)) sessionWorkspaceIds.delete(sessionId);
+  }
+
+  const sessions: ControlPlaneSession[] = sessionSnapshots.map((session) => {
+    const workspaceId = sessionWorkspaceIds.get(session.id);
+    return {
+      id: `mcp:${session.id}`,
+      kind: "mcp",
+      clientName: session.clientName ?? "MCP client",
+      ...(session.clientVersion ? { clientVersion: session.clientVersion } : {}),
+      ...(profile ? { profile } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      state: session.state,
+      connectedAt: new Date(session.createdAt).toISOString(),
+      lastSeenAt: new Date(session.lastSeenAt).toISOString(),
+    };
+  });
 
   const now = Date.now();
   for (const lease of gateway.getConnectionLeases()) {

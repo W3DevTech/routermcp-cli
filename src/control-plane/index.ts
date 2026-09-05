@@ -3,6 +3,7 @@ import type {
   ControlPlaneFeatures,
   ControlPlaneManagementSource,
   ControlPlaneMutationResult,
+  ManagementRestartState,
   ServerEnabledPatch,
 } from "./management.js";
 import { isValidWorkspaceId } from "./management-credentials.js";
@@ -97,6 +98,9 @@ export interface ControlPlaneStatus {
   workspaceId?: string;
   workspaceDirectory?: string;
   workspaceConfigPath?: string;
+  pendingRestart?: boolean;
+  restartState?: ManagementRestartState;
+  restartMessage?: string;
 }
 
 export interface ControlPlaneServer {
@@ -180,6 +184,8 @@ export interface ControlPlaneEvent {
   level: ControlPlaneEventLevel;
   type: string;
   message: string;
+  /** Workspace context attached to the originating bridge/request. */
+  workspaceId?: string;
   metadata?: Record<string, string | number | boolean | null>;
 }
 
@@ -470,10 +476,13 @@ export class ControlPlane {
     const next: ControlPlaneEvent = {
       id: event.id && event.id.length > 0 ? event.id : crypto.randomUUID(),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
-      level: event.level,
-      type: sanitizeText(event.type),
-      message: sanitizeText(event.message),
-      ...(event.metadata ? { metadata: sanitizeMetadata(event.metadata) } : {}),
+    level: event.level,
+    type: sanitizeText(event.type),
+    message: sanitizeText(event.message),
+    ...(event.workspaceId && isValidWorkspaceId(event.workspaceId)
+      ? { workspaceId: event.workspaceId }
+      : {}),
+    ...(event.metadata ? { metadata: sanitizeMetadata(event.metadata) } : {}),
     };
     this.events.unshift(next);
     if (this.events.length > CONTROL_PLANE_EVENT_BUFFER_SIZE) {
@@ -539,6 +548,11 @@ function sanitizeStatus(status: ControlPlaneStatus): ControlPlaneStatus {
     ...(status.workspaceConfigPath
       ? { workspaceConfigPath: sanitizeText(status.workspaceConfigPath) }
       : {}),
+    ...(status.pendingRestart === undefined ? {} : { pendingRestart: status.pendingRestart }),
+    ...(status.restartState && isRestartState(status.restartState)
+      ? { restartState: status.restartState }
+      : {}),
+    ...(status.restartMessage ? { restartMessage: sanitizeText(status.restartMessage) } : {}),
   };
 }
 
@@ -682,6 +696,7 @@ function cloneEvent(event: ControlPlaneEvent): ControlPlaneEvent {
   return {
     ...event,
     ...(event.metadata ? { metadata: { ...event.metadata } } : {}),
+    ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
   };
 }
 

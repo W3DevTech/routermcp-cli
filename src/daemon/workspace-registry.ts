@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ConfigScope } from "../config/types.js";
 import { ConnectionTracker, type ConnectionLease } from "./connection-tracker.js";
+import { acquireProfileLock, DEFAULT_LOCK_TIMEOUT_MS } from "./lock.js";
 import { getDaemonHostPaths } from "./paths.js";
 import { getProfileId, getProjectId } from "./project.js";
 
@@ -253,6 +255,30 @@ export class WorkspaceRegistry {
     });
   }
 
+  /**
+   * Clear lease counts left behind by a daemon host that has been confirmed
+   * dead. Active counts are owned by the host process, so a replacement host
+   * must not inherit them and incorrectly block stop/forget operations.
+   */
+  async resetActiveConnections(): Promise<number> {
+    return this.mutate(async () => {
+      let changed = 0;
+      const timestamp = nowIso(this.now);
+      for (const [id, record] of this.records) {
+        if (record.activeConnections === 0) continue;
+        this.records.set(id, {
+          ...record,
+          activeConnections: 0,
+          state: record.state === "active" ? "known" : record.state,
+          lastSeenAt: timestamp,
+        });
+        changed += 1;
+      }
+      if (changed > 0) await this.persist();
+      return changed;
+    });
+  }
+
   /** Forget only an inactive record; active contexts require explicit release. */
   async forget(workspaceId: string): Promise<boolean> {
     const id = normalizeWorkspaceId(workspaceId);
@@ -303,6 +329,8 @@ export class WorkspaceRegistry {
    * must await load()/ensure()/acquire() before reading this view.
    */
   listSync(options: { currentWorkspaceId?: string } = {}): WorkspaceSnapshot[] {
+    this.refreshFromDiskSync();
+    this.pruneExpired();
     const currentId = normalizeWorkspaceId(options.currentWorkspaceId);
     return Array.from(this.records.values())
       .map((record) => toSnapshot(record, record.id === currentId))
@@ -310,6 +338,8 @@ export class WorkspaceRegistry {
   }
 
   getSync(workspaceId: string, options: { current?: boolean } = {}): WorkspaceSnapshot | null {
+    this.refreshFromDiskSync();
+    this.pruneExpired();
     const id = normalizeWorkspaceId(workspaceId);
     if (!id) return null;
     const record = this.records.get(id);
@@ -351,10 +381,40 @@ export class WorkspaceRegistry {
       release = resolveRelease;
     });
     await previous;
+    // A host process and short-lived CLI invocations share this file. Atomic
+    // rename prevents torn JSON, but it does not prevent a stale in-memory
+    // snapshot from overwriting a workspace another process just registered.
+    // Hold a file lock across reload, mutation, and publish so every writer
+    // applies its change to the latest complete registry document.
+    let lock: Awaited<ReturnType<typeof acquireProfileLock>> | null = null;
     try {
+      lock = await acquireProfileLock(`${this.path}.lock`, {
+        timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+      });
+      await this.reloadFromDisk();
       return await operation();
     } finally {
-      release();
+      try {
+        await lock?.release();
+      } finally {
+        release();
+      }
+    }
+  }
+
+  private async reloadFromDisk(): Promise<void> {
+    try {
+      const content = await readFile(this.path, "utf8");
+      const parsed: unknown = JSON.parse(content);
+      if (!isRegistryDocument(parsed)) return;
+      this.records.clear();
+      for (const record of parsed.workspaces) {
+        this.records.set(record.id, record);
+      }
+      this.boundRecords();
+    } catch {
+      // Keep the last valid in-memory snapshot when the file is missing or
+      // malformed. The atomic writer will repair it after this mutation.
     }
   }
 
@@ -367,6 +427,50 @@ export class WorkspaceRegistry {
       }),
     };
     await writeJsonAtomic(this.path, document);
+  }
+
+  /**
+   * Refresh synchronous control-plane reads from another process' atomic
+   * registry update. The host uses these reads while authorizing a handoff,
+   * so an already-running daemon must notice a workspace registered by a
+   * separate `console` or `connect` invocation without accepting arbitrary IDs.
+   *
+   * A local lease mutation updates its record before awaiting the file write.
+   * Prefer the record with the newer `lastSeenAt` and retain a local active
+   * record when a stale external snapshot would otherwise make a live lease
+   * disappear. Invalid or partially written files are ignored.
+   */
+  private refreshFromDiskSync(): void {
+    let content: string;
+    try {
+      content = readFileSync(this.path, "utf8");
+    } catch {
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return;
+    }
+    if (!isRegistryDocument(parsed)) return;
+
+    const diskRecords = new Map(parsed.workspaces.map((record) => [record.id, record]));
+    for (const [id, diskRecord] of diskRecords) {
+      const localRecord = this.records.get(id);
+      if (!localRecord || shouldAdoptDiskRecord(localRecord, diskRecord)) {
+        this.records.set(id, diskRecord);
+      }
+    }
+
+    for (const [id, localRecord] of this.records) {
+      if (!diskRecords.has(id) && localRecord.activeConnections === 0) {
+        this.records.delete(id);
+      }
+    }
+
+    this.boundRecords();
   }
 
   private pruneExpired(): boolean {
@@ -605,6 +709,21 @@ function compareWorkspaceSnapshots(left: WorkspaceSnapshot, right: WorkspaceSnap
   return Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt);
 }
 
+function shouldAdoptDiskRecord(local: StoredWorkspace, disk: StoredWorkspace): boolean {
+  const localSeenAt = Date.parse(local.lastSeenAt);
+  const diskSeenAt = Date.parse(disk.lastSeenAt);
+
+  // Active lease counts are owned by the running host. A separate `console`
+  // invocation only calls ensure(), and may write a snapshot read before the
+  // host's latest lease mutation. Never lower a live in-memory count from a
+  // synchronous refresh, even when that external snapshot has a newer clock.
+  if (local.activeConnections > disk.activeConnections && local.activeConnections > 0) {
+    return false;
+  }
+
+  return diskSeenAt >= localSeenAt;
+}
+
 async function canonicalizePath(path: string): Promise<string> {
   const resolved = resolve(path);
   try {
@@ -684,7 +803,8 @@ function isStoredWorkspace(value: unknown): value is StoredWorkspace {
     Number.isFinite(Date.parse(record.firstSeenAt)) &&
     typeof record.lastSeenAt === "string" &&
     Number.isFinite(Date.parse(record.lastSeenAt)) &&
-    (record.lastError === undefined || typeof record.lastError === "string")
+    (record.lastError === undefined || typeof record.lastError === "string") &&
+    record.id === getWorkspaceId(record.directory, record.configPath)
   );
 }
 

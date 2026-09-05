@@ -58,6 +58,13 @@ export interface ControlPlaneManagementSource {
   ) => ControlPlaneMutationResult | Promise<ControlPlaneMutationResult>;
 }
 
+/** Context for a mutation notification consumed by an in-process daemon host. */
+export interface ConfigManagementMutationContext {
+  type: "server.enabled" | "features.mode";
+  /** Prefixed server ID when the mutation changed server availability. */
+  serverId?: string;
+}
+
 export interface ConfigManagementSourceOptions {
   /** Return the exact resolved config path for the selected workspace. */
   getConfigPath: () => string | Promise<string>;
@@ -77,6 +84,15 @@ export interface ConfigManagementSourceOptions {
     message: string;
     metadata: Record<string, string | number | boolean | null>;
   }) => void;
+  /**
+   * Notify the running host about the parsed post-mutation config. The
+   * callback is separate from the audit sink so desired state can be refreshed
+   * while the live gateway still reports observed state during a restart.
+   */
+  onMutation?: (
+    mutation: ConfigMutationResult,
+    context: ConfigManagementMutationContext,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -113,6 +129,7 @@ export function createConfigManagementSource(
       });
       return finishMutation(mutation, options, {
         type: "server.enabled",
+        serverId,
         message: "Server availability updated",
         metadata: {
           serverId,
@@ -146,12 +163,28 @@ async function finishMutation(
   options: ConfigManagementSourceOptions,
   audit: {
     type: "server.enabled" | "features.mode";
+    serverId?: string;
     message: string;
     metadata: Record<string, string | number | boolean | null>;
   },
 ): Promise<ControlPlaneMutationResult> {
   let restart: ControlPlaneManagementRestartResult | undefined;
   let restartState: ManagementRestartState = "idle";
+
+  // The mutation result contains the validated config read from disk after
+  // the JSONC edit. Publish it before scheduling a restart so management
+  // snapshots expose new desired state immediately while the old gateway
+  // continues to supply live observed state during a restart.
+  try {
+    await options.onMutation?.(mutation, {
+      type: audit.type,
+      ...(audit.serverId ? { serverId: audit.serverId } : {}),
+    });
+  } catch {
+    // A snapshot refresh is best effort and must not turn a persisted config
+    // mutation into a failed request.
+    console.error("[management] Desired-state refresh failed after config mutation");
+  }
 
   if (mutation.changed) {
     try {

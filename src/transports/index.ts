@@ -13,13 +13,16 @@ import { createStdioClientTransport, createStdioServerTransport } from "./stdio.
 
 export {
   DAEMON_BRIDGE_LEASES_PATH,
+  DAEMON_BRIDGE_LEASE_HEADER,
   DAEMON_HEALTH_PATH,
   DAEMON_HEALTH_PATH_LEGACY,
+  DAEMON_WORKSPACE_HEADER,
   DEFAULT_DAEMON_CORS_ORIGIN,
   DEFAULT_DAEMON_CORS_ORIGINS,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   type BridgeLeaseMetadata,
   type BridgeLeaseTracker,
+  type HttpRequestContext,
   createHttpServerTransport,
   type HttpClientTransportOptions,
   type HttpServerHandle,

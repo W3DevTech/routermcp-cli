@@ -167,7 +167,7 @@ describe("managed daemon control plane", () => {
       expect(serversResponse.status).toBe(200);
       expect((await serversResponse.json()).servers).toEqual([
         expect.objectContaining({
-          id: "test",
+          id: "mcp:test",
           name: "test",
           state: "offline",
           transport: "stdio",

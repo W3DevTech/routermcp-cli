@@ -12,6 +12,7 @@ import { acquireProfileLock } from "./lock.js";
 import { getDaemonHostPaths, getDaemonPaths } from "./paths.js";
 import { matchesProcessIdentity } from "./identity.js";
 import { getProjectId } from "./project.js";
+import { readRuntimeManifest } from "./runtime-manifest.js";
 import {
   createDaemonHostManifest,
   type DaemonHostManifest,
@@ -48,6 +49,8 @@ export class DaemonHostBusyError extends RouterMcpError {
 
 export interface EnsureWorkspaceDaemonOptions extends EnsureRunningOptions {
   registry?: WorkspaceRegistry;
+  /** Internal restart may replace the host while other workspaces reconnect. */
+  allowActiveWorkspaces?: boolean;
 }
 
 /**
@@ -84,15 +87,32 @@ export async function ensureWorkspaceRunning(
     if (hostManifest) {
       const compatible = hostManifestMatchesWorkspace(hostManifest, descriptor);
       if (!compatible) {
-        if (await matchesProcessIdentity(hostManifest.processIdentity)) {
+        const hostProcessAlive = await matchesProcessIdentity(hostManifest.processIdentity);
+        const profileTransitioning =
+          hostProcessAlive &&
+          hostManifestOwnsWorkspace(hostManifest, descriptor) &&
+          (await readProfileTransitionState(hostManifest)) !== null;
+        if (profileTransitioning) {
+          // A managed config/mode change marks the profile manifest as
+          // stopping before the replacement process is launched. Let the
+          // caller enter the normal profile lifecycle path rather than
+          // reporting a misleading cross-profile conflict.
+          await removeDaemonHostManifest(hostPaths.runtimeManifest);
+        } else if (hostProcessAlive) {
           const conflict = new DaemonHostProfileConflictError(
             "A RouterMCP daemon host is already serving another config profile; " +
               "stop it or use an isolated profile before connecting this workspace",
           );
           await registry.markUnavailable(workspace.id, conflict);
           throw conflict;
+        } else {
+          // The host manifest is durable and may outlive a crashed daemon.
+          // Lease counts belong to that process, so clear them only after the
+          // recorded process identity has been proven dead before starting the
+          // replacement host.
+          await registry.resetActiveConnections();
+          await removeDaemonHostManifest(hostPaths.runtimeManifest);
         }
-        await removeDaemonHostManifest(hostPaths.runtimeManifest);
       } else {
         const primaryPaths = getPrimaryProfilePaths(hostManifest);
         if (primaryPaths) {
@@ -144,6 +164,19 @@ export async function ensureWorkspaceRunning(
   }
 }
 
+/** Return a profile transition state when a controlled restart is in flight. */
+async function readProfileTransitionState(
+  hostManifest: DaemonHostManifest,
+): Promise<"starting" | "stopping" | null> {
+  const primaryPaths = getPrimaryProfilePaths(hostManifest);
+  if (!primaryPaths) return null;
+  const profileManifest = await readRuntimeManifest(primaryPaths.runtimeManifest);
+  if (profileManifest?.state === "starting" || profileManifest?.state === "stopping") {
+    return profileManifest.state;
+  }
+  return null;
+}
+
 /**
  * Read status through the host when possible. Unknown/stale host state falls
  * back to the profile lifecycle so existing CLI commands remain useful during
@@ -190,7 +223,7 @@ export async function getWorkspaceDaemonStatus(
 /** Stop a host only when no other workspace has an active bridge. */
 export async function stopWorkspaceDaemon(
   input: WorkspaceRegistrationInput,
-  options: StopDaemonOptions & { registry?: WorkspaceRegistry } = {},
+  options: StopDaemonOptions & { registry?: WorkspaceRegistry; allowActiveWorkspaces?: boolean } = {},
 ): Promise<void> {
   const registry = options.registry ?? new WorkspaceRegistry();
   const descriptor = await registry.describe(input);
@@ -200,11 +233,15 @@ export async function stopWorkspaceDaemon(
 
   try {
     const hostManifest = await readDaemonHostManifest(hostPaths.runtimeManifest);
-    if (hostManifest && hostManifestMatchesWorkspace(hostManifest, descriptor)) {
+    // Ownership is based on the canonical config path. The digest can be
+    // newer than the host manifest while a config mutation is waiting for its
+    // controlled restart, but the same host still owns the profile and must
+    // be stopped by a request from any attached workspace.
+    if (hostManifest && hostManifestOwnsWorkspace(hostManifest, descriptor)) {
       const activeOther = registry
         .listSync()
         .some((workspace) => workspace.id !== descriptor.id && workspace.activeConnections > 0);
-      if (activeOther) {
+      if (activeOther && options.allowActiveWorkspaces !== true) {
         throw new DaemonHostBusyError(
           "The RouterMCP daemon host still has active connections from another workspace",
         );
@@ -238,6 +275,10 @@ export async function restartWorkspaceDaemon(
   await stopWorkspaceDaemon(input, {
     ...options,
     registry,
+    // A controlled configuration/mode restart is allowed to replace the
+    // shared process. Existing bridges observe the restart and reconnect;
+    // explicit user `stop` keeps the safety guard above.
+    allowActiveWorkspaces: true,
   });
   return ensureWorkspaceRunning(input, {
     ...options,
@@ -251,9 +292,18 @@ function hostManifestMatchesWorkspace(
 ): boolean {
   return (
     manifest.state === "ready" &&
-    !!manifest.primaryConfigPath &&
-    resolve(manifest.primaryConfigPath) === resolve(workspace.configPath) &&
+    hostManifestOwnsWorkspace(manifest, workspace) &&
     manifest.primaryConfigFingerprint === workspace.configDigest
+  );
+}
+
+function hostManifestOwnsWorkspace(
+  manifest: DaemonHostManifest,
+  workspace: { configPath: string },
+): boolean {
+  return (
+    !!manifest.primaryConfigPath &&
+    resolve(manifest.primaryConfigPath) === resolve(workspace.configPath)
   );
 }
 

@@ -16,7 +16,9 @@ import {
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
   ConfigMutationError,
+  MANAGEMENT_BODY_LIMIT_BYTES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  isValidWorkspaceId,
   parseExecutionModePatch,
   parseManagementJsonBody,
   parseServerEnabledPatch,
@@ -90,6 +92,10 @@ export const DAEMON_HEALTH_PATH = CONTROL_PLANE_HEALTH_PATH;
 export const DAEMON_HEALTH_PATH_LEGACY = "/__routermcp/health";
 /** Narrow lifecycle API used by the stdio bridge; not the management API. */
 export const DAEMON_BRIDGE_LEASES_PATH = "/api/v1/bridge-leases";
+/** Header used by the stdio bridge to bind MCP traffic to its lease. */
+export const DAEMON_BRIDGE_LEASE_HEADER = "X-RouterMCP-Bridge-Lease-Id";
+/** Header used by the stdio bridge to carry the canonical workspace ID. */
+export const DAEMON_WORKSPACE_HEADER = "X-RouterMCP-Workspace-Id";
 /** Default hosted management origin for a token-protected local daemon. */
 export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
 /**
@@ -120,6 +126,12 @@ export interface BridgeLeaseMetadata {
   profileId?: string;
 }
 
+/** Authenticated request context used to attribute bridge traffic. */
+export interface HttpRequestContext {
+  workspaceId?: string;
+  leaseId?: string;
+}
+
 export interface HttpServerOptions {
   /**
    * Bearer token for the daemon control surface. A connection tracker makes
@@ -137,8 +149,9 @@ export interface HttpServerOptions {
   onSessionInitialize?: (
     sessionId: string,
     clientInfo?: { name: string; version?: string },
+    context?: HttpRequestContext,
   ) => Promise<void> | void;
-  onSessionClose?: (sessionId: string) => Promise<void> | void;
+  onSessionClose?: (sessionId: string, context?: HttpRequestContext) => Promise<void> | void;
   /** Exact browser origins allowed to call this HTTP server. */
   corsOrigins?: readonly string[];
 }
@@ -276,13 +289,16 @@ export function createHttpServerTransport(
   const transport = new BunHttpServerTransport();
   let server: ServerHandle | null = null;
   let boundPort: number | null = null;
+  const sessionContexts = new Map<string, HttpRequestContext>();
 
   const corsPolicy = createCorsPolicy(options);
 
   const corsHeaders = (request: Request): Record<string, string> => ({
     "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, If-Match, Mcp-Session-Id",
-    "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    "Access-Control-Allow-Headers":
+      `Authorization, Content-Type, If-Match, Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
+    "Access-Control-Expose-Headers":
+      `Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
     ...corsPolicyHeaders(request, corsPolicy),
   });
 
@@ -335,7 +351,10 @@ export function createHttpServerTransport(
                     headers: {
                       "Content-Type": "application/json",
                       "Cache-Control": "no-store",
-                      ...corsHeaders(request),
+                      ...withWorkspaceAttribution(
+                        corsHeaders(request),
+                        options.controlPlane?.getCurrentWorkspaceId(),
+                      ),
                     },
                   },
                 );
@@ -379,7 +398,7 @@ export function createHttpServerTransport(
                   return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
                 }
 
-                if (!isControlPlaneAuthorized(request, options)) {
+                if (!isControlPlaneAuthorized(request, options, controlRoute)) {
                   return new Response("Unauthorized", {
                     status: 401,
                     headers: corsHeaders(request),
@@ -414,17 +433,26 @@ export function createHttpServerTransport(
                   let metadata: unknown;
                   try {
                     metadata = await readBridgeLeaseMetadata(request);
-                  } catch {
+                  } catch (error) {
                     return jsonResponse(
-                      { error: "Invalid bridge lease metadata" },
-                      400,
+                      {
+                        error:
+                          error instanceof RequestBodyLimitError
+                            ? "Bridge lease metadata is too large"
+                            : "Invalid bridge lease metadata",
+                      },
+                      error instanceof RequestBodyLimitError ? 413 : 400,
                       corsHeaders(request),
                     );
                   }
 
                   try {
                     const lease = await options.connectionTracker.acquire(metadata);
-                    return jsonResponse(lease, 201, corsHeaders(request));
+                    return jsonResponse(
+                      lease,
+                      201,
+                      withLeaseAttribution(corsHeaders(request), lease),
+                    );
                   } catch {
                     // Do not echo paths, config contents, or upstream details
                     // from a failed workspace registration to the bridge.
@@ -439,7 +467,7 @@ export function createHttpServerTransport(
                 if (leaseRoute.kind === "heartbeat" && request.method === "POST") {
                   const lease = await options.connectionTracker.heartbeat(leaseRoute.leaseId);
                   return lease
-                    ? jsonResponse(lease, 200, corsHeaders(request))
+                    ? jsonResponse(lease, 200, withLeaseAttribution(corsHeaders(request), lease))
                     : new Response("Lease Not Found", {
                         status: 404,
                         headers: corsHeaders(request),
@@ -447,8 +475,17 @@ export function createHttpServerTransport(
                 }
 
                 if (leaseRoute.kind === "release" && request.method === "DELETE") {
+                  const existingLease = options.connectionTracker.leases?.find(
+                    (candidate) => candidate.leaseId === leaseRoute.leaseId,
+                  );
                   await options.connectionTracker.release(leaseRoute.leaseId);
-                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                  return new Response(null, {
+                    status: 204,
+                    headers: withLeaseAttribution(corsHeaders(request), {
+                      leaseId: leaseRoute.leaseId,
+                      workspaceId: existingLease?.workspaceId,
+                    }),
+                  });
                 }
 
                 return new Response("Method Not Allowed", {
@@ -475,9 +512,20 @@ export function createHttpServerTransport(
               if (request.method === "POST") {
                 const requestStartedAt = performance.now();
                 let requestMethod: string | undefined;
+                let requestContext: HttpRequestContext | undefined;
                 try {
                   const sessionId = request.headers.get("mcp-session-id") || randomUUID();
-                  const body = (await request.json()) as JSONRPCMessage;
+                  requestContext = resolveRequestContext(
+                    request,
+                    sessionId,
+                    options.connectionTracker,
+                    sessionContexts,
+                  );
+                  const body = (await readBoundedJsonBody(
+                    request,
+                    MANAGEMENT_BODY_LIMIT_BYTES,
+                    "MCP request",
+                  )) as JSONRPCMessage;
                   requestMethod = getJsonRpcMethod(body);
 
                   const response = await transport.handleRequestWithSession(body, sessionId);
@@ -486,7 +534,12 @@ export function createHttpServerTransport(
                   const resultError = isJsonRpcResultError(response);
 
                   if (requestMethod === "initialize" && response && !protocolError) {
-                    await options.onSessionInitialize?.(sessionId, getInitializeClientInfo(body));
+                    if (requestContext) sessionContexts.set(sessionId, requestContext);
+                    await options.onSessionInitialize?.(
+                      sessionId,
+                      getInitializeClientInfo(body),
+                      requestContext,
+                    );
                   }
 
                   options.controlPlane?.recordRequest({
@@ -499,8 +552,12 @@ export function createHttpServerTransport(
                     level: protocolError || resultError ? "warn" : "debug",
                     type: "mcp.request",
                     message: `${requestMethod ?? "request"} completed`,
+                    ...(requestContext?.workspaceId
+                      ? { workspaceId: requestContext.workspaceId }
+                      : {}),
                     metadata: {
                       ...(requestMethod ? { method: requestMethod } : {}),
+                      ...requestContextMetadata(requestContext),
                       latencyMs: Math.round(performance.now() - requestStartedAt),
                     },
                   });
@@ -511,7 +568,7 @@ export function createHttpServerTransport(
                       headers: {
                         "Content-Type": "application/json",
                         "Mcp-Session-Id": sessionId,
-                        ...corsHeaders(request),
+                        ...withContextAttribution(corsHeaders(request), requestContext),
                       },
                     });
                   }
@@ -520,7 +577,7 @@ export function createHttpServerTransport(
                     status: 202,
                     headers: {
                       "Mcp-Session-Id": sessionId,
-                      ...corsHeaders(request),
+                      ...withContextAttribution(corsHeaders(request), requestContext),
                     },
                   });
                 } catch (err) {
@@ -535,23 +592,31 @@ export function createHttpServerTransport(
                     message: `${requestMethod ?? "request"} failed: ${
                       err instanceof Error ? err.message : String(err)
                     }`,
+                    ...(requestContext?.workspaceId
+                      ? { workspaceId: requestContext.workspaceId }
+                      : {}),
                     metadata: {
                       ...(requestMethod ? { method: requestMethod } : {}),
+                      ...requestContextMetadata(requestContext),
                       latencyMs: Math.round(performance.now() - requestStartedAt),
                     },
                   });
                   const message = sanitizeControlError(err);
+                  const status = err instanceof RequestBodyLimitError ? 413 : 500;
                   return new Response(
                     JSON.stringify({
                       jsonrpc: "2.0",
-                      error: { code: -32603, message },
+                      error: {
+                        code: status === 413 ? -32600 : -32603,
+                        message: status === 413 ? "MCP request body is too large" : message,
+                      },
                       id: null,
                     }),
                     {
-                      status: 500,
+                      status,
                       headers: {
                         "Content-Type": "application/json",
-                        ...corsHeaders(request),
+                        ...withContextAttribution(corsHeaders(request), requestContext),
                       },
                     },
                   );
@@ -567,8 +632,18 @@ export function createHttpServerTransport(
                   });
                 }
 
-                await options.onSessionClose?.(sessionId);
-                return new Response(null, { status: 204, headers: corsHeaders(request) });
+                const requestContext = resolveRequestContext(
+                  request,
+                  sessionId,
+                  options.connectionTracker,
+                  sessionContexts,
+                );
+                sessionContexts.delete(sessionId);
+                await options.onSessionClose?.(sessionId, requestContext);
+                return new Response(null, {
+                  status: 204,
+                  headers: withContextAttribution(corsHeaders(request), requestContext),
+                });
               }
 
               return new Response("Method Not Allowed", {
@@ -612,6 +687,7 @@ export function createHttpServerTransport(
         handle.server = null;
       }
       boundPort = null;
+      sessionContexts.clear();
       options.managementCredentials?.clear();
       await transport.close();
     },
@@ -635,6 +711,9 @@ type ControlPlaneRoute =
   | { kind: "restart" }
   | { kind: "workspaces" }
   | { kind: "workspace-status"; workspaceId: string }
+  | { kind: "workspace-servers"; workspaceId: string }
+  | { kind: "workspace-server"; workspaceId: string; serverId: string }
+  | { kind: "workspace-features"; workspaceId: string }
   | { kind: "invalid"; message: string };
 
 type ManagementCredentialRoute =
@@ -649,6 +728,45 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
 }
 
 function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
+  const workspacePrefix = `${CONTROL_PLANE_PATH}/workspaces/`;
+  if (url.pathname.startsWith(workspacePrefix)) {
+    if (url.search) {
+      return {
+        kind: "invalid",
+        message: "Workspace control-plane endpoints do not accept query parameters",
+      };
+    }
+
+    const parts = url.pathname.slice(workspacePrefix.length).split("/");
+    const workspaceId = parts[0] ? decodePathPart(parts[0]) : null;
+    if (!workspaceId || workspaceId.includes("/") || !isValidWorkspaceId(workspaceId)) {
+      return { kind: "invalid", message: "Invalid workspace ID" };
+    }
+
+    if (parts.length === 2) {
+      switch (parts[1]) {
+        case "status":
+          return { kind: "workspace-status", workspaceId };
+        case "servers":
+          return { kind: "workspace-servers", workspaceId };
+        case "features":
+          return { kind: "workspace-features", workspaceId };
+        default:
+          return { kind: "invalid", message: "Invalid workspace control-plane path" };
+      }
+    }
+
+    if (parts.length === 3 && parts[1] === "servers") {
+      const serverId = parts[2] ? decodePathPart(parts[2]) : null;
+      if (!serverId) {
+        return { kind: "invalid", message: "The workspace server endpoint requires one server ID" };
+      }
+      return { kind: "workspace-server", workspaceId, serverId };
+    }
+
+    return { kind: "invalid", message: "Invalid workspace control-plane path" };
+  }
+
   const serversPrefix = `${CONTROL_PLANE_PATH}/servers/`;
   if (url.pathname.startsWith(serversPrefix)) {
     if (url.search) {
@@ -718,21 +836,7 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
       break;
   }
 
-  const workspacePrefix = `${CONTROL_PLANE_PATH}/workspaces/`;
-  if (!url.pathname.startsWith(workspacePrefix)) return null;
-  const suffix = url.pathname.slice(workspacePrefix.length);
-  const parts = suffix.split("/");
-  if (parts.length !== 2 || parts[1] !== "status" || !parts[0]) {
-    return { kind: "invalid", message: "Invalid workspace control-plane path" };
-  }
-  if (url.search) {
-    return { kind: "invalid", message: "The workspace status endpoint does not accept query parameters" };
-  }
-  const workspaceId = decodePathPart(parts[0]);
-  if (!workspaceId || workspaceId.includes("/")) {
-    return { kind: "invalid", message: "Invalid workspace ID" };
-  }
-  return { kind: "workspace-status", workspaceId };
+  return null;
 }
 
 async function handleControlPlaneRequest(
@@ -741,7 +845,10 @@ async function handleControlPlaneRequest(
   controlPlane: ControlPlane,
   headers: (request: Request) => Record<string, string>,
 ): Promise<Response> {
-  const responseHeaders = headers(request);
+  const responseHeaders = withWorkspaceAttribution(
+    headers(request),
+    getControlPlaneRouteWorkspaceId(route) ?? controlPlane.getCurrentWorkspaceId(),
+  );
 
   if (route.kind === "invalid") {
     return jsonResponse(
@@ -790,11 +897,43 @@ async function handleControlPlaneRequest(
     return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
   }
 
+  if (route.kind === "workspace-features") {
+    if (request.method === "GET") {
+      try {
+        const features = await controlPlane.getWorkspaceFeatures(route.workspaceId);
+        return features
+          ? jsonResponse({ features }, 200, responseHeaders)
+          : new Response("Not Found", { status: 404, headers: responseHeaders });
+      } catch (error) {
+        return managementErrorResponse(error, responseHeaders);
+      }
+    }
+
+    if (request.method === "PATCH") {
+      return handleFeaturesPatch(request, controlPlane, responseHeaders, route.workspaceId);
+    }
+
+    return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+  }
+
   if (route.kind === "server") {
     if (request.method !== "PATCH") {
       return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
     }
     return handleServerPatch(request, route.serverId, controlPlane, responseHeaders);
+  }
+
+  if (route.kind === "workspace-server") {
+    if (request.method !== "PATCH") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    return handleServerPatch(
+      request,
+      route.serverId,
+      controlPlane,
+      responseHeaders,
+      route.workspaceId,
+    );
   }
 
   if (request.method !== "GET") {
@@ -820,6 +959,12 @@ async function handleControlPlaneRequest(
         ? jsonResponse(status, 200, responseHeaders)
         : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
     }
+    case "workspace-servers": {
+      const servers = controlPlane.getWorkspaceServers(route.workspaceId);
+      return servers
+        ? jsonResponse({ servers }, 200, responseHeaders)
+        : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
+    }
   }
 }
 
@@ -828,6 +973,7 @@ async function handleServerPatch(
   serverId: string,
   controlPlane: ControlPlane,
   responseHeaders: Record<string, string>,
+  workspaceId?: string,
 ): Promise<Response> {
   const expectedDigest = requireIfMatch(request);
   if (!expectedDigest) {
@@ -840,9 +986,11 @@ async function handleServerPatch(
 
   try {
     const patch = parseServerEnabledPatch(await parseManagementJsonBody(request));
-    const result = await controlPlane.updateServer(serverId, patch, expectedDigest);
+    const result = workspaceId
+      ? await controlPlane.updateWorkspaceServer(workspaceId, serverId, patch, expectedDigest)
+      : await controlPlane.updateServer(serverId, patch, expectedDigest);
     return jsonResponse(
-      { mutation: sanitizeMutationResult(result) },
+      workspaceId ? sanitizeMutationResult(result) : { mutation: sanitizeMutationResult(result) },
       result.accepted ? 202 : 409,
       responseHeaders,
     );
@@ -855,6 +1003,7 @@ async function handleFeaturesPatch(
   request: Request,
   controlPlane: ControlPlane,
   responseHeaders: Record<string, string>,
+  workspaceId?: string,
 ): Promise<Response> {
   const expectedDigest = requireIfMatch(request);
   if (!expectedDigest) {
@@ -867,9 +1016,11 @@ async function handleFeaturesPatch(
 
   try {
     const patch = parseExecutionModePatch(await parseManagementJsonBody(request));
-    const result = await controlPlane.updateFeatures(patch, expectedDigest);
+    const result = workspaceId
+      ? await controlPlane.updateWorkspaceFeatures(workspaceId, patch, expectedDigest)
+      : await controlPlane.updateFeatures(patch, expectedDigest);
     return jsonResponse(
-      { mutation: sanitizeMutationResult(result) },
+      workspaceId ? sanitizeMutationResult(result) : { mutation: sanitizeMutationResult(result) },
       result.accepted ? 202 : 409,
       responseHeaders,
     );
@@ -962,7 +1113,27 @@ async function handleManagementCredentialRequest(
     return new Response("Method Not Allowed", { status: 405, headers: headers(request) });
   }
 
-  return jsonResponse(credentials.issue(), 201, headers(request));
+  try {
+    const body = await readBoundedJsonBody(
+      request,
+      MAX_MANAGEMENT_HANDOFF_BODY_BYTES,
+      "management handoff",
+      true,
+    );
+    const workspaceId = parseManagementHandoffWorkspace(body, credentials);
+    const grant = credentials.issue(workspaceId);
+    return jsonResponse(grant, 201, withWorkspaceAttribution(headers(request), grant.workspaceId));
+  } catch (error) {
+    const status = error instanceof RequestBodyLimitError ? 413 : 400;
+    return jsonResponse(
+      {
+        error: "invalid-request",
+        message: status === 413 ? "Management handoff body is too large" : "Invalid management handoff",
+      },
+      status,
+      headers(request),
+    );
+  }
 }
 
 function sanitizeControlError(error: unknown): string {
@@ -971,18 +1142,16 @@ function sanitizeControlError(error: unknown): string {
 }
 
 const MAX_BRIDGE_LEASE_METADATA_BYTES = 16 * 1024;
+const MAX_MANAGEMENT_HANDOFF_BODY_BYTES = 4 * 1024;
 
 async function readBridgeLeaseMetadata(request: Request): Promise<BridgeLeaseMetadata | undefined> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null) {
-    const bytes = Number(contentLength);
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_BRIDGE_LEASE_METADATA_BYTES) {
-      throw new Error("Bridge lease metadata is too large");
-    }
-  }
-
-  if (!request.body) return undefined;
-  const value: unknown = await request.json();
+  const value = await readBoundedJsonBody(
+    request,
+    MAX_BRIDGE_LEASE_METADATA_BYTES,
+    "bridge lease metadata",
+    true,
+  );
+  if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Bridge lease metadata must be an object");
   }
@@ -1022,6 +1191,95 @@ async function readBridgeLeaseMetadata(request: Request): Promise<BridgeLeaseMet
   };
 }
 
+function parseManagementHandoffWorkspace(
+  value: unknown,
+  credentials: ManagementCredentialStore,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Management handoff body must be an object");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "workspaceId")) {
+    throw new Error("Management handoff body contains an unsupported field");
+  }
+  if (record.workspaceId === undefined) return undefined;
+  if (!isValidWorkspaceId(record.workspaceId)) {
+    throw new Error("Management handoff workspace ID is invalid");
+  }
+  if (!credentials.canIssueForWorkspace(record.workspaceId)) {
+    throw new Error("Management handoff workspace is not available");
+  }
+  return record.workspaceId;
+}
+
+class RequestBodyLimitError extends Error {
+  constructor(readonly label: string) {
+    super(`${label} body is too large`);
+    this.name = "RequestBodyLimitError";
+  }
+}
+
+async function readBoundedJsonBody(
+  request: Request,
+  maxBytes: number,
+  label: string,
+  allowEmpty = false,
+): Promise<unknown> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    if (!/^\d+$/.test(contentLength.trim())) {
+      throw new Error(`${label} content length is invalid`);
+    }
+    const declaredBytes = Number(contentLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
+      throw new RequestBodyLimitError(label);
+    }
+  }
+
+  if (!request.body) {
+    if (allowEmpty) return undefined;
+    throw new Error(`${label} body is required`);
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel(`${label} body exceeds limit`).catch(() => undefined);
+        throw new RequestBodyLimitError(label);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (totalBytes === 0 && allowEmpty) return undefined;
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch (error) {
+    throw new Error(
+      `${label} body must contain valid JSON${error instanceof Error ? `: ${error.message}` : ""}`,
+    );
+  }
+}
+
 function boundedMetadataString(value: unknown, maxLength: number): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
     ? value
@@ -1043,19 +1301,22 @@ function parseBridgeLeasePath(pathname: string): BridgeLeaseRoute | null {
   const suffix = pathname.slice(prefix.length);
   const parts = suffix.split("/");
   if (parts.length === 1 && parts[0]) {
-    return { kind: "release", leaseId: decodePathPart(parts[0]) };
+    const leaseId = decodePathPart(parts[0]);
+    return leaseId ? { kind: "release", leaseId } : null;
   }
   if (parts.length === 2 && parts[1] === "heartbeat" && parts[0]) {
-    return { kind: "heartbeat", leaseId: decodePathPart(parts[0]) };
+    const leaseId = decodePathPart(parts[0]);
+    return leaseId ? { kind: "heartbeat", leaseId } : null;
   }
   return null;
 }
 
-function decodePathPart(value: string): string {
+function decodePathPart(value: string): string | null {
   try {
-    return decodeURIComponent(value);
+    const decoded = decodeURIComponent(value);
+    return decoded.length > 0 ? decoded : null;
   } catch {
-    return value;
+    return null;
   }
 }
 
@@ -1127,6 +1388,64 @@ function isLocalAuthorized(request: Request, authToken: string | undefined): boo
   return isAuthorized(request, authToken);
 }
 
+function resolveRequestContext(
+  request: Request,
+  sessionId: string,
+  tracker: BridgeLeaseTracker | undefined,
+  sessionContexts: ReadonlyMap<string, HttpRequestContext>,
+): HttpRequestContext | undefined {
+  const leaseId = readContextHeader(request, DAEMON_BRIDGE_LEASE_HEADER);
+  const requestedWorkspaceId = (() => {
+    const value = readContextHeader(request, DAEMON_WORKSPACE_HEADER);
+    return value && isValidWorkspaceId(value) ? value : undefined;
+  })();
+
+  if (!leaseId && !requestedWorkspaceId) {
+    return sessionContexts.get(sessionId);
+  }
+
+  // When the tracker exposes its public lease list, use the server-owned
+  // workspace claim instead of trusting a client-supplied workspace ID. This
+  // keeps attribution stable even if a bridge reuses a connection with stale
+  // metadata. Custom embedders without a lease list retain header-only
+  // compatibility, since their tracker may resolve claims out of process.
+  if (leaseId && tracker?.leases) {
+    const lease = tracker.leases.find((candidate) => candidate.leaseId === leaseId);
+    if (!lease) return sessionContexts.get(sessionId);
+    return {
+      leaseId,
+      ...(lease.workspaceId ? { workspaceId: lease.workspaceId } : {}),
+    };
+  }
+
+  // A direct HTTP caller must not be able to invent a workspace attribution by
+  // sending only the public workspace header. The stdio bridge always carries
+  // a server-issued lease; custom embedders without a lease list retain the
+  // header-only compatibility path below.
+  if (requestedWorkspaceId && tracker?.leases) {
+    return sessionContexts.get(sessionId);
+  }
+
+  return {
+    ...(leaseId ? { leaseId } : {}),
+    ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
+  };
+}
+
+function readContextHeader(request: Request, name: string): string | undefined {
+  const value = request.headers.get(name)?.trim();
+  return value && value.length <= 256 ? value : undefined;
+}
+
+function requestContextMetadata(
+  context: HttpRequestContext | undefined,
+): Record<string, string> {
+  return {
+    ...(context?.workspaceId ? { workspaceId: context.workspaceId } : {}),
+    ...(context?.leaseId ? { leaseId: context.leaseId } : {}),
+  };
+}
+
 function isAuthorized(
   request: Request,
   authToken: string | undefined,
@@ -1136,9 +1455,101 @@ function isAuthorized(
   return request.headers.get("authorization") === `Bearer ${authToken}`;
 }
 
-function isControlPlaneAuthorized(request: Request, options: HttpServerOptions): boolean {
+function isControlPlaneAuthorized(
+  request: Request,
+  options: HttpServerOptions,
+  route: ControlPlaneRoute,
+): boolean {
+  const workspaceId = getControlPlaneRouteWorkspaceId(route);
+  if (workspaceId) {
+    return isWorkspaceControlPlaneAuthorized(request, options, workspaceId, route);
+  }
   if (isLocalAuthorized(request, options.authToken)) return true;
-  return options.managementCredentials?.authorize(getBearerToken(request)) ?? false;
+
+  const credentials = options.managementCredentials;
+  if (!credentials) return false;
+
+  // The inventory endpoint is intentionally readable by any short-lived
+  // management grant so a handoff for a known (non-current) workspace can
+  // still render the workspace switcher. Every other unqualified alias is
+  // scoped to the daemon's current handoff workspace; a grant claimed for a
+  // different directory must never read or mutate the primary context.
+  const token = getBearerToken(request);
+  if (route.kind === "workspaces") return credentials.authorize(token);
+  const currentWorkspaceId = options.controlPlane?.getCurrentWorkspaceId();
+  return currentWorkspaceId
+    ? credentials.authorize(token, currentWorkspaceId)
+    : credentials.authorize(token);
+}
+
+function isWorkspaceControlPlaneAuthorized(
+  request: Request,
+  options: HttpServerOptions,
+  workspaceId: string,
+  route: ControlPlaneRoute,
+): boolean {
+  const currentWorkspaceId = options.controlPlane?.getCurrentWorkspaceId();
+  const requiresCurrentWorkspace = route.kind !== "workspace-status";
+  if (requiresCurrentWorkspace && currentWorkspaceId !== workspaceId) return false;
+
+  // Root daemon credentials are accepted for the authenticated current
+  // workspace only. A workspace route must never turn the private root token
+  // into a cross-directory capability.
+  if (currentWorkspaceId === workspaceId && isAuthorized(request, options.authToken, true)) {
+    return true;
+  }
+
+  const token = getBearerToken(request);
+  const credentials = options.managementCredentials;
+  if (!credentials) return false;
+
+  // New grants carry a workspace claim. The fallback keeps grants issued by
+  // older unscoped daemons usable for the current context while still making
+  // a claimed grant fail closed for another workspace.
+  return (
+    credentials.authorize(token, workspaceId) ||
+    (currentWorkspaceId === workspaceId && credentials.authorize(token))
+  );
+}
+
+function getControlPlaneRouteWorkspaceId(route: ControlPlaneRoute): string | undefined {
+  return "workspaceId" in route ? route.workspaceId : undefined;
+}
+
+function withWorkspaceAttribution(
+  headers: Record<string, string>,
+  workspaceId: string | null | undefined,
+): Record<string, string> {
+  const safeWorkspaceId = workspaceId && isValidWorkspaceId(workspaceId) ? workspaceId : undefined;
+  return safeWorkspaceId ? { ...headers, [DAEMON_WORKSPACE_HEADER]: safeWorkspaceId } : headers;
+}
+
+function withLeaseAttribution(
+  headers: Record<string, string>,
+  lease: Pick<ConnectionLease, "leaseId" | "workspaceId">,
+): Record<string, string> {
+  const safeLeaseId = safeHeaderValue(lease.leaseId);
+  const attributed = safeLeaseId
+    ? { ...headers, [DAEMON_BRIDGE_LEASE_HEADER]: safeLeaseId }
+    : headers;
+  return withWorkspaceAttribution(attributed, lease.workspaceId);
+}
+
+function withContextAttribution(
+  headers: Record<string, string>,
+  context: HttpRequestContext | undefined,
+): Record<string, string> {
+  const attributed = context?.leaseId
+    ? withLeaseAttribution(headers, {
+        leaseId: context.leaseId,
+        workspaceId: context.workspaceId,
+      })
+    : headers;
+  return withWorkspaceAttribution(attributed, context?.workspaceId);
+}
+
+function safeHeaderValue(value: string | undefined): string | undefined {
+  return value && value.length <= 256 && !/[\r\n]/.test(value) ? value : undefined;
 }
 
 function getBearerToken(request: Request): string | undefined {

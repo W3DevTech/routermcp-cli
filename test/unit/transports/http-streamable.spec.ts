@@ -8,12 +8,19 @@ import { serve, type ServeOptions } from "../../../src/compat/index.js";
 import { ConnectionTracker } from "../../../src/daemon/connection-tracker.js";
 import {
   ControlPlane,
+  MANAGEMENT_BODY_LIMIT_BYTES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   ManagementCredentialStore,
 } from "../../../src/control-plane/index.js";
-import type { ControlPlaneWorkspace } from "../../../src/control-plane/index.js";
+import type {
+  ControlPlaneMetrics,
+  ControlPlaneStatus,
+  ControlPlaneWorkspace,
+} from "../../../src/control-plane/index.js";
 import {
   DAEMON_BRIDGE_LEASES_PATH,
+  DAEMON_BRIDGE_LEASE_HEADER,
+  DAEMON_WORKSPACE_HEADER,
   createHttpServerTransport,
 } from "../../../src/transports/http-streamable.js";
 
@@ -277,7 +284,7 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
       }),
     );
     expect(response.status).toBe(204);
-    expect(onSessionClose).toHaveBeenCalledWith("session-1");
+    expect(onSessionClose).toHaveBeenCalledWith("session-1", undefined);
 
     await handle.stop();
   });
@@ -312,10 +319,14 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     const sessionId = response.headers.get("Mcp-Session-Id");
     expect(response.status).toBe(200);
     expect(sessionId).toEqual(expect.any(String));
-    expect(onSessionInitialize).toHaveBeenCalledWith(sessionId, {
-      name: "test-client",
-      version: "2.0.0",
-    });
+    expect(onSessionInitialize).toHaveBeenCalledWith(
+      sessionId,
+      {
+        name: "test-client",
+        version: "2.0.0",
+      },
+      undefined,
+    );
 
     await handle.stop();
   });
@@ -701,7 +712,252 @@ describe("createHttpServerTransport control-plane routes", () => {
     const missing = await fetchHandler(
       new Request("http://127.0.0.1/api/v1/workspaces/unknown/status", { headers }),
     );
-    expect(missing.status).toBe(404);
+    expect(missing.status).toBe(401);
+
+    await handle.stop();
+  });
+
+  it("scopes workspace routes and supports explicitly claimed handoffs", async () => {
+    const currentWorkspace = createTestWorkspace("workspace-current", "2026-01-01T00:00:02.000Z");
+    const otherWorkspace = createTestWorkspace("workspace-other", "2026-01-01T00:00:01.000Z");
+    const workspaceStatus = (workspace: ControlPlaneWorkspace) => ({
+      workspace,
+      status: createTestStatus(workspace),
+      servers: [],
+      sessions: [],
+      metrics: createTestMetrics(),
+    });
+    const managementTokens = ["current-management-token", "other-management-token"];
+    const credentials = new ManagementCredentialStore({
+      workspaceId: currentWorkspace.id,
+      allowedWorkspaceIds: [otherWorkspace.id],
+      generateToken: () => managementTokens.shift() ?? "unused-management-token",
+    });
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(currentWorkspace),
+      getServers: () => [],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => currentWorkspace.id,
+      getWorkspaces: () => [currentWorkspace, otherWorkspace],
+      getWorkspaceStatus: (workspaceId) =>
+        workspaceId === currentWorkspace.id
+          ? workspaceStatus(currentWorkspace)
+          : workspaceId === otherWorkspace.id
+            ? workspaceStatus(otherWorkspace)
+            : null,
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "local-token",
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const handoffPath = `http://127.0.0.1${MANAGEMENT_CREDENTIAL_HANDOFF_PATH}`;
+    const currentHandoff = await fetchHandler(
+      new Request(handoffPath, {
+        method: "POST",
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+    expect(currentHandoff.status).toBe(201);
+    const currentGrant = await currentHandoff.json();
+    expect(currentGrant.workspaceId).toBe(currentWorkspace.id);
+
+    const currentHeaders = { Authorization: `Bearer ${currentGrant.token}` };
+    const currentServers = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${currentWorkspace.id}/servers`, {
+        headers: currentHeaders,
+      }),
+    );
+    expect(currentServers.status).toBe(200);
+
+    const otherWithCurrentGrant = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, {
+        headers: currentHeaders,
+      }),
+    );
+    expect(otherWithCurrentGrant.status).toBe(401);
+
+    const rootOtherStatus = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, {
+        headers: { Authorization: "Bearer local-token" },
+      }),
+    );
+    expect(rootOtherStatus.status).toBe(401);
+
+    const otherHandoff = await fetchHandler(
+      new Request(handoffPath, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer local-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId: otherWorkspace.id }),
+      }),
+    );
+    expect(otherHandoff.status).toBe(201);
+    const otherGrant = await otherHandoff.json();
+    expect(otherGrant.workspaceId).toBe(otherWorkspace.id);
+
+    const otherHeaders = { Authorization: `Bearer ${otherGrant.token}` };
+    const otherUnqualifiedStatus = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/status", { headers: otherHeaders }),
+    );
+    expect(otherUnqualifiedStatus.status).toBe(401);
+
+    const otherStatus = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/status`, {
+        headers: otherHeaders,
+      }),
+    );
+    expect(otherStatus.status).toBe(200);
+
+    const otherServers = await fetchHandler(
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/servers`, {
+        headers: otherHeaders,
+      }),
+    );
+    expect(otherServers.status).toBe(401);
+
+    await handle.stop();
+  });
+
+  it("attributes lease-bound MCP sessions to their workspace", async () => {
+    const tracker = new ConnectionTracker(1_000, () => undefined, 10_000);
+    const lease = tracker.acquire("lease-1", { workspaceId: "workspace-current" });
+    const onSessionInitialize = vi.fn();
+    const onSessionClose = vi.fn();
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(),
+      getServers: () => [],
+      getSessions: () => [],
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "secret",
+      controlPlane,
+      connectionTracker: tracker,
+      onSessionInitialize,
+      onSessionClose,
+    });
+    await handle.start();
+
+    handle.transport.onmessage = (message) => {
+      if (!("id" in message) || message.id === undefined) return;
+      void handle.transport.send({ jsonrpc: "2.0", id: message.id, result: {} });
+    };
+
+    const sessionId = "session-workspace-current";
+    const contextHeaders = {
+      Authorization: "Bearer secret",
+      [DAEMON_BRIDGE_LEASE_HEADER]: lease.leaseId,
+      [DAEMON_WORKSPACE_HEADER]: "spoofed-workspace-should-not-win",
+      "Mcp-Session-Id": sessionId,
+      "Content-Type": "application/json",
+    };
+    const initialize = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: contextHeaders,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "workspace-client", version: "1.0.0" },
+          },
+        }),
+      }),
+    );
+    expect(initialize.status).toBe(200);
+    expect(initialize.headers.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe(lease.leaseId);
+    expect(initialize.headers.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-current");
+    expect(onSessionInitialize).toHaveBeenCalledWith(
+      sessionId,
+      { name: "workspace-client", version: "1.0.0" },
+      { leaseId: lease.leaseId, workspaceId: "workspace-current" },
+    );
+
+    const nextRequest = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Mcp-Session-Id": sessionId,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }),
+      }),
+    );
+    expect(nextRequest.headers.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-current");
+
+    const close = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer secret", "Mcp-Session-Id": sessionId },
+      }),
+    );
+    expect(close.status).toBe(204);
+    expect(close.headers.get(DAEMON_BRIDGE_LEASE_HEADER)).toBe(lease.leaseId);
+    expect(close.headers.get(DAEMON_WORKSPACE_HEADER)).toBe("workspace-current");
+    expect(onSessionClose).toHaveBeenCalledWith(sessionId, {
+      leaseId: lease.leaseId,
+      workspaceId: "workspace-current",
+    });
+
+    await handle.stop();
+    tracker.destroy();
+  });
+
+  it("rejects oversized chunked MCP and management handoff bodies", async () => {
+    const credentials = new ManagementCredentialStore({ generateToken: () => "management-token" });
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(),
+      getServers: () => [],
+      getSessions: () => [],
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "local-token",
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const oversizedBytes = new TextEncoder().encode(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", padding: "x".repeat(MANAGEMENT_BODY_LIMIT_BYTES) }),
+    );
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversizedBytes);
+        controller.close();
+      },
+    });
+    const oversizedMcp = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: { Authorization: "Bearer local-token", "Content-Type": "application/json" },
+        body,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }),
+    );
+    expect(oversizedMcp.status).toBe(413);
+    expect((await oversizedMcp.json()).error.message).toBe("MCP request body is too large");
+
+    const oversizedHandoff = await fetchHandler(
+      new Request(`http://127.0.0.1${MANAGEMENT_CREDENTIAL_HANDOFF_PATH}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer local-token",
+          "Content-Length": "4097",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      }),
+    );
+    expect(oversizedHandoff.status).toBe(413);
+    expect(credentials.size).toBe(0);
 
     await handle.stop();
   });
@@ -847,3 +1103,58 @@ describe("createHttpServerTransport management handoff route", () => {
     await handle.stop();
   });
 });
+
+function createTestWorkspace(
+  id: string,
+  lastSeenAt = "2026-01-01T00:00:00.000Z",
+): ControlPlaneWorkspace {
+  return {
+    id,
+    directory: `/tmp/${id}`,
+    configPath: `/tmp/${id}/routermcp.jsonc`,
+    configScope: "project-local",
+    profileId: `${id}-profile`,
+    configDigest: "a".repeat(64),
+    state: "known",
+    activeConnections: 0,
+    firstSeenAt: lastSeenAt,
+    lastSeenAt,
+  };
+}
+
+function createTestStatus(workspace?: ControlPlaneWorkspace): ControlPlaneStatus {
+  return {
+    state: "ready",
+    instanceId: "instance-1",
+    version: "0.2.1",
+    protocolVersion: "1",
+    profile: workspace?.profileId ?? "profile-1",
+    configDigest: workspace?.configDigest ?? "a".repeat(64),
+    host: "127.0.0.1",
+    port: 7858,
+    mcpUrl: "http://127.0.0.1:7858/mcp",
+    controlUrl: "http://127.0.0.1:7858",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    uptimeSeconds: 1,
+    ...(workspace
+      ? {
+          workspaceId: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceConfigPath: workspace.configPath,
+        }
+      : {}),
+  };
+}
+
+function createTestMetrics(): ControlPlaneMetrics {
+  return {
+    requestsTotal: 0,
+    requestsPerSecond: 0,
+    errorsTotal: 0,
+    errorRate: 0,
+    toolCallsTotal: 0,
+    activeSessions: 0,
+    activeLeases: 0,
+    latencyMs: { p50: 0, p95: 0, p99: 0 },
+  };
+}

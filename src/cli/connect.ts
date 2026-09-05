@@ -14,7 +14,12 @@ import {
   type DaemonStatus,
 } from "../daemon/index.js";
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
-import { DAEMON_BRIDGE_LEASES_PATH, type BridgeLeaseMetadata } from "../transports/index.js";
+import {
+  DAEMON_BRIDGE_LEASE_HEADER,
+  DAEMON_BRIDGE_LEASES_PATH,
+  DAEMON_WORKSPACE_HEADER,
+  type BridgeLeaseMetadata,
+} from "../transports/index.js";
 import { ConfigError, RouterMcpError } from "../utils/errors.js";
 
 export interface ConnectCommandOptions {
@@ -191,8 +196,13 @@ export async function proxyStdioToHttp(
       // session. This prevents a close event from racing an in-flight call.
       await requestQueue;
 
-      await closeMcpSession(mcpUrl, sessionId, authHeaders, log);
-      await releaseBridgeLease(leaseUrl, activeLease.leaseId, authHeaders, log);
+      await closeMcpSession(mcpUrl, sessionId, bridgeContextHeaders(activeLease, authHeaders), log);
+      await releaseBridgeLease(
+        leaseUrl,
+        activeLease.leaseId,
+        bridgeContextHeaders(activeLease, authHeaders),
+        log,
+      );
     })();
 
     return cleanupPromise;
@@ -201,7 +211,11 @@ export async function proxyStdioToHttp(
   const heartbeatIntervalMs = Math.max(1, Math.floor(lease.leaseTtlMs / 3));
   try {
     heartbeatTimer = setInterval(() => {
-      void heartbeatBridgeLease(leaseUrl, activeLease.leaseId, authHeaders)
+      void heartbeatBridgeLease(
+        leaseUrl,
+        activeLease.leaseId,
+        bridgeContextHeaders(activeLease, authHeaders),
+      )
         .then((nextLease) => {
           activeLease = nextLease;
         })
@@ -218,7 +232,15 @@ export async function proxyStdioToHttp(
       if (!acceptingInput || !line.trim()) return;
 
       requestQueue = requestQueue
-        .then(() => forwardMcpMessage(mcpUrl, line, sessionId, authHeaders, log))
+        .then(() =>
+          forwardMcpMessage(
+            mcpUrl,
+            line,
+            sessionId,
+            bridgeContextHeaders(activeLease, authHeaders),
+            log,
+          ),
+        )
         .then((nextSessionId) => {
           if (nextSessionId) sessionId = nextSessionId;
         })
@@ -329,6 +351,18 @@ async function heartbeatBridgeLease(
     throw new Error("Daemon returned an invalid bridge lease heartbeat");
   }
   return payload;
+}
+
+/** Carry the server-owned lease/workspace identity into the MCP session. */
+function bridgeContextHeaders(
+  lease: Pick<ConnectionLease, "leaseId" | "workspaceId">,
+  authHeaders: Record<string, string>,
+): Record<string, string> {
+  return {
+    ...authHeaders,
+    [DAEMON_BRIDGE_LEASE_HEADER]: lease.leaseId,
+    ...(lease.workspaceId ? { [DAEMON_WORKSPACE_HEADER]: lease.workspaceId } : {}),
+  };
 }
 
 async function releaseBridgeLease(

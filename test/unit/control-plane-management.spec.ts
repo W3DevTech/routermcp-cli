@@ -105,16 +105,19 @@ describe("context-scoped config management source", () => {
         },
       });
       expect((await readConfigSnapshot(configPath)).config.mcpServers.demo.enabled).toBe(false);
-      expect(onAuditEvent).toHaveBeenCalledWith({
-        type: "server.enabled",
-        message: "Server availability updated",
-        metadata: expect.objectContaining({
+      expect(onAuditEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "server.enabled",
+          message: "Server availability updated",
           serverId: "mcp:demo",
-          enabled: false,
-          previousEnabled: true,
-          restartState: "failed",
+          metadata: expect.objectContaining({
+            serverId: "mcp:demo",
+            enabled: false,
+            previousEnabled: true,
+            restartState: "failed",
+          }),
         }),
-      });
+      );
     } finally {
       await cleanupTempDir(directory);
     }
