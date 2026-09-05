@@ -1,7 +1,48 @@
 import type { ConnectionLease } from "../daemon/connection-tracker.js";
-import { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
-
+import type {
+  ControlPlaneFeatures,
+  ControlPlaneManagementSource,
+  ControlPlaneMutationResult,
+  ServerEnabledPatch,
+} from "./management.js";
 export { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
+export {
+  CODE_MODE_TIMEOUT_MAX_MS,
+  CODE_MODE_TIMEOUT_MIN_MS,
+  CONTROL_PLANE_EXECUTION_MODES,
+  ConfigMutationError,
+  ConfigRevisionConflictError,
+  createExecutionModeSnapshot,
+  digestConfigSource,
+  getExecutionMode,
+  MANAGEMENT_BODY_LIMIT_BYTES,
+  parseConfigServerId,
+  parseExecutionModePatch,
+  parseServerEnabledPatch,
+  parseManagementJsonBody,
+  readConfigSnapshot,
+  setExecutionMode,
+  setServerEnabled,
+  type ConfigFileSnapshot,
+  type ConfigMutationErrorCode,
+  type ConfigMutationResult,
+  type ConfigServerKind,
+  type ConfigServerReference,
+  type ExecutionModePatch,
+  type ExecutionModeSnapshot,
+  type SetExecutionModeOptions,
+  type SetServerEnabledOptions,
+} from "../config/mutation.js";
+export {
+  createConfigManagementSource,
+  type ConfigManagementSourceOptions,
+  type ControlPlaneFeatures,
+  type ControlPlaneManagementRestartResult,
+  type ControlPlaneManagementSource,
+  type ControlPlaneMutationResult,
+  type ManagementRestartState,
+  type ServerEnabledPatch,
+} from "./management.js";
 
 export {
   DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS,
@@ -28,6 +69,7 @@ export type ControlPlaneServerState = "online" | "offline" | "degraded" | "start
 export type ControlPlaneSessionKind = "bridge" | "mcp" | "control";
 export type ControlPlaneSessionState = "active" | "idle" | "expired" | "closing";
 export type ControlPlaneEventLevel = "debug" | "info" | "warn" | "error";
+export type ControlPlaneServerKind = "mcp" | "openapi";
 
 export interface ControlPlaneStatus {
   state: ControlPlaneDaemonState;
@@ -48,8 +90,17 @@ export interface ControlPlaneStatus {
 export interface ControlPlaneServer {
   id: string;
   name: string;
+  /** Explicit provider kind prevents mcp/openapi name collisions. */
+  kind?: ControlPlaneServerKind;
   url?: string;
   transport?: string;
+  /** Desired enabled state from the selected config source. */
+  enabled?: boolean;
+  /** Live observed state; state remains as a backwards-compatible alias. */
+  observedState?: ControlPlaneServerState;
+  /** Source revision used to derive the desired state. */
+  configRevision?: string;
+  lastChangedAt?: string;
   state: ControlPlaneServerState;
   toolCount: number;
   latencyMs?: number;
@@ -104,6 +155,8 @@ export interface ControlPlaneSource {
   getServers: () => ControlPlaneServer[];
   getSessions: () => ControlPlaneSession[];
   getLeases?: () => readonly ConnectionLease[];
+  /** Context-bound config/mode management; absent on unmanaged servers. */
+  management?: ControlPlaneManagementSource;
   restart?: () => Promise<ControlPlaneRestartResult> | ControlPlaneRestartResult;
   now?: () => number;
 }
@@ -169,8 +222,15 @@ export class ControlPlane {
       return {
         id: sanitizeText(server.id),
         name: sanitizeText(server.name),
+        ...(server.kind ? { kind: server.kind } : {}),
         ...(url ? { url } : {}),
         ...(server.transport ? { transport: sanitizeText(server.transport) } : {}),
+        ...(server.enabled === undefined ? {} : { enabled: server.enabled }),
+        ...(server.observedState ? { observedState: server.observedState } : {}),
+        ...(server.configRevision
+          ? { configRevision: sanitizeText(server.configRevision) }
+          : {}),
+        ...(server.lastChangedAt ? { lastChangedAt: sanitizeText(server.lastChangedAt) } : {}),
         state: server.state,
         toolCount: normalizeCount(server.toolCount),
         ...(isFiniteMetric(server.latencyMs) ? { latencyMs: normalizeMetric(server.latencyMs) } : {}),
@@ -178,6 +238,55 @@ export class ControlPlane {
         ...(lastError ? { lastError } : {}),
       };
     });
+  }
+
+  async getFeatures(): Promise<ControlPlaneFeatures | null> {
+    if (!this.source.management) return null;
+    const features = await this.source.management.getFeatures();
+    return sanitizeFeatures(features);
+  }
+
+  async updateServer(
+    serverId: string,
+    patch: ServerEnabledPatch,
+    expectedDigest: string,
+  ): Promise<ControlPlaneMutationResult> {
+    if (!this.source.management) {
+      return {
+        accepted: false,
+        changed: false,
+        mutationId: "",
+        configDigest: "",
+        previousConfigDigest: "",
+        restartState: "failed",
+        restart: {
+          accepted: false,
+          message: "Server management is not available for this daemon",
+        },
+      };
+    }
+    return this.source.management.updateServer(serverId, patch, expectedDigest);
+  }
+
+  async updateFeatures(
+    patch: Parameters<ControlPlaneManagementSource["updateFeatures"]>[0],
+    expectedDigest: string,
+  ): Promise<ControlPlaneMutationResult> {
+    if (!this.source.management) {
+      return {
+        accepted: false,
+        changed: false,
+        mutationId: "",
+        configDigest: "",
+        previousConfigDigest: "",
+        restartState: "failed",
+        restart: {
+          accepted: false,
+          message: "Feature management is not available for this daemon",
+        },
+      };
+    }
+    return this.source.management.updateFeatures(patch, expectedDigest);
   }
 
   getSessions(): ControlPlaneSession[] {
@@ -354,6 +463,38 @@ export function sanitizeUrl(value: string | undefined): string | undefined {
   } catch {
     return sanitizeText(value);
   }
+}
+
+function sanitizeFeatures(features: ControlPlaneFeatures): ControlPlaneFeatures {
+  const mode = isExecutionMode(features.mode) ? features.mode : "standard";
+  const effectiveMode = isExecutionMode(features.effectiveMode)
+    ? features.effectiveMode
+    : "standard";
+  const restartState = isRestartState(features.restartState) ? features.restartState : "failed";
+  const timeout = Number.isSafeInteger(features.codeMode.timeout)
+    ? Math.min(Math.max(features.codeMode.timeout, 1_000), 120_000)
+    : 30_000;
+
+  return {
+    mode,
+    effectiveMode,
+    codeMode: {
+      timeout,
+      allowFetch: features.codeMode.allowFetch === true,
+    },
+    configDigest: sanitizeText(features.configDigest),
+    restartState,
+    ...(features.restartId ? { restartId: sanitizeText(features.restartId) } : {}),
+    ...(features.restartMessage ? { restartMessage: sanitizeText(features.restartMessage) } : {}),
+  };
+}
+
+function isExecutionMode(value: string): value is ControlPlaneFeatures["mode"] {
+  return value === "standard" || value === "code" || value === "tool-search";
+}
+
+function isRestartState(value: string): value is ControlPlaneFeatures["restartState"] {
+  return value === "idle" || value === "scheduled" || value === "restarting" || value === "failed";
 }
 
 export * from "./pairing.js";

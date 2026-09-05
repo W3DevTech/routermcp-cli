@@ -9,6 +9,8 @@ import type { UpstreamServer } from "../core/upstream.js";
 import {
   ControlPlane,
   ManagementCredentialStore,
+  createConfigManagementSource,
+  getExecutionMode,
   sanitizeText,
   sanitizeUrl,
   type ControlPlaneServer,
@@ -161,6 +163,25 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         getServers: () => createControlPlaneServers(gateway),
         getSessions: () => createControlPlaneSessions(gateway, runtimeManifest),
         getLeases: () => gateway?.getConnectionLeases() ?? [],
+        management: createConfigManagementSource({
+          getConfigPath: () => daemonPaths?.configPath ?? resolve(configPath),
+          getEffectiveMode: () => getExecutionMode(config),
+          getRestartState: () =>
+            restartScheduled ? { restartState: "scheduled" as const } : { restartState: "idle" as const },
+          restart: () =>
+            controlPlane?.restart() ?? {
+              accepted: false,
+              message: "Managed daemon restart is not available",
+            },
+          onAuditEvent: (event) => {
+            controlPlane?.recordEvent({
+              level: "info",
+              type: `config.${event.type}`,
+              message: event.message,
+              metadata: event.metadata,
+            });
+          },
+        }),
         restart: async () => {
           if (!daemonPaths || !runtimeManifest) {
             return {

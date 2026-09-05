@@ -15,9 +15,14 @@ import {
   CONTROL_PLANE_HEALTH_PATH,
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
+  ConfigMutationError,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  parseExecutionModePatch,
+  parseManagementJsonBody,
+  parseServerEnabledPatch,
   sanitizeText,
   type ControlPlane,
+  type ControlPlaneMutationResult,
   type ManagementCredentialStore,
 } from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
@@ -590,6 +595,8 @@ type BridgeLeaseRoute =
 type ControlPlaneRoute =
   | { kind: "status" }
   | { kind: "servers" }
+  | { kind: "server"; serverId: string }
+  | { kind: "features" }
   | { kind: "sessions" }
   | { kind: "metrics" }
   | { kind: "events"; limit: number }
@@ -608,6 +615,22 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
 }
 
 function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
+  const serversPrefix = `${CONTROL_PLANE_PATH}/servers/`;
+  if (url.pathname.startsWith(serversPrefix)) {
+    if (url.search) {
+      return { kind: "invalid", message: "The server endpoint does not accept query parameters" };
+    }
+    const suffix = url.pathname.slice(serversPrefix.length);
+    if (!suffix || suffix.includes("/")) {
+      return { kind: "invalid", message: "The server endpoint requires one server ID" };
+    }
+    const serverId = decodePathPart(suffix);
+    if (!serverId) {
+      return { kind: "invalid", message: "The server endpoint requires one server ID" };
+    }
+    return { kind: "server", serverId };
+  }
+
   switch (url.pathname) {
     case `${CONTROL_PLANE_PATH}/status`:
       return url.search
@@ -617,6 +640,10 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
       return url.search
         ? { kind: "invalid", message: "The servers endpoint does not accept query parameters" }
         : { kind: "servers" };
+    case `${CONTROL_PLANE_PATH}/features`:
+      return url.search
+        ? { kind: "invalid", message: "The features endpoint does not accept query parameters" }
+        : { kind: "features" };
     case `${CONTROL_PLANE_PATH}/sessions`:
       return url.search
         ? { kind: "invalid", message: "The sessions endpoint does not accept query parameters" }
@@ -690,6 +717,32 @@ async function handleControlPlaneRequest(
     }
   }
 
+  if (route.kind === "features") {
+    if (request.method === "GET") {
+      try {
+        const features = await controlPlane.getFeatures();
+        return features
+          ? jsonResponse({ features }, 200, responseHeaders)
+          : new Response("Not Found", { status: 404, headers: responseHeaders });
+      } catch (error) {
+        return managementErrorResponse(error, responseHeaders);
+      }
+    }
+
+    if (request.method === "PATCH") {
+      return handleFeaturesPatch(request, controlPlane, responseHeaders);
+    }
+
+    return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+  }
+
+  if (route.kind === "server") {
+    if (request.method !== "PATCH") {
+      return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+    }
+    return handleServerPatch(request, route.serverId, controlPlane, responseHeaders);
+  }
+
   if (request.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
   }
@@ -706,6 +759,127 @@ async function handleControlPlaneRequest(
     case "events":
       return jsonResponse({ events: controlPlane.getEvents(route.limit) }, 200, responseHeaders);
   }
+}
+
+async function handleServerPatch(
+  request: Request,
+  serverId: string,
+  controlPlane: ControlPlane,
+  responseHeaders: Record<string, string>,
+): Promise<Response> {
+  const expectedDigest = requireIfMatch(request);
+  if (!expectedDigest) {
+    return jsonResponse(
+      { error: "precondition-required", message: "If-Match must contain the current config digest" },
+      428,
+      responseHeaders,
+    );
+  }
+
+  try {
+    const patch = parseServerEnabledPatch(await parseManagementJsonBody(request));
+    const result = await controlPlane.updateServer(serverId, patch, expectedDigest);
+    return jsonResponse(
+      { mutation: sanitizeMutationResult(result) },
+      result.accepted ? 202 : 409,
+      responseHeaders,
+    );
+  } catch (error) {
+    return managementErrorResponse(error, responseHeaders);
+  }
+}
+
+async function handleFeaturesPatch(
+  request: Request,
+  controlPlane: ControlPlane,
+  responseHeaders: Record<string, string>,
+): Promise<Response> {
+  const expectedDigest = requireIfMatch(request);
+  if (!expectedDigest) {
+    return jsonResponse(
+      { error: "precondition-required", message: "If-Match must contain the current config digest" },
+      428,
+      responseHeaders,
+    );
+  }
+
+  try {
+    const patch = parseExecutionModePatch(await parseManagementJsonBody(request));
+    const result = await controlPlane.updateFeatures(patch, expectedDigest);
+    return jsonResponse(
+      { mutation: sanitizeMutationResult(result) },
+      result.accepted ? 202 : 409,
+      responseHeaders,
+    );
+  } catch (error) {
+    return managementErrorResponse(error, responseHeaders);
+  }
+}
+
+function requireIfMatch(request: Request): string | null {
+  const value = request.headers.get("if-match")?.trim();
+  return value && !value.includes(",") ? value : null;
+}
+
+function managementErrorResponse(
+  error: unknown,
+  headers: Record<string, string>,
+): Response {
+  if (error instanceof ConfigMutationError) {
+    return jsonResponse(
+      {
+        error: error.code,
+        message: sanitizeControlError(error),
+        ...(error.details ? sanitizeMutationDetails(error.details) : {}),
+      },
+      error.status,
+      headers,
+    );
+  }
+
+  return jsonResponse(
+    { error: "management-failed", message: sanitizeControlError(error) },
+    500,
+    headers,
+  );
+}
+
+function sanitizeMutationResult(result: ControlPlaneMutationResult): ControlPlaneMutationResult {
+  const restart = result.restart
+    ? {
+        accepted: result.restart.accepted === true,
+        message: sanitizeText(result.restart.message),
+        ...(result.restart.state ? { state: result.restart.state } : {}),
+        ...(result.restart.restartId ? { restartId: sanitizeText(result.restart.restartId) } : {}),
+      }
+    : undefined;
+
+  return {
+    accepted: result.accepted === true,
+    changed: result.changed === true,
+    mutationId: sanitizeText(result.mutationId),
+    configDigest: sanitizeText(result.configDigest),
+    previousConfigDigest: sanitizeText(result.previousConfigDigest),
+    restartState: isManagementRestartState(result.restartState) ? result.restartState : "failed",
+    ...(restart ? { restart } : {}),
+  };
+}
+
+function sanitizeMutationDetails(
+  details: Record<string, string | number | boolean>,
+): Record<string, string | number | boolean> {
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [
+      sanitizeText(key),
+      typeof value === "string" ? sanitizeText(value) : value,
+    ]),
+  );
+}
+
+function isManagementRestartState(
+  value: string,
+): value is ControlPlaneMutationResult["restartState"] {
+  return value === "idle" || value === "scheduled" || value === "restarting" || value === "failed";
 }
 
 async function handleManagementCredentialRequest(
