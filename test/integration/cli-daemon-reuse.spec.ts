@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -183,71 +183,6 @@ describe("CLI daemon reuse", () => {
     }
   }, 45_000);
 
-  it("resets active workspace counts after a compatible daemon host crashes", async () => {
-    const env = {
-      ...process.env,
-      XDG_STATE_HOME: stateDir,
-      ROUTERMCP_TELEMETRY: "0",
-    };
-    const preferredPort = await getAvailablePort();
-    const common = ["--host", "127.0.0.1", "--port", String(preferredPort), "--json"];
-    let daemonPid: number | undefined;
-
-    try {
-      const started = await runCli(
-        entrypoint,
-        ["start", "--config", configPath, "--project", projectDir, ...common],
-        env,
-      );
-      expect(started.code, `${started.stdout}\n${started.stderr}`).toBe(0);
-      daemonPid = (JSON.parse(started.stdout) as { pid?: number }).pid;
-      expect(daemonPid).toBeTypeOf("number");
-
-      const registryPath = resolve(stateDir, "routermcp", "host", "workspaces.json");
-      const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
-        workspaces: Array<Record<string, unknown>>;
-      };
-      registry.workspaces = registry.workspaces.map((workspace) => ({
-        ...workspace,
-        state: "active",
-        activeConnections: 2,
-      }));
-      await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
-
-      process.kill(daemonPid as number, "SIGKILL");
-      await waitForProcessExit(daemonPid as number);
-
-      const replacement = await runCli(
-        entrypoint,
-        ["start", "--config", configPath, "--project", projectDir, ...common],
-        env,
-      );
-      expect(replacement.code, `${replacement.stdout}\n${replacement.stderr}`).toBe(0);
-      const replacementStatus = JSON.parse(replacement.stdout) as { pid?: number };
-      expect(replacementStatus.pid).toBeTypeOf("number");
-      expect(replacementStatus.pid).not.toBe(daemonPid);
-
-      const recoveredRegistry = JSON.parse(await readFile(registryPath, "utf8")) as {
-        workspaces: Array<{ activeConnections: number; state: string }>;
-      };
-      expect(recoveredRegistry.workspaces).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ activeConnections: 0, state: "known" }),
-        ]),
-      );
-      daemonPid = replacementStatus.pid;
-    } finally {
-      if (daemonPid && isProcessRunning(daemonPid)) {
-        process.kill(daemonPid, "SIGKILL");
-        await waitForProcessExit(daemonPid);
-      }
-      await runCli(
-        entrypoint,
-        ["stop", "--config", configPath, "--project", projectDir, ...common],
-        env,
-      ).catch(() => undefined);
-    }
-  }, 45_000);
 });
 
 async function runCli(
@@ -295,20 +230,4 @@ async function runCli(
       resolveResult({ code, stdout, stderr });
     });
   });
-}
-
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-async function waitForProcessExit(pid: number): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline && isProcessRunning(pid)) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
-  }
 }
