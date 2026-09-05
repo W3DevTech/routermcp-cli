@@ -3,7 +3,9 @@ import { MANAGEMENT_CREDENTIAL_SCOPE } from "../../../src/control-plane/index.js
 import {
   CLI_CONSOLE_URL,
   createConsoleHandoff,
+  isWorkspaceMcpCredential,
   requestManagementCredential,
+  requestWorkspaceMcpCredential,
 } from "../../../src/cli/console.js";
 
 describe("console handoff", () => {
@@ -203,5 +205,102 @@ describe("console handoff", () => {
         fetcher,
       ),
     ).rejects.toThrow("invalid console handoff");
+  });
+
+  it("mints a workspace-scoped MCP credential through the loopback endpoint", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token: "workspace-mcp-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: "mcp",
+          workspaceId: "workspace-current",
+        }),
+        { status: 201 },
+      ),
+    );
+
+    const credential = await requestWorkspaceMcpCredential(
+      { controlUrl: "http://127.0.0.1:7858", authToken: "local-root-token" },
+      fetcher,
+      "workspace-current",
+    );
+
+    expect(credential).toEqual({
+      token: "workspace-mcp-token",
+      expiresAt: "2026-01-01T00:05:00.000Z",
+      scope: "mcp",
+      workspaceId: "workspace-current",
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://127.0.0.1:7858/api/v1/management/mcp-credential",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Accept: "application/json",
+          Authorization: "Bearer local-root-token",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({ workspaceId: "workspace-current" }),
+      }),
+    );
+  });
+
+  it("rejects workspace MCP credentials for another workspace or malformed expiry", () => {
+    expect(
+      isWorkspaceMcpCredential(
+        {
+          token: "workspace-mcp-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: "mcp",
+          workspaceId: "workspace-current",
+        },
+        "workspace-current",
+      ),
+    ).toBe(true);
+    expect(
+      isWorkspaceMcpCredential(
+        {
+          token: "workspace-mcp-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: "mcp",
+          workspaceId: "workspace-other",
+        },
+        "workspace-current",
+      ),
+    ).toBe(false);
+    expect(
+      isWorkspaceMcpCredential(
+        {
+          token: "workspace-mcp-token",
+          expiresAt: "not-a-date",
+          scope: "mcp",
+          workspaceId: "workspace-current",
+        },
+        "workspace-current",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects invalid workspace MCP credential responses without echoing them", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          token: "workspace-mcp-token",
+          expiresAt: "2026-01-01T00:05:00.000Z",
+          scope: "management",
+          workspaceId: "workspace-current",
+        }),
+        { status: 201 },
+      ),
+    );
+
+    await expect(
+      requestWorkspaceMcpCredential(
+        { controlUrl: "http://127.0.0.1:7858", authToken: "local-root-token" },
+        fetcher,
+        "workspace-current",
+      ),
+    ).rejects.toThrow("invalid workspace MCP credential");
   });
 });

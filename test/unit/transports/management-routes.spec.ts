@@ -177,6 +177,12 @@ describe("control-plane management routes", () => {
         generateToken: () => "management-token",
       });
       credentials.issue();
+      const workspaceMcpCredentials = new ManagementCredentialStore({
+        authority: "workspace",
+        generateToken: () => `workspace-mcp-token-${workspaceMcpCredentials.size + 1}`,
+        canIssueWorkspace: (workspaceId) =>
+          ["workspace-current", "workspace-other"].includes(workspaceId),
+      });
       const dispatchMcp = vi.fn(async (message, _sessionId, context) => ({
         jsonrpc: "2.0" as const,
         id: "id" in message ? message.id : null,
@@ -197,13 +203,41 @@ describe("control-plane management routes", () => {
         authToken: "local-secret",
         controlPlane,
         managementCredentials: credentials,
+        workspaceMcpCredentials,
         dispatchMcp,
         onSessionInitialize,
         onSessionClose,
       });
       await handle.start();
 
-      const authorization = { Authorization: "Bearer management-token" };
+      const mint = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/management/mcp-credential", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer local-secret",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ workspaceId: "workspace-current" }),
+        }),
+      );
+      expect(mint.status).toBe(201);
+      const currentCredential = (await mint.json()) as { token: string; workspaceId: string };
+      expect(currentCredential.workspaceId).toBe("workspace-current");
+
+      const otherMint = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/management/mcp-credential", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer local-secret",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ workspaceId: "workspace-other" }),
+        }),
+      );
+      expect(otherMint.status).toBe(201);
+      const otherCredential = (await otherMint.json()) as { token: string; workspaceId: string };
+
+      const authorization = { Authorization: `Bearer ${currentCredential.token}` };
       const initialized = await fetchHandler(
         new Request("http://127.0.0.1/api/v1/workspaces/workspace-current/mcp", {
           method: "POST",
@@ -242,13 +276,16 @@ describe("control-plane management routes", () => {
           body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
         }),
       );
-      expect(crossWorkspace.status).toBe(400);
+      expect(crossWorkspace.status).toBe(401);
       expect(dispatchMcp).toHaveBeenCalledTimes(1);
 
       const otherWorkspace = await fetchHandler(
         new Request("http://127.0.0.1/api/v1/workspaces/workspace-other/mcp", {
           method: "POST",
-          headers: { ...authorization, "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${otherCredential.token}`,
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
         }),
       );
@@ -263,6 +300,15 @@ describe("control-plane management routes", () => {
       );
       expect(closed.status).toBe(204);
       expect(onSessionClose).toHaveBeenCalledWith(sessionId, { workspaceId: "workspace-current" });
+
+      const managementMcp = await fetchHandler(
+        new Request("http://127.0.0.1/api/v1/workspaces/workspace-current/mcp", {
+          method: "POST",
+          headers: { Authorization: "Bearer management-token", "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list" }),
+        }),
+      );
+      expect(managementMcp.status).toBe(401);
 
       await handle.stop();
     } finally {
@@ -305,6 +351,60 @@ describe("control-plane management routes", () => {
     } finally {
       await cleanupTempDir(directory);
     }
+  });
+
+  it("requires the private daemon token to mint a workspace MCP credential", async () => {
+    const credentials = new ManagementCredentialStore({
+      authority: "host",
+      generateToken: () => "management-token",
+    });
+    credentials.issue();
+    const workspaceMcpCredentials = new ManagementCredentialStore({
+      authority: "workspace",
+      generateToken: () => "workspace-mcp-token",
+      canIssueWorkspace: (workspaceId) => workspaceId === "workspace-current",
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "local-secret",
+      controlPlane: createControlPlane(
+        createConfigManagementSource({ getConfigPath: () => "/tmp/config.jsonc" }),
+        ["workspace-current"],
+      ),
+      managementCredentials: credentials,
+      workspaceMcpCredentials,
+    });
+    await handle.start();
+
+    const browserAttempt = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/management/mcp-credential", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer management-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId: "workspace-current" }),
+      }),
+    );
+    expect(browserAttempt.status).toBe(401);
+
+    const rootAttempt = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/management/mcp-credential", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer local-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId: "workspace-current" }),
+      }),
+    );
+    expect(rootAttempt.status).toBe(201);
+    expect(await rootAttempt.json()).toMatchObject({
+      token: "workspace-mcp-token",
+      scope: "mcp",
+      workspaceId: "workspace-current",
+    });
+
+    await handle.stop();
   });
 });
 

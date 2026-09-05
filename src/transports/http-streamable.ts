@@ -109,6 +109,8 @@ export const DAEMON_BRIDGE_LEASES_PATH = "/api/v1/bridge-leases";
 export const DAEMON_BRIDGE_LEASE_HEADER = "X-RouterMCP-Bridge-Lease-Id";
 /** Header used by the stdio bridge to carry the canonical workspace ID. */
 export const DAEMON_WORKSPACE_HEADER = "X-RouterMCP-Workspace-Id";
+/** Mint a short-lived workspace-scoped credential for direct MCP clients. */
+export const WORKSPACE_MCP_CREDENTIAL_PATH = "/api/v1/management/mcp-credential";
 /** Default hosted management origin for a token-protected local daemon. */
 export const DEFAULT_DAEMON_CORS_ORIGIN = "https://cli.routermcp.com";
 /**
@@ -174,6 +176,8 @@ export interface HttpServerOptions {
   controlPlane?: ControlPlane;
   /** Short-lived browser credentials for the hosted management console. */
   managementCredentials?: ManagementCredentialStore;
+  /** Separate scoped credentials for direct workspace MCP clients. */
+  workspaceMcpCredentials?: ManagementCredentialStore;
   /** Public-key registry for remembered same-browser management sessions. */
   browserManagement?: BrowserManagementSessionStore;
   connectionTracker?: BridgeLeaseTracker;
@@ -413,6 +417,23 @@ export function createHttpServerTransport(
                     managementRoute,
                     options.browserManagement,
                     options.managementCredentials,
+                    corsHeaders,
+                  );
+                }
+
+                if (managementRoute.kind === "workspace-mcp-credential") {
+                  if (!options.workspaceMcpCredentials || !options.authToken) {
+                    return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                  }
+                  if (!isLocalAuthorized(request, options.authToken)) {
+                    return new Response("Unauthorized", {
+                      status: 401,
+                      headers: corsHeaders(request),
+                    });
+                  }
+                  return handleWorkspaceMcpCredentialRequest(
+                    request,
+                    options.workspaceMcpCredentials,
                     corsHeaders,
                   );
                 }
@@ -783,6 +804,7 @@ export function createHttpServerTransport(
       boundPort = null;
       sessionContexts.clear();
       options.managementCredentials?.clear();
+      options.workspaceMcpCredentials?.clear();
       await transport.close();
     },
   };
@@ -822,6 +844,7 @@ type ControlPlaneRoute =
 
 type ManagementCredentialRoute =
   | { kind: "handoff" }
+  | { kind: "workspace-mcp-credential" }
   | { kind: "browser-devices" }
   | { kind: "browser-device"; deviceId: string }
   | { kind: "browser-challenge" }
@@ -833,6 +856,11 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
     return url.search
       ? { kind: "invalid", message: "The management handoff does not accept query parameters" }
       : { kind: "handoff" };
+  }
+  if (url.pathname === WORKSPACE_MCP_CREDENTIAL_PATH) {
+    return url.search
+      ? { kind: "invalid", message: "The workspace MCP credential does not accept query parameters" }
+      : { kind: "workspace-mcp-credential" };
   }
   if (
     url.pathname === CONTROL_PLANE_BROWSER_DEVICES_PATH ||
@@ -929,8 +957,9 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
           return { kind: "workspace-tools", workspaceId, filter: rawFilter ?? "" };
         }
         case "tool-calls":
+        case "tools-call":
           return url.search
-            ? { kind: "invalid", message: "The tool-calls endpoint does not accept query parameters" }
+            ? { kind: "invalid", message: "The tool call endpoint does not accept query parameters" }
             : { kind: "workspace-tool-call", workspaceId };
         case "code-runs":
           return url.search
@@ -964,6 +993,25 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
         return { kind: "invalid", message: "The job endpoint requires one job ID" };
       }
       return { kind: "workspace-job", workspaceId, jobId };
+    }
+
+    // Keep the public control API nouns aligned with the hosted console. The
+    // legacy tool-calls/code-runs spellings above remain accepted for clients
+    // that adopted the initial execution API draft.
+    if (parts.length === 3 && parts[1] === "tools" && parts[2] === "search") {
+      return url.search
+        ? { kind: "invalid", message: "The tool search endpoint does not accept query parameters" }
+        : { kind: "workspace-tool-search", workspaceId };
+    }
+    if (parts.length === 3 && parts[1] === "tools" && parts[2] === "call") {
+      return url.search
+        ? { kind: "invalid", message: "The tool call endpoint does not accept query parameters" }
+        : { kind: "workspace-tool-call", workspaceId };
+    }
+    if (parts.length === 3 && parts[1] === "code" && parts[2] === "execute") {
+      return url.search
+        ? { kind: "invalid", message: "The code execution endpoint does not accept query parameters" }
+        : { kind: "workspace-code-run", workspaceId };
     }
 
     return { kind: "invalid", message: "Invalid workspace control-plane path" };
@@ -1732,6 +1780,59 @@ async function handleManagementCredentialRequest(
   }
 }
 
+async function handleWorkspaceMcpCredentialRequest(
+  request: Request,
+  credentials: ManagementCredentialStore,
+  headers: (request: Request) => Record<string, string>,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: headers(request) });
+  }
+
+  try {
+    const body = await readBoundedJsonBody(
+      request,
+      MAX_MANAGEMENT_HANDOFF_BODY_BYTES,
+      "workspace MCP credential",
+      false,
+    );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Workspace MCP credential body must be an object");
+    }
+    const record = body as Record<string, unknown>;
+    if (Object.keys(record).some((key) => key !== "workspaceId")) {
+      throw new Error("Workspace MCP credential body contains an unsupported field");
+    }
+    if (!isValidWorkspaceId(record.workspaceId) || !credentials.canIssueForWorkspace(record.workspaceId)) {
+      throw new Error("Workspace MCP credential workspace is not available");
+    }
+    const grant = credentials.issue(record.workspaceId);
+    return jsonResponse(
+      {
+        token: grant.token,
+        expiresAt: grant.expiresAt,
+        scope: "mcp",
+        workspaceId: record.workspaceId,
+      },
+      201,
+      withWorkspaceAttribution(headers(request), record.workspaceId),
+    );
+  } catch (error) {
+    const status = error instanceof RequestBodyLimitError ? 413 : 400;
+    return jsonResponse(
+      {
+        error: "invalid-request",
+        message:
+          status === 413
+            ? "Workspace MCP credential body is too large"
+            : "Invalid workspace MCP credential request",
+      },
+      status,
+      headers(request),
+    );
+  }
+}
+
 async function handleBrowserManagementRequest(
   request: Request,
   route: ManagementCredentialRoute,
@@ -2221,6 +2322,9 @@ function isControlPlaneAuthorized(
 ): boolean {
   const workspaceId = getControlPlaneRouteWorkspaceId(route);
   if (workspaceId) {
+    if (route.kind === "workspace-mcp") {
+      return isWorkspaceMcpAuthorized(request, options, workspaceId);
+    }
     return isWorkspaceControlPlaneAuthorized(request, options, workspaceId);
   }
   if (isLocalAuthorized(request, options.authToken)) return true;
@@ -2245,6 +2349,17 @@ function isControlPlaneAuthorized(
     (currentWorkspaceId !== null && currentWorkspaceId !== undefined &&
       authorization.workspaceId === currentWorkspaceId)
   );
+}
+
+function isWorkspaceMcpAuthorized(
+  request: Request,
+  options: HttpServerOptions,
+  workspaceId: string,
+): boolean {
+  const credentials = options.workspaceMcpCredentials;
+  if (!credentials) return false;
+  const authorization = credentials.getAuthorization(getBearerToken(request));
+  return authorization?.authority === "workspace" && authorization.workspaceId === workspaceId;
 }
 
 function isWorkspaceControlPlaneAuthorized(

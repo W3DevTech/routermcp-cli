@@ -44,6 +44,9 @@ import {
   getDaemonStatus,
   getProjectId,
   ensureRunning,
+  ensureWorkspaceRunning,
+  fingerprintConfigFile,
+  getWorkspaceDaemonStatus,
 } from "../../../src/daemon/index.js";
 import {
   DAEMON_BRIDGE_LEASE_HEADER,
@@ -327,6 +330,76 @@ describe("connectCommand", () => {
       await vi.waitFor(() => {
         expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Project ID"));
       });
+    });
+  });
+
+  describe("direct workspace MCP endpoint", () => {
+    it("prints the workspace URL and scoped credential on stderr only", async () => {
+      vi.mocked(getDaemonPaths).mockReturnValue({
+        dir: "/tmp/daemon",
+        pid: "/tmp/daemon/daemon.pid",
+        port: "/tmp/daemon/daemon.port",
+        socket: "/tmp/daemon/daemon.sock",
+        configPath: "/path/to/config.jsonc",
+        runtimeManifest: "/tmp/daemon/runtime.json",
+        profileId: "profile-1",
+      });
+      vi.mocked(fingerprintConfigFile).mockResolvedValue("a".repeat(64));
+      vi.mocked(getWorkspaceDaemonStatus).mockResolvedValue({ running: false });
+      vi.mocked(ensureWorkspaceRunning).mockResolvedValue({
+        running: true,
+        pid: 12345,
+        port: 5151,
+        host: "127.0.0.1",
+        mcpUrl: "http://127.0.0.1:5151/mcp",
+        controlUrl: "http://127.0.0.1:5151",
+        authToken: "local-root-token",
+        workspaceId: "workspace-current",
+        workspaceMcpUrl:
+          "http://127.0.0.1:5151/api/v1/workspaces/workspace-current/mcp",
+      });
+
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/mcp-credential")) {
+          return new Response(
+            JSON.stringify({
+              token: "workspace-mcp-token",
+              expiresAt: "2026-01-01T00:05:00.000Z",
+              scope: "mcp",
+              workspaceId: "workspace-current",
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/bridge-leases") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              leaseId: "test-lease",
+              connectedAt: new Date(0).toISOString(),
+              lastSeenAt: new Date(0).toISOString(),
+              leaseExpiresAt: new Date(30_000).toISOString(),
+              leaseTtlMs: 30_000,
+              workspaceId: "workspace-current",
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(null, { status: 204 });
+      });
+
+      await connectCommand({});
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Workspace MCP URL: http://127.0.0.1:5151/api/v1/workspaces/workspace-current/mcp",
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Workspace MCP Authorization: Bearer workspace-mcp-token",
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Workspace MCP credential expires: 2026-01-01T00:05:00.000Z",
+      );
+      expect(ensureWorkspaceRunning).toHaveBeenCalled();
     });
   });
 

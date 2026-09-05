@@ -92,6 +92,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
   let managementCredentials: ManagementCredentialStore | null = null;
+  let workspaceMcpCredentials: ManagementCredentialStore | null = null;
   let browserManagement: BrowserManagementSessionStore | null = null;
   let workspaceRegistry: WorkspaceRegistry | null = null;
   let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
@@ -657,6 +658,11 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         canIssueWorkspace: (workspaceId) =>
           workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
       });
+      workspaceMcpCredentials = new ManagementCredentialStore({
+        authority: "workspace",
+        canIssueWorkspace: (workspaceId) =>
+          workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
+      });
       if (runtimeManifest) {
         const hostPaths = getDaemonHostPaths();
         browserManagement = new BrowserManagementSessionStore({
@@ -750,6 +756,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         }),
         controlPlane: controlPlane ?? undefined,
         managementCredentials: managementCredentials ?? undefined,
+        workspaceMcpCredentials: workspaceMcpCredentials ?? undefined,
         browserManagement: browserManagement ?? undefined,
         connectionTracker: leaseTracker,
         dispatchMcp,
@@ -810,6 +817,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
                 }),
                 controlPlane: controlPlane ?? undefined,
                 managementCredentials: managementCredentials ?? undefined,
+                workspaceMcpCredentials: workspaceMcpCredentials ?? undefined,
                 browserManagement: browserManagement ?? undefined,
                 connectionTracker: workspaceLeaseTracker ?? undefined,
                 onSessionInitialize: (

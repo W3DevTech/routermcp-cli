@@ -11,6 +11,7 @@ import {
   isLoopbackHost,
   type DaemonStatus,
 } from "../daemon/index.js";
+import { WORKSPACE_MCP_CREDENTIAL_PATH } from "../transports/index.js";
 import { type DaemonCommandOptions, resolveDaemonContext } from "./daemon.js";
 
 export const CLI_CONSOLE_URL = "https://cli.routermcp.com/cli" as const;
@@ -28,6 +29,32 @@ export interface ConsoleHandoff {
   workspaceId?: string;
   workspaceMcpUrl?: string;
   url: string;
+}
+
+export interface WorkspaceMcpCredential {
+  token: string;
+  expiresAt: string;
+  scope: "mcp";
+  workspaceId: string;
+}
+
+/** Validate the untrusted response returned by the local credential endpoint. */
+export function isWorkspaceMcpCredential(
+  value: unknown,
+  workspaceId: string,
+): value is WorkspaceMcpCredential {
+  if (!isValidWorkspaceId(workspaceId)) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+
+  const credential = value as Record<string, unknown>;
+  return (
+    typeof credential.token === "string" &&
+    credential.token.length > 0 &&
+    typeof credential.expiresAt === "string" &&
+    Number.isFinite(Date.parse(credential.expiresAt)) &&
+    credential.scope === "mcp" &&
+    credential.workspaceId === workspaceId
+  );
 }
 
 /**
@@ -121,6 +148,46 @@ export async function requestManagementCredential(
   }
 
   return grant;
+}
+
+/** Mint a short-lived credential for one direct workspace MCP endpoint. */
+export async function requestWorkspaceMcpCredential(
+  status: Pick<DaemonStatus, "controlUrl" | "authToken">,
+  fetcher: typeof fetch = fetch,
+  workspaceId: string,
+): Promise<WorkspaceMcpCredential> {
+  if (!status.controlUrl || !status.authToken || !isValidWorkspaceId(workspaceId)) {
+    throw new Error("The managed daemon did not provide workspace MCP credentials");
+  }
+
+  const endpoint = new URL(normalizeControlEndpoint(status.controlUrl));
+  endpoint.pathname = WORKSPACE_MCP_CREDENTIAL_PATH;
+  let response: Response;
+  try {
+    response = await fetcher(endpoint.toString(), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${status.authToken}`,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+      body: JSON.stringify({ workspaceId }),
+    });
+  } catch {
+    throw new Error("The local daemon could not mint a workspace MCP credential");
+  }
+
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    // Keep the error below generic so a daemon cannot echo credential material.
+  }
+  if (!response.ok || !isWorkspaceMcpCredential(body, workspaceId)) {
+    throw new Error("The local daemon returned an invalid workspace MCP credential");
+  }
+  return body;
 }
 
 /** Build the fragment format consumed by the hosted console without URL query credentials. */
