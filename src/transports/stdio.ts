@@ -1,7 +1,9 @@
+import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ServerConfig } from "../config/types.js";
+import type { RuntimeExecutionContext } from "../core/execution-context.js";
 import { TransportError } from "../utils/errors.js";
 
 /**
@@ -10,6 +12,7 @@ import { TransportError } from "../utils/errors.js";
 export async function createStdioClientTransport(
   serverName: string,
   config: ServerConfig,
+  executionContext?: RuntimeExecutionContext,
 ): Promise<{ client: Client; cleanup: () => Promise<void> }> {
   if (config.transport !== "stdio") {
     throw new TransportError("stdio", `Expected stdio transport, got ${config.transport}`);
@@ -21,7 +24,8 @@ export async function createStdioClientTransport(
 
   // Build env object, filtering out undefined values
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  const baseEnv = executionContext?.env ?? process.env;
+  for (const [key, value] of Object.entries(baseEnv)) {
     if (value !== undefined) {
       env[key] = value;
     }
@@ -34,7 +38,7 @@ export async function createStdioClientTransport(
     command: config.command,
     args: config.args,
     env,
-    cwd: config.cwd,
+    cwd: resolveServerCwd(config.cwd, executionContext),
   });
 
   const client = new Client(
@@ -58,6 +62,15 @@ export async function createStdioClientTransport(
   };
 
   return { client, cleanup };
+}
+
+function resolveServerCwd(
+  configuredCwd: string | undefined,
+  executionContext: RuntimeExecutionContext | undefined,
+): string | undefined {
+  if (!executionContext) return configuredCwd;
+  if (!configuredCwd) return executionContext.cwd;
+  return resolve(executionContext.cwd, configuredCwd);
 }
 
 /**

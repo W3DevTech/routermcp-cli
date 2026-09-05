@@ -21,6 +21,7 @@ import {
 } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
+import type { RuntimeExecutionContext } from "./execution-context.js";
 import {
   getToolSearchMetaTools,
   handleCallTool,
@@ -48,6 +49,8 @@ export interface GatewayOptions {
   httpOptions?: HttpServerOptions;
   verbose?: boolean;
   clearOpenApiCache?: boolean;
+  /** Workspace-owned cwd/environment used by upstream clients. */
+  executionContext?: RuntimeExecutionContext;
 }
 
 const DEFAULT_SESSION_TIMEOUT = 300;
@@ -90,7 +93,12 @@ export class Gateway {
       { capabilities: { tools: {}, resources: {}, prompts: {} } },
     );
 
-    this.discoveryManager = new UpstreamManager(options.config, options.verbose);
+    this.discoveryManager = new UpstreamManager(
+      options.config,
+      options.verbose,
+      undefined,
+      options.executionContext,
+    );
 
     this.registerHandlers();
   }
@@ -227,6 +235,7 @@ export class Gateway {
         this.openApiHandler = new OpenApiHandler(
           this.options.config.openApiServers,
           this.options.verbose,
+          this.options.executionContext?.cwd,
         );
         await this.openApiHandler.initialize(this.options.clearOpenApiCache);
 
@@ -258,6 +267,7 @@ export class Gateway {
         sessionTimeout,
         maxSessions,
         verbose: this.options.verbose,
+        executionContext: this.options.executionContext,
         onSessionCleanup: (sessionId) => {
           if (sessionId === STDIO_SESSION_ID) {
             this.stdioSession = null;

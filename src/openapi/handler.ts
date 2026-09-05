@@ -12,7 +12,11 @@ export class OpenApiHandler {
   private toolRegistry: Map<string, OpenApiTool> = new Map();
   private verbose: boolean;
 
-  constructor(config: Record<string, OpenApiServerConfig> | undefined, verbose = false) {
+  constructor(
+    config: Record<string, OpenApiServerConfig> | undefined,
+    verbose = false,
+    private readonly baseDirectory = process.cwd(),
+  ) {
     this.verbose = verbose;
 
     if (!config) return;
@@ -74,7 +78,7 @@ export class OpenApiHandler {
       }
 
       this.log(`Parsing OpenAPI spec for ${server.name}...`);
-      const spec = await parseOpenApiSpec(specSource);
+      const spec = await parseOpenApiSpec(specSource, this.baseDirectory);
 
       const baseUrl = server.config.baseUrl || extractBaseUrl(spec) || "";
 

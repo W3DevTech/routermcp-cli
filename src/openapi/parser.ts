@@ -5,6 +5,7 @@ import type { OpenAPIV3 } from "openapi-types";
 
 export async function parseOpenApiSpec(
   source: string | Record<string, unknown>,
+  baseDirectory = process.cwd(),
 ): Promise<OpenAPIV3.Document> {
   let spec: unknown;
 
@@ -13,7 +14,7 @@ export async function parseOpenApiSpec(
   } else if (source.startsWith("http://") || source.startsWith("https://")) {
     spec = source;
   } else {
-    const absolutePath = resolve(process.cwd(), source);
+    const absolutePath = resolve(baseDirectory, source);
     const content = await readFile(absolutePath, "utf-8");
     spec =
       source.endsWith(".yaml") || source.endsWith(".yml")

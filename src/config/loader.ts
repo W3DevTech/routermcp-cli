@@ -37,7 +37,15 @@ export async function findConfigFile(dir: string): Promise<string | null> {
 /**
  * Load and validate configuration from a file path.
  */
-export async function loadConfig(path: string): Promise<RouterMcpConfig> {
+export interface ConfigLoadOptions {
+  /** Environment snapshot used for expansion; process.env is the default. */
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+}
+
+export async function loadConfig(
+  path: string,
+  options: ConfigLoadOptions = {},
+): Promise<RouterMcpConfig> {
   const f = file(path);
 
   if (!(await f.exists())) {
@@ -54,7 +62,7 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
     );
   }
 
-  return parseConfigContent(content, path);
+  return parseConfigContent(content, path, options);
 }
 
 /**
@@ -64,7 +72,11 @@ export async function loadConfig(path: string): Promise<RouterMcpConfig> {
  * mutations validate the complete JSONC result before atomically publishing
  * it. The input is never logged or returned by this helper.
  */
-export function parseConfigContent(content: string, path = "<config>"): RouterMcpConfig {
+export function parseConfigContent(
+  content: string,
+  path = "<config>",
+  options: ConfigLoadOptions = {},
+): RouterMcpConfig {
   // Parse JSONC (handles comments and trailing commas)
   let parsed: unknown;
   const errors: { error: number; offset: number; length: number }[] = [];
@@ -96,7 +108,10 @@ export function parseConfigContent(content: string, path = "<config>"): RouterMc
   const strictEnvVars = normalizedObj?.strictEnvVars === true;
 
   // Expand environment variables in the config
-  const expanded = expandEnvVars(normalized, { strict: strictEnvVars });
+  const expanded = expandEnvVars(normalized, {
+    strict: strictEnvVars,
+    env: options.env ?? process.env,
+  });
 
   // Validate with Zod schema
   const result = RouterMcpConfigSchema.safeParse(expanded);
@@ -156,6 +171,7 @@ function normalizeConfig(parsed: unknown): unknown {
 
 interface EnvExpansionOptions {
   strict: boolean;
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
 }
 
 interface EnvReference {
@@ -201,7 +217,7 @@ function expandEnvReference(match: string, content: string, options: EnvExpansio
   }
 
   const { varName, defaultValue, isNewSyntax } = parsed;
-  const envValue = process.env[varName];
+  const envValue = options.env[varName];
 
   if (envValue !== undefined) {
     return envValue;
