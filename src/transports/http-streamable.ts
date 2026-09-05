@@ -270,8 +270,8 @@ export function createHttpServerTransport(
   const corsPolicy = createCorsPolicy(options);
 
   const corsHeaders = (request: Request): Record<string, string> => ({
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, If-Match, Mcp-Session-Id",
     "Access-Control-Expose-Headers": "Mcp-Session-Id",
     ...corsPolicyHeaders(request, corsPolicy),
   });

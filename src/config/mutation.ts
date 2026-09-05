@@ -729,13 +729,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Maximum body guard used by the control-plane request parser. */
 export const MANAGEMENT_BODY_LIMIT_BYTES = MAX_MANAGEMENT_BODY_BYTES;
 
-/** Parse a small JSON request body without accepting unbounded browser input. */
+/**
+ * Parse a small JSON request body without accepting unbounded browser input.
+ *
+ * Content-Length is only an early rejection. Requests sent with chunked
+ * transfer (or through a framework that omits the header) are counted as
+ * chunks arrive and cancelled as soon as the cap is crossed.
+ */
 export async function parseManagementJsonBody(request: Request): Promise<unknown> {
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_MANAGEMENT_BODY_BYTES) {
-    throw new ConfigMutationError("Request body is too large", "invalid-request", { status: 413 });
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    if (!/^\d+$/.test(contentLength.trim())) {
+      throw new ConfigMutationError(
+        "Content-Length must be a non-negative integer",
+        "invalid-request",
+      );
+    }
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength)) {
+      throw new ConfigMutationError("Content-Length is too large", "invalid-request", {
+        status: 413,
+      });
+    }
+    if (declaredLength > MAX_MANAGEMENT_BODY_BYTES) {
+      throw new ConfigMutationError("Request body is too large", "invalid-request", {
+        status: 413,
+      });
+    }
   }
 
+  const body = await readBoundedRequestBody(request);
   try {
     return JSON.parse(body) as unknown;
   } catch (error) {
@@ -744,4 +767,39 @@ export async function parseManagementJsonBody(request: Request): Promise<unknown
       cause: error instanceof Error ? error : undefined,
     });
   }
+}
+
+async function readBoundedRequestBody(request: Request): Promise<string> {
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_MANAGEMENT_BODY_BYTES) {
+        await reader.cancel("request body exceeds management limit").catch(() => undefined);
+        throw new ConfigMutationError("Request body is too large", "invalid-request", {
+          status: 413,
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
