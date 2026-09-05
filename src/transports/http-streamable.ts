@@ -110,6 +110,16 @@ export const DEFAULT_DAEMON_CORS_ORIGINS = [
   "http://127.0.0.1:7953",
 ] as const;
 
+class BridgeRequestContextError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: 400 | 401,
+  ) {
+    super(message);
+    this.name = "BridgeRequestContextError";
+  }
+}
+
 export interface BridgeLeaseTracker {
   acquire: (metadata?: unknown) => ConnectionLease | Promise<ConnectionLease>;
   heartbeat: (leaseId: string) => ConnectionLease | null | Promise<ConnectionLease | null>;
@@ -559,6 +569,9 @@ export function createHttpServerTransport(
                     method: requestMethod,
                     error: protocolError,
                     resultError,
+                    ...(requestContext?.workspaceId
+                      ? { workspaceId: requestContext.workspaceId }
+                      : {}),
                   });
                   options.controlPlane?.recordEvent({
                     level: protocolError || resultError ? "warn" : "debug",
@@ -597,6 +610,9 @@ export function createHttpServerTransport(
                     durationMs: performance.now() - requestStartedAt,
                     method: requestMethod,
                     error: true,
+                    ...(requestContext?.workspaceId
+                      ? { workspaceId: requestContext.workspaceId }
+                      : {}),
                   });
                   options.controlPlane?.recordEvent({
                     level: "error",
@@ -614,13 +630,23 @@ export function createHttpServerTransport(
                     },
                   });
                   const message = sanitizeControlError(err);
-                  const status = err instanceof RequestBodyLimitError ? 413 : 500;
+                  const status =
+                    err instanceof RequestBodyLimitError
+                      ? 413
+                      : err instanceof BridgeRequestContextError
+                        ? err.statusCode
+                        : 500;
                   return new Response(
                     JSON.stringify({
                       jsonrpc: "2.0",
                       error: {
                         code: status === 413 ? -32600 : -32603,
-                        message: status === 413 ? "MCP request body is too large" : message,
+                        message:
+                          status === 413
+                            ? "MCP request body is too large"
+                            : status === 401
+                              ? "MCP bridge authorization is invalid or expired"
+                              : message,
                       },
                       id: null,
                     }),
@@ -1059,15 +1085,15 @@ async function handleControlPlaneRequest(
     case "workspaces":
       return jsonResponse({ workspaces: controlPlane.getWorkspaces() }, 200, responseHeaders);
     case "workspace-status": {
-      const status = controlPlane.getWorkspaceStatus(route.workspaceId);
+      const status = await controlPlane.getWorkspaceStatusAsync(route.workspaceId);
       return status
         ? jsonResponse(status, 200, responseHeaders)
         : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
     }
     case "workspace-servers": {
-      const servers = controlPlane.getWorkspaceServers(route.workspaceId);
-      return servers
-        ? jsonResponse({ servers }, 200, responseHeaders)
+      const status = await controlPlane.getWorkspaceStatusAsync(route.workspaceId);
+      return status
+        ? jsonResponse({ servers: status.servers }, 200, responseHeaders)
         : jsonResponse({ error: "Workspace not found" }, 404, responseHeaders);
     }
   }
@@ -1534,7 +1560,9 @@ function resolveRequestContext(
   // compatibility, since their tracker may resolve claims out of process.
   if (leaseId && tracker?.leases) {
     const lease = tracker.leases.find((candidate) => candidate.leaseId === leaseId);
-    if (!lease) return sessionContext;
+    if (!lease) {
+      throw new BridgeRequestContextError("MCP bridge lease is unknown or expired", 401);
+    }
     return enforceSessionWorkspace(sessionContext, {
       leaseId,
       ...(lease.workspaceId ? { workspaceId: lease.workspaceId } : {}),
@@ -1546,6 +1574,12 @@ function resolveRequestContext(
   // a server-issued lease; custom embedders without a lease list retain the
   // header-only compatibility path below.
   if (requestedWorkspaceId && tracker?.leases) {
+    if (!sessionContext) {
+      throw new BridgeRequestContextError(
+        "MCP workspace selection requires a bridge lease",
+        400,
+      );
+    }
     return sessionContext;
   }
 

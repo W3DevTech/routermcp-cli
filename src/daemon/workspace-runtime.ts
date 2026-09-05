@@ -117,6 +117,7 @@ interface RuntimeEntry {
   idleTimer: ReturnType<typeof setTimeout> | null;
   disposeRequested: boolean;
   activeLeases: number;
+  retiredRuntimes: ManagedWorkspaceRuntime[];
   createdAt?: number;
   lastError?: string;
 }
@@ -255,6 +256,7 @@ export class WorkspaceRuntimeManager {
       execution: oldRuntime.context.execution,
     };
 
+    const previousContext = entry.context;
     entry.context = context;
     entry.state = "reloading";
     entry.lastError = undefined;
@@ -263,6 +265,12 @@ export class WorkspaceRuntimeManager {
     entry.reloadPromise = reloadPromise;
     try {
       return await reloadPromise;
+    } catch (error) {
+      // A failed replacement must leave the last healthy runtime associated
+      // with its original revision. Otherwise the next request would see the
+      // new digest and silently execute against the old gateway.
+      if (entry.runtime === oldRuntime) entry.context = previousContext;
+      throw error;
     } finally {
       if (entry.reloadPromise === reloadPromise) entry.reloadPromise = null;
     }
@@ -291,6 +299,7 @@ export class WorkspaceRuntimeManager {
     entry.state = "disposed";
     await entry.runtime?.dispose();
     entry.runtime = null;
+    await Promise.all(entry.retiredRuntimes.splice(0).map((runtime) => runtime.dispose()));
   }
 
   get(workspaceId: string): WorkspaceRuntime | undefined {
@@ -335,6 +344,7 @@ export class WorkspaceRuntimeManager {
       idleTimer: null,
       disposeRequested: false,
       activeLeases: 0,
+      retiredRuntimes: [],
     };
     entry.creationPromise = this.createRuntime(entry, context);
     return entry;
@@ -380,11 +390,10 @@ export class WorkspaceRuntimeManager {
       entry.createdAt = nextRuntime.createdAt;
       entry.state = "ready";
       entry.lastError = undefined;
-      // Swap first so a concurrent dispatcher sees a healthy replacement. A
-      // disposal failure must not poison the new context or another context.
-      await oldRuntime.dispose().catch((error) => {
-        entry.lastError = `Previous runtime cleanup failed: ${errorMessage(error)}`;
-      });
+      // Swap first so a concurrent dispatcher sees a healthy replacement.
+      // Keep the previous gateway alive until in-flight leases have drained.
+      entry.retiredRuntimes.push(oldRuntime);
+      await this.disposeRetiredWhenIdle(entry);
       return nextRuntime;
     } catch (error) {
       entry.state = "ready";
@@ -401,7 +410,9 @@ export class WorkspaceRuntimeManager {
     // they acquired and make repeated release calls idempotent at the lease.
     if (!entry || entry.activeLeases === 0) return;
     entry.activeLeases -= 1;
-    if (entry.activeLeases !== 0 || this.idleTimeoutMs <= 0) return;
+    if (entry.activeLeases !== 0) return;
+    await this.disposeRetiredWhenIdle(entry);
+    if (this.idleTimeoutMs <= 0) return;
 
     entry.state = "idle";
     const currentRuntime = entry.runtime;
@@ -415,6 +426,18 @@ export class WorkspaceRuntimeManager {
       }
     }, this.idleTimeoutMs);
     entry.idleTimer.unref?.();
+  }
+
+  private async disposeRetiredWhenIdle(entry: RuntimeEntry): Promise<void> {
+    if (entry.activeLeases !== 0 || entry.retiredRuntimes.length === 0) return;
+    const retired = entry.retiredRuntimes.splice(0);
+    await Promise.all(
+      retired.map((runtime) =>
+        runtime.dispose().catch((error) => {
+          entry.lastError = `Previous runtime cleanup failed: ${errorMessage(error)}`;
+        }),
+      ),
+    );
   }
 
   private cancelIdleDisposal(entry: RuntimeEntry): void {

@@ -407,6 +407,29 @@ export class Gateway {
     if (!dispatch) {
       throw new Error("Gateway is not using an embedded request transport");
     }
+    // Embedded transports bypass the HTTP transport's initialize callback.
+    // Seed the context-owned session with client metadata before dispatch so
+    // management snapshots retain the same identity as normal HTTP gateways.
+    if (
+      "method" in message &&
+      message.method === "initialize" &&
+      "params" in message &&
+      message.params &&
+      typeof message.params === "object" &&
+      "clientInfo" in message.params &&
+      message.params.clientInfo &&
+      typeof message.params.clientInfo === "object" &&
+      "name" in message.params.clientInfo &&
+      typeof message.params.clientInfo.name === "string"
+    ) {
+      this.sessionManager?.getOrCreate(sessionId, {
+        name: message.params.clientInfo.name,
+        ...( "version" in message.params.clientInfo &&
+        typeof message.params.clientInfo.version === "string"
+          ? { version: message.params.clientInfo.version }
+          : {}),
+      });
+    }
     return dispatch(message, sessionId);
   }
 

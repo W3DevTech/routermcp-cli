@@ -210,6 +210,13 @@ export interface ControlPlaneSource {
   getWorkspaces?: () => ControlPlaneWorkspace[];
   /** Return a fully scoped snapshot, or null when the workspace is unknown. */
   getWorkspaceStatus?: (workspaceId: string) => ControlPlaneWorkspaceStatus | null;
+  /**
+   * Async variant used by HTTP management routes when a workspace's desired
+   * config may need to be loaded from disk before its first runtime request.
+   */
+  getWorkspaceStatusAsync?: (
+    workspaceId: string,
+  ) => ControlPlaneWorkspaceStatus | null | Promise<ControlPlaneWorkspaceStatus | null>;
   /** Optional context-scoped session snapshots for hosts that do not build a full status. */
   getWorkspaceSessions?: (workspaceId: string) => ControlPlaneSession[] | null;
   /** Optional context-scoped metrics for hosts that do not build a full status. */
@@ -245,6 +252,8 @@ export interface ControlPlaneRequestObservation {
   error?: boolean;
   /** A JSON-RPC result with isError=true is an application error. */
   resultError?: boolean;
+  /** Optional workspace attribution for context-scoped metrics. */
+  workspaceId?: string;
 }
 
 /**
@@ -259,6 +268,7 @@ export class ControlPlane {
   private readonly startedAt: number;
   private readonly events: ControlPlaneEvent[] = [];
   private readonly latencySamples: number[] = [];
+  private readonly workspaceMetrics = new Map<string, MetricsAccumulator>();
   private requestsTotal = 0;
   private errorsTotal = 0;
   private toolCallsTotal = 0;
@@ -364,7 +374,15 @@ export class ControlPlane {
     if (!this.isWorkspaceRegistered(workspaceId)) return null;
     const metrics = this.source.getWorkspaceMetrics?.(workspaceId);
     if (metrics) return sanitizeMetrics(metrics);
+    const scoped = this.workspaceMetrics.get(workspaceId);
+    if (scoped) return scoped.toMetrics(this.now());
     return this.getWorkspaceStatus(workspaceId)?.metrics ?? null;
+  }
+
+  /** Return metrics accumulated for one workspace without invoking source callbacks. */
+  getMetricsForWorkspace(workspaceId: string): ControlPlaneMetrics {
+    const scoped = this.workspaceMetrics.get(workspaceId);
+    return scoped ? scoped.toMetrics(this.now()) : emptyMetrics();
   }
 
   /** Return activity for one registered workspace with an explicit context boundary. */
@@ -492,6 +510,34 @@ export class ControlPlane {
     };
   }
 
+  /**
+   * Return a workspace snapshot after allowing the host to materialize any
+   * async config-backed state needed for management reads.
+   */
+  async getWorkspaceStatusAsync(
+    workspaceId: string,
+  ): Promise<ControlPlaneWorkspaceStatus | null> {
+    if (!isValidWorkspaceId(workspaceId)) return null;
+
+    if (this.source.getWorkspaceStatusAsync) {
+      const status = await this.source.getWorkspaceStatusAsync(workspaceId);
+      if (!status || status.workspace.id !== workspaceId) return null;
+      return {
+        workspace: sanitizeWorkspace(
+          status.workspace,
+          status.workspace.id === this.getCurrentWorkspaceId(),
+        ),
+        status: sanitizeStatus(status.status),
+        servers: sanitizeServers(status.servers),
+        sessions: sanitizeSessions(status.sessions),
+        metrics: sanitizeMetrics(status.metrics),
+        ...(status.features ? { features: sanitizeFeatures(status.features) } : {}),
+      };
+    }
+
+    return this.getWorkspaceStatus(workspaceId);
+  }
+
   /** Return status plus the workspace's feature snapshot when one is exposed. */
   async getWorkspaceSnapshot(workspaceId: string): Promise<ControlPlaneWorkspaceStatus | null> {
     const status = this.getWorkspaceStatus(workspaceId);
@@ -539,6 +585,15 @@ export class ControlPlane {
     if (this.latencySamples.length > CONTROL_PLANE_EVENT_BUFFER_SIZE) {
       this.latencySamples.shift();
     }
+
+    if (observation.workspaceId && isValidWorkspaceId(observation.workspaceId)) {
+      let scoped = this.workspaceMetrics.get(observation.workspaceId);
+      if (!scoped) {
+        scoped = new MetricsAccumulator(this.now());
+        this.workspaceMetrics.set(observation.workspaceId, scoped);
+      }
+      scoped.record(observation, durationMs);
+    }
   }
 
   recordEvent(
@@ -579,6 +634,44 @@ export class ControlPlane {
         this.restartInFlight = null;
       });
     return this.restartInFlight;
+  }
+}
+
+class MetricsAccumulator {
+  private requestsTotal = 0;
+  private errorsTotal = 0;
+  private toolCallsTotal = 0;
+  private readonly latencySamples: number[] = [];
+
+  constructor(private readonly startedAt: number) {}
+
+  record(observation: ControlPlaneRequestObservation, durationMs: number): void {
+    this.requestsTotal += 1;
+    if (observation.method === "tools/call") this.toolCallsTotal += 1;
+    if (observation.error === true || observation.resultError === true) this.errorsTotal += 1;
+    this.latencySamples.push(durationMs);
+    if (this.latencySamples.length > CONTROL_PLANE_EVENT_BUFFER_SIZE) this.latencySamples.shift();
+  }
+
+  toMetrics(now: number): ControlPlaneMetrics {
+    const elapsedSeconds = Math.max((now - this.startedAt) / 1_000, 1);
+    return {
+      requestsTotal: this.requestsTotal,
+      requestsPerSecond: roundMetric(this.requestsTotal / elapsedSeconds),
+      errorsTotal: this.errorsTotal,
+      errorRate:
+        this.requestsTotal === 0
+          ? 0
+          : roundMetric((this.errorsTotal / this.requestsTotal) * 100),
+      toolCallsTotal: this.toolCallsTotal,
+      activeSessions: 0,
+      activeLeases: 0,
+      latencyMs: {
+        p50: percentile(this.latencySamples, 0.5),
+        p95: percentile(this.latencySamples, 0.95),
+        p99: percentile(this.latencySamples, 0.99),
+      },
+    };
   }
 }
 

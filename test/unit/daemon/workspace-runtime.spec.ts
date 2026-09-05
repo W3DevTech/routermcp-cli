@@ -150,12 +150,49 @@ describe("WorkspaceRuntimeManager", () => {
     expect(reloaded).not.toBe(first.runtime);
     expect(contexts[1]?.config.mcpServers.second).toBeDefined();
     expect(contexts[1]?.execution.env.ROUTERMCP_RUNTIME_MARKER).toBe("initial");
-    expect(resources[0]?.stop).toHaveBeenCalledTimes(1);
 
     await first.release();
+    // The old gateway drains with the active lease instead of being stopped
+    // underneath an in-flight request.
+    expect(resources[0]?.stop).toHaveBeenCalledTimes(1);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     expect(resources[1]?.stop).toHaveBeenCalledTimes(1);
     expect(manager.getSnapshot(first.workspaceId)?.state).toBe("disposed");
+  });
+
+  it("restores the last healthy context when a replacement runtime fails", async () => {
+    const workspace = await makeWorkspace("failed-reload");
+    let failReplacement = false;
+    const manager = new WorkspaceRuntimeManager({
+      factory: async (context) => {
+        if (context.config.mcpServers.replacement && failReplacement) {
+          throw new Error("replacement upstream failed");
+        }
+        return fakeResource().resource;
+      },
+    });
+    const firstInput = {
+      ...workspace,
+      config: config("initial"),
+      configDigest: "initial-revision",
+    };
+    const first = await manager.getOrCreate(firstInput);
+    failReplacement = true;
+
+    await expect(
+      manager.reload({
+        ...workspace,
+        config: config("replacement"),
+        configDigest: "replacement-revision",
+      }),
+    ).rejects.toThrow("replacement upstream failed");
+
+    expect(manager.getSnapshot(first.context.id)).toMatchObject({
+      state: "ready",
+      configDigest: "initial-revision",
+    });
+    await expect(manager.getOrCreate(firstInput)).resolves.toBe(first);
+    await manager.disposeAll();
   });
 
   it("rejects disposal while a lease is active", async () => {

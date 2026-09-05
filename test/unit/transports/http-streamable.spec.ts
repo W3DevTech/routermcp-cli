@@ -446,6 +446,78 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     await handle.stop();
     tracker.destroy();
   });
+
+  it("fails closed when a request carries an unknown bridge lease", async () => {
+    const tracker = new ConnectionTracker();
+    const lease = tracker.acquire("stale-lease", { workspaceId: "workspace-a" });
+    tracker.remove(lease.leaseId);
+    const dispatchMcp = vi.fn(async () => ({
+      jsonrpc: "2.0" as const,
+      id: 1,
+      result: {},
+    }));
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "secret",
+      connectionTracker: tracker,
+      dispatchMcp,
+    });
+    await handle.start();
+
+    const response = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+          [DAEMON_BRIDGE_LEASE_HEADER]: lease.leaseId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.message).toBe(
+      "MCP bridge authorization is invalid or expired",
+    );
+    expect(dispatchMcp).not.toHaveBeenCalled();
+
+    await handle.stop();
+    tracker.destroy();
+  });
+
+  it("does not route a workspace header without a lease to the current workspace", async () => {
+    const tracker = new ConnectionTracker();
+    const dispatchMcp = vi.fn(async () => ({
+      jsonrpc: "2.0" as const,
+      id: 1,
+      result: {},
+    }));
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "secret",
+      connectionTracker: tracker,
+      dispatchMcp,
+    });
+    await handle.start();
+
+    const response = await fetchHandler(
+      new Request("http://127.0.0.1/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+          [DAEMON_WORKSPACE_HEADER]: "workspace-b",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toContain("requires a bridge lease");
+    expect(dispatchMcp).not.toHaveBeenCalled();
+
+    await handle.stop();
+    tracker.destroy();
+  });
 });
 
 describe("createHttpServerTransport control-plane routes", () => {

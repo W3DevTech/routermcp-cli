@@ -218,14 +218,22 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         });
       }
 
-      const loadWorkspaceRuntimeInput = async (
+      const loadWorkspaceConfigSnapshot = async (
         workspace: WorkspaceSnapshot,
-      ): Promise<WorkspaceRuntimeInput> => {
+      ): Promise<{ config: RouterMcpConfig; configDigest: string }> => {
         const workspaceConfig = await loadConfig(workspace.configPath, { env: process.env });
         const digest = await fingerprintConfigFile(workspace.configPath).catch(
           () => workspace.configDigest,
         );
         workspaceConfigs.set(workspace.id, { config: workspaceConfig, configDigest: digest });
+        return { config: workspaceConfig, configDigest: digest };
+      };
+
+      const loadWorkspaceRuntimeInput = async (
+        workspace: WorkspaceSnapshot,
+      ): Promise<WorkspaceRuntimeInput> => {
+        const { config: workspaceConfig, configDigest: digest } =
+          await loadWorkspaceConfigSnapshot(workspace);
         return {
           directory: workspace.directory,
           configPath: workspace.configPath,
@@ -287,7 +295,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             return getExecutionMode(loaded);
           },
           getRestartState: () => ({ restartState: "idle" as const }),
-          restart: () => reloadWorkspace(workspaceId),
+          reload: () => reloadWorkspace(workspaceId),
           onAuditEvent: (event) => {
             controlPlane?.recordEvent({
               level: "info",
@@ -340,15 +348,23 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
 
         const runtime = workspaceRuntimeManager?.get(workspaceId);
         const cached = workspaceConfigs.get(workspaceId);
-        const status = createControlPlaneStatus(
-          runtimeManifest,
-          runtime?.gateway ?? null,
-          daemonPaths,
-          httpPort,
-          workspace,
-          cached?.configDigest ?? workspace.configDigest,
-          restartScheduled,
-        );
+        const workspaceMetrics =
+          controlPlane?.getMetricsForWorkspace(workspaceId) ?? emptyControlPlaneMetrics();
+        const status = {
+          ...createControlPlaneStatus(
+            runtimeManifest,
+            runtime?.gateway ?? null,
+            daemonPaths,
+            httpPort,
+            workspace,
+            cached?.configDigest ?? workspace.configDigest,
+            restartScheduled,
+          ),
+          // The listener identity belongs to the host, while this field is
+          // the selected workspace's profile and must not expose the primary
+          // workspace's config identity.
+          profile: workspace.profileId,
+        };
         const effectiveStatus = runtime
           ? status
           : {
@@ -366,10 +382,36 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             desiredServerLastChangedAt,
           ),
           sessions: runtime
-            ? createControlPlaneSessions(runtime.gateway, runtimeManifest, sessionWorkspaceIds)
+            ? createControlPlaneSessions(
+                runtime.gateway,
+                runtimeManifest,
+                sessionWorkspaceIds,
+                workspace.profileId,
+              )
             : [],
-          metrics: controlPlane?.getMetrics() ?? emptyControlPlaneMetrics(),
+          metrics: {
+            ...workspaceMetrics,
+            activeSessions: runtime?.gateway.getSessionSnapshots().length ?? 0,
+            activeLeases:
+              workspaceLeaseTracker?.leases.filter((lease) => lease.workspaceId === workspaceId)
+                .length ?? 0,
+          },
         };
+      };
+
+      const getWorkspaceStatusAsync = async (
+        workspaceId: string,
+      ): Promise<ControlPlaneWorkspaceStatus | null> => {
+        const workspace = workspaceRegistry?.getSync(workspaceId);
+        if (!workspace) return null;
+
+        // Registration is intentionally separate from runtime creation. Load
+        // the desired config for management reads so a newly registered
+        // workspace exposes its configured servers before its first MCP call.
+        if (!workspaceConfigs.has(workspaceId)) {
+          await loadWorkspaceConfigSnapshot(workspace);
+        }
+        return getWorkspaceStatus(workspaceId);
       };
 
       controlPlane = new ControlPlane({
@@ -398,6 +440,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
             ? workspaceRegistry.listSync({ currentWorkspaceId: currentWorkspace?.id })
             : [],
         getWorkspaceStatus,
+        getWorkspaceStatusAsync,
         getWorkspaceManagement,
         getWorkspaceFeatures: (workspaceId) => getWorkspaceManagement(workspaceId)?.getFeatures() ?? null,
         management: createConfigManagementSource({
@@ -508,6 +551,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       });
       managementCredentials = new ManagementCredentialStore({
         workspaceId: currentWorkspace?.id,
+        authority: "host",
         // A console handoff may be requested from a second directory that has
         // already registered with this host. The registry is the authority for
         // those claims; credentials never mint arbitrary path-derived IDs.
@@ -540,9 +584,14 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
       const resolveRuntimeInput = async (
         context?: HttpRequestContext,
       ): Promise<WorkspaceRuntimeInput> => {
-        const workspaceId = context?.workspaceId ?? currentWorkspace?.id;
+        const registeredWorkspaceIds = registry.listSync().map((workspace) => workspace.id);
+        const workspaceId =
+          context?.workspaceId ??
+          (registeredWorkspaceIds.length <= 1 ? currentWorkspace?.id : undefined);
         if (!workspaceId) {
-          throw new Error("MCP request is not associated with a registered workspace");
+          throw new Error(
+            "MCP request must include a bridge lease when multiple workspaces are registered",
+          );
         }
 
         const workspace = registry.getSync(workspaceId);
@@ -683,7 +732,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
     }
 
     if (isDaemon && daemonPaths && runtimeManifest) {
-      const actualPort = gateway.getHttpPort() ?? httpPort;
+      const actualPort = hostHttpServer?.getPort() ?? gateway.getHttpPort() ?? httpPort;
       if (!actualPort) {
         throw new Error("Daemon HTTP transport did not report a bound port");
       }
@@ -961,10 +1010,11 @@ function createControlPlaneSessions(
   gateway: Gateway | null,
   manifest: RuntimeManifest | null,
   sessionWorkspaceIds: Map<string, string> = new Map(),
+  profileOverride?: string,
 ): ControlPlaneSession[] {
   if (!gateway) return [];
 
-  const profile = manifest?.profileId;
+  const profile = profileOverride ?? manifest?.profileId;
   const sessionSnapshots = gateway.getSessionSnapshots();
   const liveSessionIds = new Set(sessionSnapshots.map((session) => session.id));
   for (const sessionId of sessionWorkspaceIds.keys()) {
