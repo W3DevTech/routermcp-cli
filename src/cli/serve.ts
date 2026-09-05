@@ -14,6 +14,7 @@ import {
 } from "../transports/http-streamable.js";
 import {
   ControlPlane,
+  BrowserManagementSessionStore,
   ManagementCredentialStore,
   createConfigManagementSource,
   getExecutionMode,
@@ -35,6 +36,7 @@ import {
   fingerprintConfigFile,
   getDaemonStatus,
   getDaemonPaths,
+  getDaemonHostPaths,
   getProjectId,
   isLoopbackHost,
   matchesProcessIdentity,
@@ -90,6 +92,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let gateway: Gateway | null = null;
   let controlPlane: ControlPlane | null = null;
   let managementCredentials: ManagementCredentialStore | null = null;
+  let browserManagement: BrowserManagementSessionStore | null = null;
   let workspaceRegistry: WorkspaceRegistry | null = null;
   let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
   let workspaceRuntimeManager: WorkspaceRuntimeManager | null = null;
@@ -640,6 +643,14 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         canIssueWorkspace: (workspaceId) =>
           workspaceRegistry ? workspaceRegistry.getSync(workspaceId) !== null : false,
       });
+      if (runtimeManifest) {
+        const hostPaths = getDaemonHostPaths();
+        browserManagement = new BrowserManagementSessionStore({
+          instanceId: runtimeManifest.instanceId,
+          path: resolve(hostPaths.dir, "browser-devices.json"),
+        });
+        await browserManagement.initialize();
+      }
     }
 
     const isManagedHost = Boolean(
@@ -725,6 +736,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         }),
         controlPlane: controlPlane ?? undefined,
         managementCredentials: managementCredentials ?? undefined,
+        browserManagement: browserManagement ?? undefined,
         connectionTracker: leaseTracker,
         dispatchMcp,
         onSessionInitialize: (
@@ -784,6 +796,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
                 }),
                 controlPlane: controlPlane ?? undefined,
                 managementCredentials: managementCredentials ?? undefined,
+                browserManagement: browserManagement ?? undefined,
                 connectionTracker: workspaceLeaseTracker ?? undefined,
                 onSessionInitialize: (
                   sessionId: string,

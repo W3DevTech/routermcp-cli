@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/compat/index.js", () => ({
@@ -8,9 +9,14 @@ import { serve, type ServeOptions } from "../../../src/compat/index.js";
 import { ConnectionTracker } from "../../../src/daemon/connection-tracker.js";
 import {
   ControlPlane,
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
   MANAGEMENT_BODY_LIMIT_BYTES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   ManagementCredentialStore,
+  BrowserManagementSessionStore,
+  browserChallengeSigningPayload,
 } from "../../../src/control-plane/index.js";
 import type {
   ControlPlaneMetrics,
@@ -1503,6 +1509,85 @@ describe("createHttpServerTransport management handoff route", () => {
     expect(response.status).toBe(404);
     expect(credentials.size).toBe(0);
 
+    await handle.stop();
+  });
+
+  it("enrolls and rehydrates a browser management session without exposing the root token", async () => {
+    const keyPair = generateKeyPairSync("ed25519");
+    const publicKey = keyPair.publicKey.export({ format: "jwk" });
+    const credentials = new ManagementCredentialStore({ generateToken: () => "fresh-token" });
+    const browserManagement = new BrowserManagementSessionStore({ instanceId: "instance" });
+    const controlPlane = new ControlPlane({
+      getStatus: () => ({
+        state: "ready",
+        instanceId: "instance",
+        version: "0.2.1",
+        protocolVersion: "1",
+        profile: "profile",
+        configDigest: "digest",
+        host: "127.0.0.1",
+        port: 7858,
+        mcpUrl: "http://127.0.0.1:7858/mcp",
+        controlUrl: "http://127.0.0.1:7858",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        uptimeSeconds: 1,
+      }),
+      getServers: () => [],
+      getSessions: () => [],
+    });
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      authToken: "root-token",
+      controlPlane,
+      managementCredentials: credentials,
+      browserManagement,
+    });
+    await handle.start();
+
+    const register = await fetchHandler(
+      new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_DEVICES_PATH}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer root-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ publicKey, label: "test browser" }),
+      }),
+    );
+    expect(register.status).toBe(201);
+    const { device } = await register.json();
+
+    const challengeResponse = await fetchHandler(
+      new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_CHALLENGE_PATH}`),
+    );
+    expect(challengeResponse.status).toBe(200);
+    const challenge = await challengeResponse.json();
+    const signature = sign(null, browserChallengeSigningPayload(challenge), keyPair.privateKey).toString(
+      "base64url",
+    );
+    const exchange = await fetchHandler(
+      new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_EXCHANGE_PATH}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: device.id, challengeId: challenge.challengeId, signature }),
+      }),
+    );
+    expect(exchange.status).toBe(201);
+    const exchangeBody = await exchange.json();
+    expect(exchangeBody.grant).toMatchObject({ token: "fresh-token", authority: "host", scope: "management" });
+    expect(JSON.stringify(exchangeBody)).not.toContain("root-token");
+
+    const devices = await fetchHandler(
+      new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_DEVICES_PATH}`, {
+        headers: { Authorization: "Bearer fresh-token" },
+      }),
+    );
+    expect(devices.status).toBe(200);
+    expect((await devices.json()).devices).toHaveLength(1);
+
+    const remove = await fetchHandler(
+      new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_DEVICES_PATH}/${device.id}`, {
+        method: "DELETE",
+        headers: { Authorization: "Bearer fresh-token" },
+      }),
+    );
+    expect(remove.status).toBe(204);
     await handle.stop();
   });
 });

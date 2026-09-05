@@ -12,6 +12,9 @@ import { type ServerHandle, serve } from "../compat/index.js";
 import type { ServerConfig } from "../config/types.js";
 import {
   CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
   CONTROL_PLANE_HEALTH_PATH,
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
@@ -26,11 +29,18 @@ import {
   ControlPlaneWorkspaceNotFoundError,
   type ControlPlane,
   type ControlPlaneMutationResult,
+  BrowserManagementError,
   type ManagementCredentialStore,
+  type BrowserManagementSessionStore,
 } from "../control-plane/index.js";
 import { TransportError } from "../utils/errors.js";
 
-export { MANAGEMENT_CREDENTIAL_HANDOFF_PATH } from "../control-plane/index.js";
+export {
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+} from "../control-plane/index.js";
 
 export interface HttpClientTransportOptions {
   authProvider?: OAuthClientProvider;
@@ -162,6 +172,8 @@ export interface HttpServerOptions {
   controlPlane?: ControlPlane;
   /** Short-lived browser credentials for the hosted management console. */
   managementCredentials?: ManagementCredentialStore;
+  /** Public-key registry for remembered same-browser management sessions. */
+  browserManagement?: BrowserManagementSessionStore;
   connectionTracker?: BridgeLeaseTracker;
   /** Route MCP requests into an embedded workspace runtime. */
   dispatchMcp?: HttpMcpRequestHandler;
@@ -386,6 +398,23 @@ export function createHttpServerTransport(
                   return new Response(null, { status: 204, headers: corsHeaders(request) });
                 }
 
+                // Challenge and exchange intentionally do not carry a bearer
+                // credential. The challenge is public loopback material; the
+                // exchange is authenticated by an enrolled browser key.
+                if (
+                  (managementRoute.kind === "browser-challenge" ||
+                    managementRoute.kind === "browser-exchange") &&
+                  options.browserManagement
+                ) {
+                  return handleBrowserManagementRequest(
+                    request,
+                    managementRoute,
+                    options.browserManagement,
+                    options.managementCredentials,
+                    corsHeaders,
+                  );
+                }
+
                 // A handoff is a privileged local operation. Do not make it
                 // available on an unauthenticated standalone HTTP server or
                 // let an already-issued browser token mint more credentials.
@@ -393,11 +422,29 @@ export function createHttpServerTransport(
                   return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
                 }
 
-                if (!isLocalAuthorized(request, options.authToken)) {
+                if (
+                  (managementRoute.kind === "browser-devices" ||
+                    managementRoute.kind === "browser-device")
+                    ? !isBrowserManagementAuthorized(request, options)
+                    : !isLocalAuthorized(request, options.authToken)
+                ) {
                   return new Response("Unauthorized", {
                     status: 401,
                     headers: corsHeaders(request),
                   });
+                }
+
+                if (
+                  managementRoute.kind === "browser-devices" ||
+                  managementRoute.kind === "browser-device"
+                ) {
+                  return handleBrowserManagementRequest(
+                    request,
+                    managementRoute,
+                    options.browserManagement,
+                    options.managementCredentials,
+                    corsHeaders,
+                  );
                 }
 
                 return handleManagementCredentialRequest(
@@ -760,13 +807,42 @@ type ControlPlaneRoute =
 
 type ManagementCredentialRoute =
   | { kind: "handoff" }
+  | { kind: "browser-devices" }
+  | { kind: "browser-device"; deviceId: string }
+  | { kind: "browser-challenge" }
+  | { kind: "browser-exchange" }
   | { kind: "invalid"; message: string };
 
 function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | null {
-  if (url.pathname !== MANAGEMENT_CREDENTIAL_HANDOFF_PATH) return null;
-  return url.search
-    ? { kind: "invalid", message: "The management handoff does not accept query parameters" }
-    : { kind: "handoff" };
+  if (url.pathname === MANAGEMENT_CREDENTIAL_HANDOFF_PATH) {
+    return url.search
+      ? { kind: "invalid", message: "The management handoff does not accept query parameters" }
+      : { kind: "handoff" };
+  }
+  if (
+    url.pathname === CONTROL_PLANE_BROWSER_DEVICES_PATH ||
+    url.pathname === CONTROL_PLANE_BROWSER_CHALLENGE_PATH ||
+    url.pathname === CONTROL_PLANE_BROWSER_EXCHANGE_PATH
+  ) {
+    if (url.search) {
+      return { kind: "invalid", message: "Browser management endpoints do not accept query parameters" };
+    }
+    if (url.pathname === CONTROL_PLANE_BROWSER_DEVICES_PATH) return { kind: "browser-devices" };
+    if (url.pathname === CONTROL_PLANE_BROWSER_CHALLENGE_PATH) return { kind: "browser-challenge" };
+    return { kind: "browser-exchange" };
+  }
+  if (url.pathname.startsWith(`${CONTROL_PLANE_BROWSER_DEVICES_PATH}/`)) {
+    if (url.search) {
+      return { kind: "invalid", message: "Browser device endpoints do not accept query parameters" };
+    }
+    const rawDeviceId = url.pathname.slice(`${CONTROL_PLANE_BROWSER_DEVICES_PATH}/`.length);
+    const deviceId = decodePathPart(rawDeviceId);
+    if (!deviceId || deviceId.includes("/")) {
+      return { kind: "invalid", message: "Browser device endpoint requires one device ID" };
+    }
+    return { kind: "browser-device", deviceId };
+  }
+  return null;
 }
 
 function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
@@ -1301,6 +1377,131 @@ async function handleManagementCredentialRequest(
   }
 }
 
+async function handleBrowserManagementRequest(
+  request: Request,
+  route: ManagementCredentialRoute,
+  browserManagement: BrowserManagementSessionStore | undefined,
+  credentials: ManagementCredentialStore | undefined,
+  headers: (request: Request) => Record<string, string>,
+): Promise<Response> {
+  const responseHeaders = headers(request);
+  if (route.kind === "invalid") {
+    return jsonResponse(
+      { error: "invalid-request", message: route.message },
+      400,
+      responseHeaders,
+    );
+  }
+  if (!browserManagement) return new Response("Not Found", { status: 404, headers: responseHeaders });
+
+  try {
+    if (route.kind === "browser-challenge") {
+      if (request.method !== "GET") {
+        return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+      }
+      return jsonResponse(browserManagement.issueChallenge(), 200, responseHeaders);
+    }
+
+    if (route.kind === "browser-exchange") {
+      if (request.method !== "POST") {
+        return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+      }
+      if (!credentials) return new Response("Not Found", { status: 404, headers: responseHeaders });
+      const input = parseBrowserManagementExchange(
+        await readBoundedJsonBody(request, MAX_MANAGEMENT_HANDOFF_BODY_BYTES, "browser exchange"),
+      );
+      const result = await browserManagement.exchange(input, credentials);
+      return jsonResponse(result, 201, withWorkspaceAttribution(responseHeaders, result.grant.workspaceId));
+    }
+
+    if (route.kind === "browser-devices") {
+      if (request.method === "GET") {
+        return jsonResponse({ devices: browserManagement.list() }, 200, responseHeaders);
+      }
+      if (request.method !== "POST") {
+        return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+      }
+      const input = parseBrowserDeviceRegistration(
+        await readBoundedJsonBody(request, MAX_MANAGEMENT_HANDOFF_BODY_BYTES, "browser device registration"),
+      );
+      const device = await browserManagement.register(input);
+      return jsonResponse({ device }, 201, responseHeaders);
+    }
+
+    if (route.kind === "browser-device") {
+      if (request.method !== "DELETE") {
+        return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+      }
+      const removed = await browserManagement.revoke(route.deviceId);
+      return removed
+        ? new Response(null, { status: 204, headers: responseHeaders })
+        : jsonResponse({ error: "device-not-found", message: "Browser device was not found" }, 404, responseHeaders);
+    }
+
+    return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
+  } catch (error) {
+    if (error instanceof RequestBodyLimitError) {
+      return jsonResponse({ error: "request-too-large", message: "Browser management body is too large" }, 413, responseHeaders);
+    }
+    if (error instanceof BrowserManagementError) {
+      const status =
+        error.code === "DEVICE_NOT_FOUND" || error.code === "CHALLENGE_NOT_FOUND" ? 404 :
+        error.code === "DEVICE_KEY_MISMATCH" || error.code === "DEVICE_CAPACITY" ? 409 : 400;
+      return jsonResponse({ error: error.code.toLowerCase(), message: sanitizeControlError(error) }, status, responseHeaders);
+    }
+    return jsonResponse({ error: "management-failed", message: sanitizeControlError(error) }, 500, responseHeaders);
+  }
+}
+
+function parseBrowserDeviceRegistration(value: unknown): {
+  deviceId?: string;
+  publicKey: unknown;
+  label?: string;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new BrowserManagementError("Browser device registration must be an object", "INVALID_REQUEST");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["deviceId", "publicKey", "label"].includes(key))) {
+    throw new BrowserManagementError("Browser device registration contains an unsupported field", "INVALID_REQUEST");
+  }
+  if (record.publicKey === undefined || (record.deviceId !== undefined && typeof record.deviceId !== "string") || (record.label !== undefined && typeof record.label !== "string")) {
+    throw new BrowserManagementError("Browser device registration is invalid", "INVALID_REQUEST");
+  }
+  return {
+    publicKey: record.publicKey,
+    ...(record.deviceId === undefined ? {} : { deviceId: record.deviceId }),
+    ...(record.label === undefined ? {} : { label: record.label }),
+  };
+}
+
+function parseBrowserManagementExchange(value: unknown): {
+  protocolVersion?: "1";
+  deviceId: string;
+  challengeId: string;
+  signature: string;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new BrowserManagementError("Browser exchange must be an object", "INVALID_REQUEST");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).some((key) => !["protocolVersion", "deviceId", "challengeId", "signature"].includes(key)) ||
+    (record.protocolVersion !== undefined && record.protocolVersion !== "1") ||
+    typeof record.deviceId !== "string" ||
+    typeof record.challengeId !== "string" ||
+    typeof record.signature !== "string"
+  ) {
+    throw new BrowserManagementError("Browser exchange is invalid", "INVALID_REQUEST");
+  }
+  return {
+    ...(record.protocolVersion === undefined ? {} : { protocolVersion: "1" }),
+    deviceId: record.deviceId,
+    challengeId: record.challengeId,
+    signature: record.signature,
+  };
+}
+
 function sanitizeControlError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return sanitizeText(message);
@@ -1551,6 +1752,12 @@ function isJsonRpcResultError(message: JSONRPCMessage | null): boolean {
 
 function isLocalAuthorized(request: Request, authToken: string | undefined): boolean {
   return isAuthorized(request, authToken);
+}
+
+function isBrowserManagementAuthorized(request: Request, options: HttpServerOptions): boolean {
+  if (isLocalAuthorized(request, options.authToken)) return true;
+  const token = getBearerToken(request);
+  return options.managementCredentials?.getAuthorization(token)?.authority === "host";
 }
 
 function resolveRequestContext(

@@ -61,6 +61,27 @@ export {
   type ManagementCredentialGrant,
   type ManagementCredentialStoreOptions,
 } from "./management-credentials.js";
+export {
+  BROWSER_MANAGEMENT_PROTOCOL_VERSION,
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  DEFAULT_BROWSER_CHALLENGE_TTL_MS,
+  MAX_BROWSER_CHALLENGE_TTL_MS,
+  DEFAULT_BROWSER_DEVICE_CAPACITY,
+  DEFAULT_BROWSER_CHALLENGE_CAPACITY,
+  BrowserManagementError,
+  BrowserManagementSessionStore,
+  browserChallengeSigningPayload,
+  fingerprintPublicKey,
+  type BrowserDevicePublicKey,
+  type BrowserDeviceRecord,
+  type BrowserDeviceRegistration,
+  type BrowserManagementChallenge,
+  type BrowserManagementExchange,
+  type BrowserManagementExchangeResult,
+  type BrowserManagementSessionStoreOptions,
+} from "./browser-management.js";
 export const CONTROL_PLANE_DEFAULT_EVENT_LIMIT = 40;
 export const CONTROL_PLANE_MAX_EVENT_LIMIT = 200;
 export const CONTROL_PLANE_EVENT_BUFFER_SIZE = 1_000;
