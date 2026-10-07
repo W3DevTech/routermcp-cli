@@ -30,7 +30,7 @@ export interface MockOAuthIssuer {
 }
 
 export async function createMockOAuthIssuer(
-  options: { cimdSupported?: boolean } = {},
+  options: { cimdSupported?: boolean; metadataSupported?: boolean } = {},
 ): Promise<MockOAuthIssuer> {
   let authorizationServer: ServerHandle | null = null;
   let resourceServer: ServerHandle | null = null;
@@ -38,6 +38,7 @@ export async function createMockOAuthIssuer(
   let resourceUrl = "";
   let protectedResourceAuthorizationServerUrl: string | null = null;
   let cimdSupported = options.cimdSupported ?? false;
+  const metadataSupported = options.metadataSupported ?? true;
   const registrationRequests: OAuthRegistrationRequest[] = [];
   const tokenRequests: OAuthTokenRequest[] = [];
   const requests: Array<{ url: string; method: string }> = [];
@@ -60,6 +61,9 @@ export async function createMockOAuthIssuer(
           requests.push({ url: url.toString(), method: request.method });
 
           if (url.pathname === "/.well-known/oauth-authorization-server") {
+            if (!metadataSupported) {
+              return new Response("Not Found", { status: 404 });
+            }
             return Response.json({
               issuer: authorizationServerUrl,
               authorization_endpoint: `${authorizationServerUrl}/authorize`,
@@ -118,10 +122,34 @@ export async function createMockOAuthIssuer(
         fetch: async (request) => {
           const url = new URL(request.url);
           requests.push({ url: url.toString(), method: request.method });
+          if (!metadataSupported && url.pathname === "/token" && request.method === "POST") {
+            const form = await request.formData();
+            const tokenRequest: OAuthTokenRequest = {};
+            for (const [key, value] of form.entries()) {
+              if (typeof value === "string") {
+                tokenRequest[key as keyof OAuthTokenRequest] = value;
+              }
+            }
+            tokenRequests.push(tokenRequest);
+
+            return Response.json({
+              access_token: `access-${tokenRequests.length}`,
+              token_type: "Bearer",
+              expires_in: 3600,
+              refresh_token:
+                tokenRequest.grant_type === "refresh_token"
+                  ? "rotated-refresh-token"
+                  : "initial-refresh-token",
+            });
+          }
+
           if (
             url.pathname === "/.well-known/oauth-protected-resource" ||
             url.pathname === "/.well-known/oauth-protected-resource/mcp"
           ) {
+            if (!metadataSupported) {
+              return new Response("Not Found", { status: 404 });
+            }
             return Response.json({
               resource: resourceUrl,
               authorization_servers: [

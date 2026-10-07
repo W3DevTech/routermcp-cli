@@ -1,5 +1,10 @@
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import {
+  selectClientAuthMethod,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/sdk/client/auth.js";
+import { InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
+  AuthorizationServerMetadata,
   OAuthClientInformation,
   OAuthClientInformationMixed,
   OAuthClientMetadata,
@@ -27,6 +32,10 @@ const DEFAULT_LOOPBACK_REDIRECT_URI = "http://127.0.0.1/oauth/callback";
 
 type RouterMcpOAuthClientMetadata = OAuthClientMetadata & { application_type: "native" };
 
+function formEncode(value: string): string {
+  return new URLSearchParams([["value", value]]).toString().slice("value=".length);
+}
+
 export interface OAuthProviderConfig {
   clientId?: string;
   clientSecret?: string;
@@ -50,9 +59,15 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
   private _authorizationCode: string | null = null;
   private _callbackPromise: Promise<OAuthCallbackResult> | null = null;
   private _authorizationServerIssuer: string | null = null;
+  private _authorizationServerUrl: URL | null = null;
+  private _authorizationServerTokenEndpoint: string | null = null;
   private _authorizationServerSupportsCimd = false;
   private _tokensInvalidated = false;
   private _authorizationRedirectUrl: string | null = null;
+
+  readonly addClientAuthentication: NonNullable<OAuthClientProvider["addClientAuthentication"]> =
+    (headers, params, url, metadata) =>
+      this.addPinnedClientAuthentication(headers, params, url, metadata);
 
   constructor(
     private serverName: string,
@@ -92,19 +107,9 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
     const discovery = await discoverOAuthServer(this.serverUrl);
+    this.pinAuthorizationServer(discovery);
 
     if (this._clientInformationResolved) {
-      if (
-        this._authorizationServerIssuer &&
-        this._authorizationServerIssuer !== discovery.authorizationServerIssuer
-      ) {
-        this._tokensInvalidated = true;
-        throw new Error(
-          `Authorization server changed during OAuth authentication for ${this.serverName}; restart authentication with ${discovery.authorizationServerIssuer}`,
-        );
-      }
-
-      this._authorizationServerIssuer = discovery.authorizationServerIssuer;
       this._authorizationServerSupportsCimd =
         discovery.authorizationServerMetadata?.client_id_metadata_document_supported === true;
       const info = this._pendingClientInfo ?? this._resolvedClientInfo;
@@ -116,7 +121,6 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
         : undefined;
     }
 
-    this._authorizationServerIssuer = discovery.authorizationServerIssuer;
     this._authorizationServerSupportsCimd =
       discovery.authorizationServerMetadata?.client_id_metadata_document_supported === true;
 
@@ -206,6 +210,118 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
       client_id: this._resolvedClientInfo.client_id,
       client_secret: this._resolvedClientInfo.client_secret,
     };
+  }
+
+  private pinAuthorizationServer(discovery: Awaited<ReturnType<typeof discoverOAuthServer>>): void {
+    const tokenEndpoint = new URL(
+      discovery.authorizationServerMetadata?.token_endpoint ??
+        new URL("/token", discovery.authorizationServerUrl),
+    ).href;
+
+    if (this._authorizationServerIssuer !== null) {
+      if (
+        this._authorizationServerIssuer !== discovery.authorizationServerIssuer ||
+        this._authorizationServerTokenEndpoint !== tokenEndpoint
+      ) {
+        this._tokensInvalidated = true;
+        throw new Error(
+          `Authorization server changed during OAuth authentication for ${this.serverName}; restart authentication with ${discovery.authorizationServerIssuer}`,
+        );
+      }
+      return;
+    }
+
+    this._authorizationServerIssuer = discovery.authorizationServerIssuer;
+    this._authorizationServerUrl = new URL(discovery.authorizationServerUrl);
+    this._authorizationServerTokenEndpoint = tokenEndpoint;
+  }
+
+  private addPinnedClientAuthentication(
+    headers: Headers,
+    params: URLSearchParams,
+    url: string | URL,
+    metadata?: AuthorizationServerMetadata,
+  ): void {
+    const issuer = this._authorizationServerIssuer;
+    const pinnedTokenEndpoint = this._authorizationServerTokenEndpoint;
+    if (!issuer || !pinnedTokenEndpoint || !this._authorizationServerUrl) {
+      throw new Error(
+        `Cannot authenticate a token request for ${this.serverName} before authorization server discovery`,
+      );
+    }
+
+    const requestTokenEndpoint = new URL(url).href;
+    if (metadata) {
+      if (metadata.issuer !== issuer) {
+        this.rejectTokenRequest(
+          `Refusing OAuth token request for ${this.serverName}: SDK issuer ${metadata.issuer} does not match discovered issuer ${issuer}`,
+        );
+      }
+
+      const metadataTokenEndpoint = new URL(metadata.token_endpoint).href;
+      if (requestTokenEndpoint !== metadataTokenEndpoint) {
+        this.rejectTokenRequest(
+          `Refusing OAuth token request for ${this.serverName}: request target does not match SDK token endpoint`,
+        );
+      }
+      if (requestTokenEndpoint !== pinnedTokenEndpoint) {
+        this.rejectTokenRequest(
+          `Refusing OAuth token request for ${this.serverName}: SDK token endpoint does not match the discovered token endpoint`,
+        );
+      }
+    } else {
+      const legacyTokenEndpoint = new URL("/token", this._authorizationServerUrl).href;
+      if (
+        requestTokenEndpoint !== pinnedTokenEndpoint ||
+        requestTokenEndpoint !== legacyTokenEndpoint
+      ) {
+        this.rejectTokenRequest(
+          `Refusing OAuth token request for ${this.serverName}: request target does not match the discovered token endpoint`,
+        );
+      }
+    }
+
+    const clientInformation =
+      this._pendingClientInfo ??
+      this._resolvedClientInfo ??
+      (this.config.clientId
+        ? { client_id: this.config.clientId, client_secret: this.config.clientSecret }
+        : undefined);
+    if (!clientInformation) {
+      throw new Error(`OAuth client information is unavailable for ${this.serverName}`);
+    }
+
+    const method = selectClientAuthMethod(
+      clientInformation,
+      metadata?.token_endpoint_auth_methods_supported ?? [],
+    );
+    headers.delete("Authorization");
+
+    switch (method) {
+      case "client_secret_basic": {
+        if (!clientInformation.client_secret) {
+          throw new Error("client_secret_basic authentication requires a client_secret");
+        }
+        const credentials = `${formEncode(clientInformation.client_id)}:${formEncode(
+          clientInformation.client_secret,
+        )}`;
+        headers.set("Authorization", `Basic ${btoa(credentials)}`);
+        return;
+      }
+      case "client_secret_post":
+        params.set("client_id", clientInformation.client_id);
+        if (clientInformation.client_secret) {
+          params.set("client_secret", clientInformation.client_secret);
+        }
+        return;
+      case "none":
+        params.set("client_id", clientInformation.client_id);
+        return;
+    }
+  }
+
+  private rejectTokenRequest(message: string): never {
+    throw new InvalidRequestError(message);
   }
 
   async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {

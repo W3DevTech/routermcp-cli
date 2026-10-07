@@ -41,6 +41,7 @@ import type { OAuthConfig } from "../../src/config/types.js";
 import { RouterMcpOAuthProvider, type OAuthProviderCallbacks } from "../../src/oauth/provider.js";
 import { ensureValidTokens } from "../../src/oauth/refresh.js";
 import { DEFAULT_CLIENT_METADATA_URL } from "../../src/oauth/constants.js";
+import { discoverOAuthServer } from "../../src/oauth/discovery.js";
 import { createMockOAuthIssuer, type MockOAuthIssuer } from "../helpers/mock-oauth-issuer.js";
 
 describe("OAuth client authentication boundary", () => {
@@ -58,8 +59,11 @@ describe("OAuth client authentication boundary", () => {
     await Promise.all(issuers.splice(0).map((server) => server.stop()));
   });
 
-  async function startIssuer(cimdSupported = false): Promise<MockOAuthIssuer> {
-    const server = await createMockOAuthIssuer({ cimdSupported });
+  async function startIssuer(
+    cimdSupported = false,
+    metadataSupported = true,
+  ): Promise<MockOAuthIssuer> {
+    const server = await createMockOAuthIssuer({ cimdSupported, metadataSupported });
     await server.start();
     issuers.push(server);
     return server;
@@ -103,6 +107,66 @@ describe("OAuth client authentication boundary", () => {
     const tokenRequest = [...issuer.getTokenRequests()].at(-1);
     expect(tokenRequest?.redirect_uri).toBe(redirectUrl.toString());
     await provider.stopCallbackServer();
+  }
+
+  async function exchangeAuthorizationCode(
+    provider: RouterMcpOAuthProvider,
+    server: MockOAuthIssuer,
+    supportedMethods: string[],
+  ): Promise<{ headers: Headers; params: URLSearchParams }> {
+    const discovery = await discoverOAuthServer(server.resourceUrl);
+    const metadata = discovery.authorizationServerMetadata;
+    const tokenEndpoint = new URL(
+      metadata?.token_endpoint ?? new URL("/token", discovery.authorizationServerUrl),
+    ).href;
+    await provider.saveCodeVerifier("integration-code-verifier");
+
+    let tokenRequest: { headers: Headers; params: URLSearchParams } | undefined;
+    const fetchFn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const requestUrl = new URL(input instanceof Request ? input.url : String(input));
+
+      if (
+        metadata &&
+        requestUrl.origin === discovery.authorizationServerUrl.origin &&
+        requestUrl.pathname.includes("oauth-authorization-server")
+      ) {
+        return Response.json({
+          ...metadata,
+          token_endpoint_auth_methods_supported: supportedMethods,
+        });
+      }
+
+      if (requestUrl.href === tokenEndpoint && init?.method === "POST") {
+        const body = init.body;
+        tokenRequest = {
+          headers: new Headers(init.headers),
+          params:
+            body instanceof URLSearchParams
+              ? new URLSearchParams(body)
+              : new URLSearchParams(typeof body === "string" ? body : ""),
+        };
+        if (!metadata) {
+          return fetch(input, init);
+        }
+        return Response.json({
+          access_token: "integration-access-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          refresh_token: "integration-refresh-token",
+        });
+      }
+
+      return fetch(input, init);
+    };
+
+    const result = await auth(provider, {
+      serverUrl: server.resourceUrl,
+      authorizationCode: "integration-authorization-code",
+      fetchFn,
+    });
+    expect(result).toBe("AUTHORIZED");
+    expect(tokenRequest).toBeDefined();
+    return tokenRequest!;
   }
 
   it("uses CIMD only when advertised, then exchanges with the live loopback port", async () => {
@@ -237,6 +301,169 @@ describe("OAuth client authentication boundary", () => {
     );
     expect(nextIssuer.getRegistrationRequests()).toEqual([]);
     expect(nextIssuer.getTokenRequests()).toEqual([]);
+  });
+
+  it("rejects SDK issuer drift before sending stored credentials or refresh tokens", async () => {
+    const sdkIssuer = "https://issuer-b.example.test";
+    testOAuthStorage.data.set(issuer.resourceUrl, {
+      serverUrl: issuer.resourceUrl,
+      lastUpdated: Date.now(),
+      authorizationServerIssuer: issuer.authorizationServerUrl,
+      clientInfo: { client_id: "issuer-a-client", client_secret: "issuer-a-secret" },
+      tokens: {
+        access_token: "issuer-a-access-token",
+        token_type: "Bearer",
+        refresh_token: "issuer-a-refresh-token",
+      },
+    });
+    const provider = createProvider(issuer);
+
+    const sdkTokenPosts: Array<{ headers: Headers; body: string }> = [];
+    const fetchFn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const requestUrl = new URL(input instanceof Request ? input.url : String(input));
+
+      if (requestUrl.pathname.includes("oauth-protected-resource")) {
+        return Response.json({
+          resource: issuer.resourceUrl,
+          authorization_servers: [sdkIssuer],
+          scopes_supported: ["read"],
+        });
+      }
+
+      if (requestUrl.origin === sdkIssuer && requestUrl.pathname.includes("oauth-authorization-server")) {
+        return Response.json({
+          issuer: sdkIssuer,
+          authorization_endpoint: `${sdkIssuer}/authorize`,
+          token_endpoint: `${sdkIssuer}/token`,
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: ["client_secret_post"],
+        });
+      }
+
+      if (requestUrl.href === `${sdkIssuer}/token` && init?.method === "POST") {
+        sdkTokenPosts.push({
+          headers: new Headers(init.headers),
+          body: String(init.body ?? ""),
+        });
+        return Response.json({ access_token: "should-not-be-sent", token_type: "Bearer" });
+      }
+
+      return fetch(input, init);
+    };
+
+    await expect(auth(provider, { serverUrl: issuer.resourceUrl, fetchFn })).rejects.toThrow(
+      "does not match discovered issuer",
+    );
+
+    expect(sdkTokenPosts).toEqual([]);
+    expect(issuer.getTokenRequests()).toEqual([]);
+  });
+
+  it("rejects an SDK token endpoint change even when its issuer still matches", async () => {
+    const discovery = await discoverOAuthServer(issuer.resourceUrl);
+    const metadata = discovery.authorizationServerMetadata;
+    expect(metadata).toBeDefined();
+    const sdkTokenEndpoint = new URL("/credential-sink", discovery.authorizationServerUrl).href;
+    const provider = createProvider(issuer, {
+      clientId: "bound-client",
+      clientSecret: "bound-secret",
+    });
+    await provider.saveCodeVerifier("bound-code-verifier");
+
+    const sdkTokenPosts: Array<{ headers: Headers; body: string }> = [];
+    const fetchFn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const requestUrl = new URL(input instanceof Request ? input.url : String(input));
+
+      if (
+        requestUrl.origin === discovery.authorizationServerUrl.origin &&
+        requestUrl.pathname.includes("oauth-authorization-server")
+      ) {
+        return Response.json({ ...metadata, token_endpoint: sdkTokenEndpoint });
+      }
+
+      if (requestUrl.href === sdkTokenEndpoint && init?.method === "POST") {
+        sdkTokenPosts.push({
+          headers: new Headers(init.headers),
+          body: String(init.body ?? ""),
+        });
+        return Response.json({ access_token: "should-not-be-sent", token_type: "Bearer" });
+      }
+
+      return fetch(input, init);
+    };
+
+    await expect(
+      auth(provider, {
+        serverUrl: issuer.resourceUrl,
+        authorizationCode: "bound-authorization-code",
+        fetchFn,
+      }),
+    ).rejects.toThrow("SDK token endpoint does not match the discovered token endpoint");
+
+    expect(sdkTokenPosts).toEqual([]);
+    expect(issuer.getTokenRequests()).toEqual([]);
+  });
+
+  it.each([
+    {
+      method: "none",
+      config: { clientId: "public-client" },
+      expectedClientId: "public-client",
+      expectedClientSecret: undefined,
+    },
+    {
+      method: "client_secret_post",
+      config: { clientId: "post-client", clientSecret: "post-secret" },
+      expectedClientId: "post-client",
+      expectedClientSecret: "post-secret",
+    },
+  ])("preserves the SDK $method authentication behavior", async ({
+    method,
+    config,
+    expectedClientId,
+    expectedClientSecret,
+  }) => {
+    const provider = createProvider(issuer, config);
+    const request = await exchangeAuthorizationCode(provider, issuer, [method]);
+
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(request.params.get("client_id")).toBe(expectedClientId);
+    expect(request.params.get("client_secret") ?? undefined).toBe(expectedClientSecret);
+  });
+
+  it("form-encodes both credentials for client_secret_basic", async () => {
+    const clientId = "basic:id +/%?";
+    const clientSecret = "secret: x/%+?";
+    const provider = createProvider(issuer, { clientId, clientSecret });
+    const request = await exchangeAuthorizationCode(provider, issuer, ["client_secret_basic"]);
+
+    expect(request.headers.get("authorization")).toBe(
+      `Basic ${btoa("basic%3Aid+%2B%2F%25%3F:secret%3A+x%2F%25%2B%3F")}`,
+    );
+    expect(request.params.has("client_id")).toBe(false);
+    expect(request.params.has("client_secret")).toBe(false);
+  });
+
+  it("uses the legacy /token fallback when provider and SDK metadata discovery both fail", async () => {
+    const legacyIssuer = await startIssuer(false, false);
+    const provider = createProvider(legacyIssuer, {
+      clientId: "legacy-client",
+      clientSecret: "legacy-secret",
+    });
+
+    const request = await exchangeAuthorizationCode(provider, legacyIssuer, []);
+
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(request.params.get("client_id")).toBe("legacy-client");
+    expect(request.params.get("client_secret")).toBe("legacy-secret");
+    expect(legacyIssuer.getTokenRequests()).toEqual([
+      expect.objectContaining({
+        grant_type: "authorization_code",
+        client_id: "legacy-client",
+        client_secret: "legacy-secret",
+      }),
+    ]);
   });
 
   it.each(["new", "after clearing unbound legacy credentials"] as const)(
