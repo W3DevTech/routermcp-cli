@@ -1,31 +1,38 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
   OAuthClientInformation,
-  OAuthClientInformationFull,
+  OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
+import { DEFAULT_CLIENT_METADATA_URL } from "./constants.js";
 import {
   createOAuthCallbackServer,
   type OAuthCallbackResult,
   type OAuthCallbackServer,
 } from "./callback-server.js";
 import {
+  clearOAuthStorage,
   isClientSecretExpired,
   loadOAuthStorage,
   type OAuthClientInfo,
   type OAuthTokensData,
   saveOAuthStorage,
 } from "./storage.js";
+import { discoverOAuthServer } from "./discovery.js";
 
 export const DEFAULT_CLIENT_NAME = "RouterMCP";
+const DEFAULT_LOOPBACK_REDIRECT_URI = "http://127.0.0.1/oauth/callback";
+
+type RouterMcpOAuthClientMetadata = OAuthClientMetadata & { application_type: "native" };
 
 export interface OAuthProviderConfig {
   clientId?: string;
   clientSecret?: string;
   scopes?: string[];
   clientName?: string;
+  clientMetadataUrl?: string;
 }
 
 export interface OAuthProviderCallbacks {
@@ -38,8 +45,14 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
   private callbackServer: OAuthCallbackServer | null = null;
   private _codeVerifier: string | null = null;
   private _pendingClientInfo: OAuthClientInfo | null = null;
+  private _resolvedClientInfo: OAuthClientInfo | null = null;
+  private _clientInformationResolved = false;
   private _authorizationCode: string | null = null;
   private _callbackPromise: Promise<OAuthCallbackResult> | null = null;
+  private _authorizationServerIssuer: string | null = null;
+  private _authorizationServerSupportsCimd = false;
+  private _tokensInvalidated = false;
+  private _authorizationRedirectUrl: string | null = null;
 
   constructor(
     private serverName: string,
@@ -52,11 +65,16 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
     if (this.callbackServer) {
       return this.callbackServer.callbackUrl;
     }
-    return "http://127.0.0.1:0/oauth/callback";
+    return this._authorizationRedirectUrl ?? DEFAULT_LOOPBACK_REDIRECT_URI;
   }
 
-  get clientMetadata(): OAuthClientMetadata {
-    const metadata: OAuthClientMetadata = {
+  get clientMetadataUrl(): string {
+    return this.config.clientMetadataUrl ?? DEFAULT_CLIENT_METADATA_URL;
+  }
+
+  get clientMetadata(): RouterMcpOAuthClientMetadata {
+    const metadata: RouterMcpOAuthClientMetadata = {
+      application_type: "native",
       redirect_uris: [this.redirectUrl],
       client_name: this.config.clientName ?? DEFAULT_CLIENT_NAME,
       grant_types: ["authorization_code", "refresh_token"],
@@ -73,49 +91,153 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
+    const discovery = await discoverOAuthServer(this.serverUrl);
+
+    if (this._clientInformationResolved) {
+      if (
+        this._authorizationServerIssuer &&
+        this._authorizationServerIssuer !== discovery.authorizationServerIssuer
+      ) {
+        this._tokensInvalidated = true;
+        throw new Error(
+          `Authorization server changed during OAuth authentication for ${this.serverName}; restart authentication with ${discovery.authorizationServerIssuer}`,
+        );
+      }
+
+      this._authorizationServerIssuer = discovery.authorizationServerIssuer;
+      this._authorizationServerSupportsCimd =
+        discovery.authorizationServerMetadata?.client_id_metadata_document_supported === true;
+      const info = this._pendingClientInfo ?? this._resolvedClientInfo;
+      return info
+        ? {
+            client_id: info.client_id,
+            client_secret: info.client_secret,
+          }
+        : undefined;
+    }
+
+    this._authorizationServerIssuer = discovery.authorizationServerIssuer;
+    this._authorizationServerSupportsCimd =
+      discovery.authorizationServerMetadata?.client_id_metadata_document_supported === true;
+
+    const stored = await loadOAuthStorage(this.serverUrl);
+    const hasUnboundStoredCredentials = Boolean(
+      stored &&
+        !stored.authorizationServerIssuer &&
+        (stored.clientInfo || stored.tokens),
+    );
+
+    if (hasUnboundStoredCredentials) {
+      this._tokensInvalidated = true;
+      await clearOAuthStorage(this.serverUrl);
+      console.error(
+        `[oauth] Legacy credentials for ${this.serverName} have no authorization server binding; re-authentication is required`,
+      );
+    }
+
+    if (
+      stored?.authorizationServerIssuer &&
+      stored.authorizationServerIssuer !== this._authorizationServerIssuer
+    ) {
+      if (this.config.clientId) {
+        throw new Error(
+          `OAuth client for ${this.serverName} is bound to authorization server ${stored.authorizationServerIssuer}, but discovery returned ${this._authorizationServerIssuer}`,
+        );
+      }
+
+      this._tokensInvalidated = true;
+      console.error(
+        `[oauth] Authorization server changed for ${this.serverName}; registering a client with the new issuer`,
+      );
+    }
+
+    const storedClientInfoMatchesIssuer =
+      !!stored?.authorizationServerIssuer &&
+      stored.authorizationServerIssuer === this._authorizationServerIssuer;
+
     if (this.config.clientId) {
+      if (stored?.clientInfo && stored.clientInfo.client_id !== this.config.clientId) {
+        this._tokensInvalidated = true;
+      }
+      this._resolvedClientInfo = {
+        client_id: this.config.clientId,
+        client_secret: this.config.clientSecret,
+      };
+      this._clientInformationResolved = true;
       return {
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
       };
     }
 
-    if (this._pendingClientInfo) {
-      return {
-        client_id: this._pendingClientInfo.client_id,
-        client_secret: this._pendingClientInfo.client_secret,
-      };
-    }
-
-    const stored = await loadOAuthStorage(this.serverUrl);
-    if (!stored?.clientInfo) {
-      return undefined;
-    }
-
-    if (isClientSecretExpired(stored.clientInfo)) {
+    if (stored?.clientInfo && !storedClientInfoMatchesIssuer) {
+      this._resolvedClientInfo = null;
+    } else if (
+      stored?.clientInfo?.clientMetadataUrl &&
+      stored.clientInfo.clientMetadataUrl !== this.clientMetadataUrl
+    ) {
+      this._tokensInvalidated = true;
+      this._resolvedClientInfo = null;
+      console.error(
+        `[oauth] Client metadata URL changed for ${this.serverName}; re-authentication is required`,
+      );
+    } else if (stored?.clientInfo && isClientSecretExpired(stored.clientInfo)) {
+      this._tokensInvalidated = true;
+      this._resolvedClientInfo = null;
       console.error(`[oauth] Client secret expired for ${this.serverName}, need re-registration`);
+    } else if (stored?.clientInfo) {
+      this._resolvedClientInfo = stored.clientInfo;
+    }
+
+    if (!this._resolvedClientInfo && stored?.tokens) {
+      this._tokensInvalidated = true;
+    }
+
+    this._clientInformationResolved = true;
+
+    if (!this._resolvedClientInfo) {
+      // SDK registration reads redirect_uris before redirectToAuthorization runs.
+      // Bind the actual ephemeral loopback URI before it can issue a DCR request.
+      await this.startCallbackServer();
       return undefined;
     }
 
     return {
-      client_id: stored.clientInfo.client_id,
-      client_secret: stored.clientInfo.client_secret,
+      client_id: this._resolvedClientInfo.client_id,
+      client_secret: this._resolvedClientInfo.client_secret,
     };
   }
 
-  async saveClientInformation(info: OAuthClientInformationFull): Promise<void> {
+  async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
     this._pendingClientInfo = {
       client_id: info.client_id,
       client_secret: info.client_secret,
-      client_id_issued_at: info.client_id_issued_at,
-      client_secret_expires_at: info.client_secret_expires_at,
+      ...("client_id_issued_at" in info ? { client_id_issued_at: info.client_id_issued_at } : {}),
+      ...("client_secret_expires_at" in info
+        ? { client_secret_expires_at: info.client_secret_expires_at }
+        : {}),
+      ...(this._authorizationServerSupportsCimd && info.client_id === this.clientMetadataUrl
+        ? { clientMetadataUrl: this.clientMetadataUrl }
+        : {}),
     };
+    this._resolvedClientInfo = this._pendingClientInfo;
+    this._clientInformationResolved = true;
     console.error(`[oauth] Client registered for ${this.serverName} (pending token exchange)`);
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
+    if (this._tokensInvalidated) return undefined;
+
     const stored = await loadOAuthStorage(this.serverUrl);
     if (!stored?.tokens) {
+      return undefined;
+    }
+    if (
+      !stored.authorizationServerIssuer ||
+      (this._authorizationServerIssuer !== null &&
+        stored.authorizationServerIssuer !== this._authorizationServerIssuer)
+    ) {
+      this._tokensInvalidated = true;
       return undefined;
     }
 
@@ -140,9 +262,15 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
     };
 
     await saveOAuthStorage(this.serverUrl, {
-      clientInfo: this._pendingClientInfo ?? undefined,
+      clientInfo:
+        this._pendingClientInfo ??
+        (this.config.clientId
+          ? { client_id: this.config.clientId, client_secret: this.config.clientSecret }
+          : undefined),
+      authorizationServerIssuer: this._authorizationServerIssuer ?? undefined,
       tokens: tokensData,
     });
+    this._tokensInvalidated = false;
     console.error(`[oauth] Saved credentials for ${this.serverName}`);
   }
 
@@ -152,6 +280,7 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
       await this.callbackServer.start();
       authorizationUrl.searchParams.set("redirect_uri", this.callbackServer.callbackUrl);
     }
+    this._authorizationRedirectUrl = this.callbackServer.callbackUrl;
 
     this.callbacks.onAuthorizationUrl(authorizationUrl);
 
@@ -201,6 +330,7 @@ export class RouterMcpOAuthProvider implements OAuthClientProvider {
       this.callbackServer = await createOAuthCallbackServer();
       await this.callbackServer.start();
     }
+    this._authorizationRedirectUrl = this.callbackServer.callbackUrl;
     return this.callbackServer.callbackUrl;
   }
 

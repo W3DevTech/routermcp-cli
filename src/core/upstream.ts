@@ -227,6 +227,7 @@ export class UpstreamManager {
         clientSecret: server.config.oauth?.clientSecret,
         scopes: server.config.oauth?.scopes,
         clientName: server.config.oauth?.clientName ?? DEFAULT_CLIENT_NAME,
+        clientMetadataUrl: server.config.oauth?.clientMetadataUrl,
       },
       {
         onAuthorizationUrl: (url) => {

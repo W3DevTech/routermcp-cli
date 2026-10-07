@@ -1,4 +1,3 @@
-import { createServer, type Server } from "node:net";
 import { type ServerHandle, serve } from "../compat/index.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -14,22 +13,6 @@ export interface OAuthCallbackServer {
   start(): Promise<void>;
   waitForCallback(timeoutMs?: number): Promise<OAuthCallbackResult>;
   stop(): Promise<void>;
-}
-
-async function findAvailablePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address && typeof address === "object") {
-        const port = address.port;
-        server.close(() => resolve(port));
-      } else {
-        server.close(() => reject(new Error("Failed to get port")));
-      }
-    });
-    server.on("error", reject);
-  });
 }
 
 function buildSuccessHtml(): string {
@@ -77,20 +60,28 @@ function buildErrorHtml(error: string): string {
 }
 
 export async function createOAuthCallbackServer(): Promise<OAuthCallbackServer> {
-  const port = await findAvailablePort();
-  const callbackUrl = `http://127.0.0.1:${port}/oauth/callback`;
-
   let httpServer: ServerHandle | null = null;
+  let boundPort: number | null = null;
   let pendingResolve: ((result: OAuthCallbackResult) => void) | null = null;
   let pendingReject: ((error: Error) => void) | null = null;
 
   const server: OAuthCallbackServer = {
-    port,
-    callbackUrl,
+    get port(): number {
+      return boundPort ?? 0;
+    },
+
+    get callbackUrl(): string {
+      return boundPort === null
+        ? "http://127.0.0.1/oauth/callback"
+        : `http://127.0.0.1:${boundPort}/oauth/callback`;
+    },
 
     async start(): Promise<void> {
-      httpServer = serve({
-        port,
+      if (httpServer) return;
+
+      const listener = serve({
+        port: 0,
+        host: "127.0.0.1",
         fetch: async (request: Request): Promise<Response> => {
           const url = new URL(request.url);
 
@@ -141,6 +132,19 @@ export async function createOAuthCallbackServer(): Promise<OAuthCallbackServer> 
           });
         },
       });
+
+      httpServer = listener;
+      try {
+        boundPort = listener.ready ? await listener.ready : listener.port;
+        if (boundPort < 1 || boundPort > 65535) {
+          throw new Error("Callback server did not report a valid ephemeral port");
+        }
+      } catch (error) {
+        listener.stop();
+        httpServer = null;
+        boundPort = null;
+        throw error;
+      }
     },
 
     async waitForCallback(timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<OAuthCallbackResult> {

@@ -110,6 +110,13 @@ Configure OAuth in your server config:
 | `clientSecret` | OAuth client secret (optional for public clients) |
 | `scopes` | Array of OAuth scopes to request |
 | `clientName` | Display name for client registration |
+| `clientMetadataUrl` | Public HTTPS client metadata URL (defaults to RouterMCP's hosted document) |
+
+RouterMCP uses an explicitly configured `clientId` and optional `clientSecret` first. When no client ID is configured, it uses the configured client metadata URL if the authorization server advertises CIMD support. Other servers use dynamic client registration when available. Configure `clientId` manually when the server supports neither CIMD nor dynamic registration.
+
+The default metadata document identifies RouterMCP as a native client and declares `http://127.0.0.1/oauth/callback`. At login, the CLI binds a free loopback port and sends that actual `127.0.0.1` callback URI through authorization and token exchange. This follows RFC 8252's loopback-port exception without registering a wildcard redirect. Dynamic registrations keep their issuer binding; if discovery later points to another issuer, RouterMCP does not send the old registration or refresh token to it.
+
+Older stored OAuth credentials that have no authorization-server issuer binding cannot be reused for authentication or refresh. Run `routermcp oauth login <server>` to re-authenticate; the CLI discards the unbound credentials and saves the new session with its discovered issuer.
 
 ## Token Refresh
 

@@ -131,6 +131,7 @@ export async function oauthLoginCommand(configPath: string, serverName: string):
       clientSecret: serverConfig.oauth.clientSecret,
       scopes: serverConfig.oauth.scopes,
       clientName: serverConfig.oauth.clientName ?? DEFAULT_CLIENT_NAME,
+      clientMetadataUrl: serverConfig.oauth.clientMetadataUrl,
     },
     {
       onAuthorizationUrl: (url) => {
@@ -146,6 +147,7 @@ export async function oauthLoginCommand(configPath: string, serverName: string):
     },
   );
 
+  let loginError: string | null = null;
   try {
     await provider.startCallbackServer();
 
@@ -154,16 +156,12 @@ export async function oauthLoginCommand(configPath: string, serverName: string):
     });
 
     if (firstResult === "AUTHORIZED") {
-      await provider.stopCallbackServer();
       p.log.success(`Authorization successful for ${serverName}!`);
       return;
     }
 
     if (firstResult !== "REDIRECT") {
-      await provider.stopCallbackServer();
-      p.log.error(`Unexpected auth result: ${firstResult}`);
-      p.outro("Command failed");
-      process.exit(1);
+      throw new Error(`Unexpected auth result: ${firstResult}`);
     }
 
     const authCode = await provider.waitForAuthorizationCode();
@@ -173,21 +171,22 @@ export async function oauthLoginCommand(configPath: string, serverName: string):
       authorizationCode: authCode,
     });
 
-    await provider.stopCallbackServer();
-
     if (secondResult === "AUTHORIZED") {
       p.log.success(`Authorization successful for ${serverName}!`);
     } else {
-      p.log.error(`Token exchange failed: ${secondResult}`);
-      p.outro("Command failed");
-      process.exit(1);
+      throw new Error(`Token exchange failed: ${secondResult}`);
     }
   } catch (err) {
+    loginError = err instanceof Error ? err.message : String(err);
+  } finally {
     await provider.stopCallbackServer();
-    const msg = err instanceof Error ? err.message : String(err);
-    p.log.error(`Authentication failed: ${msg}`);
+  }
+
+  if (loginError) {
+    p.log.error(`Authentication failed: ${loginError}`);
     p.outro("Command failed");
     process.exit(1);
+    return;
   }
 
   p.outro("Login complete");

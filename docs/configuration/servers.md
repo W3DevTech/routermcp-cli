@@ -83,6 +83,8 @@ For remote MCP servers accessible via HTTP:
 | `headers` | object | HTTP headers to include |
 | `oauth` | object | OAuth configuration (see [OAuth](../commands/oauth.md)) |
 
+OAuth clients use RouterMCP's hosted client metadata document by default. Set `oauth.clientMetadataUrl` to another public HTTPS document when using a fork or a self-hosted client identity.
+
 ## Transport Auto-Detection
 
 RouterMCP automatically detects transport type:

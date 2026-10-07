@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/oauth/storage.js", () => ({
+  clearOAuthStorage: vi.fn(),
   loadOAuthStorage: vi.fn(),
   saveOAuthStorage: vi.fn(),
   isClientSecretExpired: vi.fn(),
@@ -10,11 +11,20 @@ vi.mock("../../../src/oauth/callback-server.js", () => ({
   createOAuthCallbackServer: vi.fn(),
 }));
 
+vi.mock("../../../src/oauth/discovery.js", () => ({
+  discoverOAuthServer: vi.fn(async () => ({
+    authorizationServerUrl: new URL("https://api.example.com/"),
+    authorizationServerIssuer: "https://api.example.com/",
+    authorizationServerMetadata: { issuer: "https://api.example.com/" },
+  })),
+}));
+
 import type {
   OAuthClientInformationFull,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createOAuthCallbackServer } from "../../../src/oauth/callback-server.js";
+import { discoverOAuthServer } from "../../../src/oauth/discovery.js";
 import {
   createOAuthProvider,
   DEFAULT_CLIENT_NAME,
@@ -23,6 +33,7 @@ import {
   RouterMcpOAuthProvider,
 } from "../../../src/oauth/provider.js";
 import {
+  clearOAuthStorage,
   isClientSecretExpired,
   loadOAuthStorage,
   type OAuthStorageData,
@@ -93,7 +104,7 @@ describe("RouterMcpOAuthProvider", () => {
         mockCallbacks,
       );
 
-      expect(provider.redirectUrl).toBe("http://127.0.0.1:0/oauth/callback");
+      expect(provider.redirectUrl).toBe("http://127.0.0.1/oauth/callback");
     });
   });
 
@@ -110,12 +121,21 @@ describe("RouterMcpOAuthProvider", () => {
       const metadata = provider.clientMetadata;
 
       expect(metadata).toEqual({
-        redirect_uris: ["http://127.0.0.1:0/oauth/callback"],
+        application_type: "native",
+        redirect_uris: ["http://127.0.0.1/oauth/callback"],
         client_name: DEFAULT_CLIENT_NAME,
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         token_endpoint_auth_method: "none",
       });
+    });
+
+    it("uses the hosted client metadata URL by default", () => {
+      const provider = new RouterMcpOAuthProvider(mockServerName, mockServerUrl, {}, mockCallbacks);
+
+      expect(provider.clientMetadataUrl).toBe(
+        "https://www.routermcp.com/oauth/cli-client-metadata.json",
+      );
     });
 
     it("uses custom client name when provided", () => {
@@ -212,7 +232,8 @@ describe("RouterMcpOAuthProvider", () => {
         client_id: "config-client",
         client_secret: "config-secret",
       });
-      expect(loadOAuthStorage).not.toHaveBeenCalled();
+      expect(loadOAuthStorage).toHaveBeenCalledWith(mockServerUrl);
+      expect(saveOAuthStorage).not.toHaveBeenCalled();
     });
 
     it("returns pending client info when available", async () => {
@@ -252,6 +273,7 @@ describe("RouterMcpOAuthProvider", () => {
 
       vi.mocked(loadOAuthStorage).mockResolvedValue(
         createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
           clientInfo: {
             client_id: "stored-client",
             client_secret: "stored-secret",
@@ -285,6 +307,75 @@ describe("RouterMcpOAuthProvider", () => {
       expect(info).toBeUndefined();
     });
 
+    it("does not reuse an unbound stored client when static credentials are configured", async () => {
+      const provider = new RouterMcpOAuthProvider(
+        mockServerName,
+        mockServerUrl,
+        { clientId: "configured-client", clientSecret: "configured-secret" },
+        mockCallbacks,
+      );
+      vi.mocked(loadOAuthStorage).mockResolvedValue(
+        createStorageData({
+          clientInfo: { client_id: "legacy-client", client_secret: "legacy-secret" },
+          tokens: {
+            access_token: "legacy-access-token",
+            token_type: "Bearer",
+            refresh_token: "legacy-refresh-token",
+          },
+        }),
+      );
+
+      await expect(provider.clientInformation()).resolves.toEqual({
+        client_id: "configured-client",
+        client_secret: "configured-secret",
+      });
+      await expect(provider.tokens()).resolves.toBeUndefined();
+      expect(clearOAuthStorage).toHaveBeenCalledWith(mockServerUrl);
+      expect(saveOAuthStorage).not.toHaveBeenCalled();
+    });
+
+    it("rejects cached client information if the issuer changes during authentication", async () => {
+      const provider = new RouterMcpOAuthProvider(
+        mockServerName,
+        mockServerUrl,
+        {},
+        mockCallbacks,
+      );
+      vi.mocked(loadOAuthStorage).mockResolvedValue(
+        createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
+          clientInfo: { client_id: "issuer-one-client" },
+          tokens: {
+            access_token: "issuer-one-access-token",
+            token_type: "Bearer",
+            refresh_token: "issuer-one-refresh-token",
+          },
+        }),
+      );
+      vi.mocked(isClientSecretExpired).mockReturnValue(false);
+      vi.mocked(discoverOAuthServer)
+        .mockResolvedValueOnce({
+          authorizationServerUrl: new URL("https://api.example.com/"),
+          authorizationServerIssuer: "https://api.example.com/",
+          authorizationServerMetadata: { issuer: "https://api.example.com/" },
+        })
+        .mockResolvedValueOnce({
+          authorizationServerUrl: new URL("https://other.example.com/"),
+          authorizationServerIssuer: "https://other.example.com/",
+          authorizationServerMetadata: { issuer: "https://other.example.com/" },
+        });
+
+      expect(await provider.clientInformation()).toEqual({ client_id: "issuer-one-client" });
+      expect(await provider.tokens()).toMatchObject({
+        access_token: "issuer-one-access-token",
+      });
+
+      await expect(provider.clientInformation()).rejects.toThrow(
+        "Authorization server changed during OAuth authentication",
+      );
+      expect(await provider.tokens()).toBeUndefined();
+    });
+
     it("returns undefined when stored info has no clientInfo", async () => {
       const config: OAuthProviderConfig = {};
       const provider = new RouterMcpOAuthProvider(
@@ -314,6 +405,7 @@ describe("RouterMcpOAuthProvider", () => {
 
       vi.mocked(loadOAuthStorage).mockResolvedValue(
         createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
           clientInfo: {
             client_id: "expired-client",
             client_secret: "expired-secret",
@@ -388,6 +480,26 @@ describe("RouterMcpOAuthProvider", () => {
   });
 
   describe("tokens", () => {
+    it("does not return legacy tokens before an issuer binding is available", async () => {
+      const provider = new RouterMcpOAuthProvider(
+        mockServerName,
+        mockServerUrl,
+        {},
+        mockCallbacks,
+      );
+      vi.mocked(loadOAuthStorage).mockResolvedValue(
+        createStorageData({
+          tokens: {
+            access_token: "legacy-access-token",
+            token_type: "Bearer",
+            refresh_token: "legacy-refresh-token",
+          },
+        }),
+      );
+
+      await expect(provider.tokens()).resolves.toBeUndefined();
+    });
+
     it("returns undefined when no stored tokens", async () => {
       const config: OAuthProviderConfig = {};
       const provider = new RouterMcpOAuthProvider(
@@ -432,6 +544,7 @@ describe("RouterMcpOAuthProvider", () => {
       const futureTime = Math.floor(Date.now() / 1000) + 3600;
       vi.mocked(loadOAuthStorage).mockResolvedValue(
         createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
           tokens: {
             access_token: "access123",
             token_type: "Bearer",
@@ -465,6 +578,7 @@ describe("RouterMcpOAuthProvider", () => {
       const pastTime = Math.floor(Date.now() / 1000) - 3600;
       vi.mocked(loadOAuthStorage).mockResolvedValue(
         createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
           tokens: {
             access_token: "expired",
             token_type: "Bearer",
@@ -489,6 +603,7 @@ describe("RouterMcpOAuthProvider", () => {
 
       vi.mocked(loadOAuthStorage).mockResolvedValue(
         createStorageData({
+          authorizationServerIssuer: "https://api.example.com/",
           tokens: {
             access_token: "no-expiry",
             token_type: "Bearer",
@@ -528,6 +643,7 @@ describe("RouterMcpOAuthProvider", () => {
 
       expect(saveOAuthStorage).toHaveBeenCalledWith(mockServerUrl, {
         clientInfo: undefined,
+        authorizationServerIssuer: undefined,
         tokens: {
           access_token: "new-access",
           token_type: "Bearer",
@@ -564,6 +680,7 @@ describe("RouterMcpOAuthProvider", () => {
 
       expect(saveOAuthStorage).toHaveBeenCalledWith(mockServerUrl, {
         clientInfo: undefined,
+        authorizationServerIssuer: undefined,
         tokens: {
           access_token: "no-expiry",
           token_type: "Bearer",
@@ -602,9 +719,8 @@ describe("RouterMcpOAuthProvider", () => {
         clientInfo: {
           client_id: "pending-client",
           client_secret: "pending-secret",
-          client_id_issued_at: undefined,
-          client_secret_expires_at: undefined,
         },
+        authorizationServerIssuer: undefined,
         tokens: expect.any(Object),
       });
 

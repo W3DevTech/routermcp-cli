@@ -1,27 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:net", () => ({
-  createServer: vi.fn(() => {
-    const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
-    return {
-      listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-        setTimeout(() => callback?.(), 0);
-      }),
-      address: vi.fn(() => ({ port: 54321 })),
-      close: vi.fn((callback?: () => void) => callback?.()),
-      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
-        listeners[event] = listeners[event] || [];
-        listeners[event].push(listener);
-      }),
-    };
-  }),
-}));
-
 vi.mock("../../../src/compat/index.js", () => ({
   serve: vi.fn(),
 }));
 
-import { createServer } from "node:net";
 import type { FetchHandler, ServeOptions, ServerHandle } from "../../../src/compat/index.js";
 import { serve } from "../../../src/compat/index.js";
 import {
@@ -39,7 +21,8 @@ describe("createOAuthCallbackServer", () => {
 
     mockServeHandle = {
       stop: vi.fn(),
-      port: 54321,
+      port: 0,
+      ready: Promise.resolve(54321),
     };
 
     vi.mocked(serve).mockImplementation((options: ServeOptions): ServerHandle => {
@@ -53,16 +36,13 @@ describe("createOAuthCallbackServer", () => {
   });
 
   describe("server creation", () => {
-    it("finds available port via temporary TCP server", async () => {
+    it("waits for the listener to bind an ephemeral loopback port", async () => {
       const server = await createOAuthCallbackServer();
 
-      expect(createServer).toHaveBeenCalled();
+      expect(server.port).toBe(0);
+      expect(server.callbackUrl).toBe("http://127.0.0.1/oauth/callback");
+      await server.start();
       expect(server.port).toBe(54321);
-    });
-
-    it("generates callback URL with discovered port", async () => {
-      const server = await createOAuthCallbackServer();
-
       expect(server.callbackUrl).toBe("http://127.0.0.1:54321/oauth/callback");
     });
 
@@ -84,7 +64,8 @@ describe("createOAuthCallbackServer", () => {
 
       expect(serve).toHaveBeenCalledWith(
         expect.objectContaining({
-          port: 54321,
+          port: 0,
+          host: "127.0.0.1",
         }),
       );
     });
@@ -263,39 +244,22 @@ describe("createOAuthCallbackServer", () => {
     });
   });
 
-  describe("port discovery error handling", () => {
-    it("handles port discovery failure", async () => {
-      const mockServer = {
-        listen: vi.fn(),
-        address: vi.fn(),
-        close: vi.fn(),
-        on: vi.fn((event: string, callback: (err: Error) => void) => {
-          if (event === "error") {
-            setTimeout(() => callback(new Error("EADDRINUSE")), 0);
-          }
-        }),
+  describe("listener binding error handling", () => {
+    it("closes a failed listener and leaves the callback URL unbound", async () => {
+      const bindError = new Error("EADDRINUSE");
+      const failedHandle: ServerHandle = {
+        stop: vi.fn(),
+        port: 0,
+        ready: Promise.reject(bindError),
       };
-      vi.mocked(createServer).mockReturnValueOnce(
-        mockServer as unknown as ReturnType<typeof createServer>,
-      );
+      vi.mocked(serve).mockReturnValueOnce(failedHandle);
 
-      await expect(createOAuthCallbackServer()).rejects.toThrow("EADDRINUSE");
-    });
+      const server = await createOAuthCallbackServer();
 
-    it("handles address() returning non-object", async () => {
-      const mockServer = {
-        listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-          setTimeout(() => callback?.(), 0);
-        }),
-        address: vi.fn(() => null),
-        close: vi.fn((callback?: () => void) => callback?.()),
-        on: vi.fn(),
-      };
-      vi.mocked(createServer).mockReturnValueOnce(
-        mockServer as unknown as ReturnType<typeof createServer>,
-      );
-
-      await expect(createOAuthCallbackServer()).rejects.toThrow("Failed to get port");
+      await expect(server.start()).rejects.toThrow("EADDRINUSE");
+      expect(failedHandle.stop).toHaveBeenCalledOnce();
+      expect(server.port).toBe(0);
+      expect(server.callbackUrl).toBe("http://127.0.0.1/oauth/callback");
     });
   });
 });

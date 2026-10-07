@@ -140,6 +140,7 @@ async function authenticateServer(
       clientSecret: oauthConfig?.clientSecret,
       scopes: oauthConfig?.scopes,
       clientName: oauthConfig?.clientName ?? DEFAULT_CLIENT_NAME,
+      clientMetadataUrl: oauthConfig?.clientMetadataUrl,
     },
     {
       onAuthorizationUrl: (authUrl) => {
@@ -163,12 +164,10 @@ async function authenticateServer(
     });
 
     if (firstResult === "AUTHORIZED") {
-      await provider.stopCallbackServer();
       return true;
     }
 
     if (firstResult !== "REDIRECT") {
-      await provider.stopCallbackServer();
       p.log.error(`Unexpected auth result: ${firstResult}`);
       return false;
     }
@@ -180,8 +179,6 @@ async function authenticateServer(
       authorizationCode: authCode,
     });
 
-    await provider.stopCallbackServer();
-
     if (secondResult === "AUTHORIZED") {
       return true;
     }
@@ -189,10 +186,11 @@ async function authenticateServer(
     p.log.error(`Token exchange failed: ${secondResult}`);
     return false;
   } catch (err) {
-    await provider.stopCallbackServer();
     const msg = err instanceof Error ? err.message : String(err);
     p.log.error(`Authentication failed: ${msg}`);
     return false;
+  } finally {
+    await provider.stopCallbackServer();
   }
 }
 

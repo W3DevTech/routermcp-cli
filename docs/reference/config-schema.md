@@ -114,6 +114,7 @@ interface OAuthConfig {
   clientSecret?: string;
   scopes?: string[];
   clientName?: string;
+  clientMetadataUrl?: string;
 }
 ```
 
@@ -124,6 +125,7 @@ interface OAuthConfig {
 | `clientSecret` | string | - | OAuth client secret |
 | `scopes` | string[] | - | Requested scopes |
 | `clientName` | string | - | Display name for client |
+| `clientMetadataUrl` | string | `https://www.routermcp.com/oauth/cli-client-metadata.json` | Public HTTPS client metadata document used for CIMD |
 
 ## Filter Fields
 

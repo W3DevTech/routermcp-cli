@@ -85,6 +85,7 @@ export interface OAuthConfig {
   clientSecret?: string;
   scopes?: string[];
   clientName?: string;
+  clientMetadataUrl?: string;
 }
 
 /**

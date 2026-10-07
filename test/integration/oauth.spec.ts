@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/oauth/storage.js", () => ({
   loadOAuthStorage: vi.fn(),
+  saveOAuthStorage: vi.fn(),
   saveTokens: vi.fn(),
   isTokenExpired: vi.fn(),
 }));
@@ -36,6 +37,7 @@ describe("OAuth Refresh Integration", () => {
     return {
       serverUrl,
       lastUpdated: Date.now(),
+      authorizationServerIssuer: mockServer.baseUrl,
       ...overrides,
     };
   }

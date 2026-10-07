@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_CLIENT_METADATA_URL } from "../oauth/constants.js";
 
 /**
  * Schema for stdio transport configuration.
@@ -18,6 +19,15 @@ const OAuthConfigSchema = z.object({
   clientSecret: z.string().optional(),
   scopes: z.array(z.string()).optional(),
   clientName: z.string().optional(),
+  clientMetadataUrl: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value);
+      return url.protocol === "https:" && url.pathname !== "/";
+    }, "Client metadata URL must be HTTPS and include a non-root path")
+    .optional()
+    .default(DEFAULT_CLIENT_METADATA_URL),
 });
 
 const HttpTransportSchema = z.object({

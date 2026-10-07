@@ -116,6 +116,53 @@ describe("loadConfig", () => {
       });
     });
 
+    it.each([
+      {
+        oauth: {},
+        expected: "https://www.routermcp.com/oauth/cli-client-metadata.json",
+      },
+      {
+        oauth: { clientMetadataUrl: "https://clients.example.test/routermcp.json" },
+        expected: "https://clients.example.test/routermcp.json",
+      },
+    ])("loads the OAuth client metadata URL from config", async ({ oauth, expected }) => {
+      const configPath = join(tempDir, "routermcp.jsonc");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            test: {
+              transport: "http-streamable",
+              url: "https://api.example.test/mcp",
+              oauth,
+            },
+          },
+        }),
+      );
+
+      const config = await loadConfig(configPath);
+
+      expect(config.mcpServers.test.oauth?.clientMetadataUrl).toBe(expected);
+    });
+
+    it("rejects an HTTP client metadata URL", async () => {
+      const configPath = join(tempDir, "routermcp.jsonc");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            test: {
+              transport: "http-streamable",
+              url: "https://api.example.test/mcp",
+              oauth: { clientMetadataUrl: "http://clients.example.test/routermcp.json" },
+            },
+          },
+        }),
+      );
+
+      await expect(loadConfig(configPath)).rejects.toThrow("Client metadata URL must be HTTPS");
+    });
+
     it("throws on non-existent file", async () => {
       const configPath = join(tempDir, "nonexistent.jsonc");
 

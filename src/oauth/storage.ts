@@ -14,6 +14,7 @@ export interface OAuthClientInfo {
   client_secret?: string;
   client_id_issued_at?: number;
   client_secret_expires_at?: number;
+  clientMetadataUrl?: string;
 }
 
 export interface OAuthTokensData {
@@ -27,6 +28,7 @@ export interface OAuthTokensData {
 export interface OAuthStorageData {
   serverUrl: string;
   lastUpdated: number;
+  authorizationServerIssuer?: string;
   clientInfo?: OAuthClientInfo;
   tokens?: OAuthTokensData;
   codeVerifier?: string;
@@ -135,6 +137,8 @@ export async function saveOAuthStorage(
   const data: OAuthStorageData = {
     serverUrl,
     lastUpdated: Date.now(),
+    authorizationServerIssuer:
+      updates.authorizationServerIssuer ?? existing?.authorizationServerIssuer,
     clientInfo: updates.clientInfo ?? existing?.clientInfo,
     tokens: updates.tokens ?? existing?.tokens,
     codeVerifier: updates.codeVerifier ?? existing?.codeVerifier,
@@ -171,10 +175,13 @@ export async function clearCodeVerifier(serverUrl: string): Promise<void> {
 }
 
 export async function clearOAuthStorage(serverUrl: string): Promise<void> {
-  const dir = getOAuthStorageDir(serverUrl);
-  try {
-    await rm(dir, { recursive: true, force: true });
-  } catch {}
+  await Promise.all(
+    [getOAuthStorageDir(serverUrl), getLegacyOAuthStorageDir(serverUrl)].map(async (dir) => {
+      try {
+        await rm(dir, { recursive: true, force: true });
+      } catch {}
+    }),
+  );
 }
 
 export async function clearAllOAuthStorage(): Promise<void> {
