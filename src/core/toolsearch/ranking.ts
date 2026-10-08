@@ -1,5 +1,8 @@
 export interface ToolRankingInput {
+  /** Callable identity returned to the caller. */
   name: string;
+  /** Original upstream name used to preserve name-based relevance. */
+  searchName?: string;
   description: string;
 }
 
@@ -40,7 +43,7 @@ export function rankTools(
     return { name: tool.name, score };
   });
 
-  const filtered = scored.filter((item) => item.score >= options.minScore);
+  const filtered = scored.filter((item) => item.score > 0 && item.score >= options.minScore);
   filtered.sort((a, b) => b.score - a.score);
   return filtered.slice(0, options.maxResults);
 }
@@ -58,7 +61,7 @@ function calculateRelevanceScore(
   tool: ToolRankingInput,
   enableFuzzy: boolean,
 ): number {
-  const nameTokens = tokenize(tool.name);
+  const nameTokens = tokenize(tool.searchName ?? tool.name);
   const descTokens = tokenize(tool.description);
   const allToolTokens = [...nameTokens, ...descTokens];
 

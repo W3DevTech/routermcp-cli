@@ -14,7 +14,7 @@ The local daemon control plane is managed by the CLI, while the browser UI for s
 - **Aggregate Multiple Servers**: Combine tools from multiple MCP servers into one endpoint
 - **Security & Filtering**: Control which tools/resources/prompts are exposed
 - **Code Mode**: Execute JavaScript workflows across all your tools
-- **Tool Search Mode**: Intelligent tool discovery with semantic search
+- **Tool Search Mode**: Fuzzy keyword search across tool names and descriptions
 - **Daemon Mode**: Share a single gateway across multiple MCP clients
 - **Tunnel Support**: Expose your gateway publicly via Cloudflare or ngrok
 

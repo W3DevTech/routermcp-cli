@@ -1,7 +1,8 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it, vi } from "vitest";
 import type { McpToolSearchConfig } from "../../../../src/config/types.js";
-import type { Aggregator, ToolWithSource } from "../../../../src/core/aggregator.js";
+import { Aggregator, type ToolWithSource } from "../../../../src/core/aggregator.js";
+import type { UpstreamManager, UpstreamServer } from "../../../../src/core/upstream.js";
 import {
   getToolSearchMetaTools,
   handleCallTool,
@@ -119,6 +120,45 @@ describe("handleSearchMcpForTask", () => {
     expect(response).toHaveProperty("totalTools");
   });
 
+  it("returns the callable identity and routes a colliding beta result to beta", async () => {
+    const { aggregator, clients, toolsMap } = createCollidingTools();
+    const betaCallableName = [...toolsMap].find(([, entry]) => entry.serverName === "beta")?.[0];
+    expect(betaCallableName).toBeDefined();
+
+    const result = await handleSearchMcpForTask(
+      { task: "resolve Acme billing invoice" },
+      toolsMap,
+      defaultConfig,
+    );
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+
+    await handleCallTool({ name: response.topTool, arguments: { invoice: "INV-7" } }, aggregator, toolsMap);
+
+    expect(clients.alpha.callTool).not.toHaveBeenCalled();
+    expect(clients.beta.callTool).toHaveBeenCalledWith({
+      name: "lookup",
+      arguments: { invoice: "INV-7" },
+    });
+    expect(response.topTool).toBe(betaCallableName);
+    expect(response.candidates[0]).toMatchObject({
+      name: betaCallableName,
+      originalName: "lookup",
+      serverName: "beta",
+    });
+  });
+
+  it("returns no candidates when every tool has zero relevance at the default threshold", async () => {
+    const result = await handleSearchMcpForTask(
+      { task: "zzzxqv" },
+      createToolsMap(),
+      defaultConfig,
+    );
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(response.topTool).toBeNull();
+    expect(response.candidates).toEqual([]);
+  });
+
   it("should respect maxResults configuration", async () => {
     const config: McpToolSearchConfig = {
       enabled: true,
@@ -185,6 +225,66 @@ describe("handleSearchMcpForTask", () => {
     });
   });
 });
+
+function createCollidingTools(): {
+  aggregator: Aggregator;
+  clients: {
+    alpha: { callTool: ReturnType<typeof vi.fn> };
+    beta: { callTool: ReturnType<typeof vi.fn> };
+  };
+  toolsMap: Map<string, ToolWithSource>;
+} {
+  const alphaTool = {
+    name: "lookup",
+    description: "Find an internal support request by its short id",
+    inputSchema: { type: "object", properties: { id: { type: "string" } } },
+  } as Tool;
+  const betaTool = {
+    name: "lookup",
+    description: "Resolve Acme billing invoices and payment status",
+    inputSchema: { type: "object", properties: { invoice: { type: "string" } } },
+  } as Tool;
+  const servers: UpstreamServer[] = [
+    createServer("alpha", alphaTool),
+    createServer("beta", betaTool),
+  ];
+  const clients = {
+    alpha: {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "alpha result" }] }),
+    },
+    beta: {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "beta result" }] }),
+    },
+  };
+  const manager = {
+    getDiscoveredOrConnected: () => servers,
+    ensureConnected: vi.fn(async (serverName: string) => clients[serverName as "alpha" | "beta"]),
+  } as unknown as UpstreamManager;
+  const aggregator = new Aggregator(manager);
+  aggregator.refresh();
+
+  return { aggregator, clients, toolsMap: aggregator.getToolsMap() };
+}
+
+function createServer(name: string, tool: Tool): UpstreamServer {
+  return {
+    name,
+    config: { transport: "stdio", command: "fake" },
+    status: "discovered",
+    client: null,
+    cleanup: null,
+    error: null,
+    tools: [tool],
+    resources: [],
+    prompts: [],
+    cachedTools: [tool],
+    cachedResources: [],
+    cachedPrompts: [],
+    lastActivity: null,
+    idleTimer: null,
+    connectionPromise: null,
+  };
+}
 
 describe("handleCallTool", () => {
   const createMockAggregator = (): Aggregator => {

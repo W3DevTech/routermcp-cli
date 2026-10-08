@@ -1,11 +1,11 @@
 ---
 title: Tool Search Mode
-description: Intelligent tool discovery and execution with semantic search
+description: Fuzzy keyword search and execution for MCP tools
 ---
 
 # Tool Search Mode
 
-Tool Search Mode provides intelligent MCP tool discovery using semantic search. It enables AI models to find the most relevant tools for a task and execute them through a two-step workflow.
+Tool Search Mode ranks MCP tools by token matches in their names and descriptions. It supports fuzzy matching for small typos. It does not use semantic embeddings.
 
 ## Overview
 
@@ -15,6 +15,8 @@ When Tool Search Mode is enabled, RouterMCP exposes two meta-tools:
 |-----------|-------------|
 | `routermcp.searchMcpForTask` | Search and rank tools by task description |
 | `routermcp.callTool` | Execute a specific tool by name |
+
+Each candidate's `name` is the exact callable name accepted by `routermcp.callTool`. Candidates also include `originalName` and `serverName` so you can identify the upstream source. When upstream servers expose the same tool name, RouterMCP adds a deterministic suffix to later callable names. Copy `name` exactly; do not build it from the server name.
 
 ## Enabling Tool Search Mode
 
@@ -49,7 +51,7 @@ Tool Search Mode and Code Mode cannot both be enabled:
 
 Choose one mode based on your use case:
 - **Code Mode**: For JavaScript orchestration and complex workflows
-- **Tool Search Mode**: For semantic tool discovery and single-tool execution
+- **Tool Search Mode**: For fuzzy keyword search and single-tool execution
 
 ## How It Works
 
@@ -70,10 +72,10 @@ The AI model first calls `routermcp.searchMcpForTask` with a natural language ta
 
 ```json
 {
-  "topTool": "translator.translate",
+  "topTool": "translate",
   "candidates": [
-    { "name": "translator.translate", "score": 3.5 },
-    { "name": "translator.detect_language", "score": 1.0 }
+    { "name": "translate", "originalName": "translate", "serverName": "translator", "score": 3.5 },
+    { "name": "detect_language", "originalName": "detect_language", "serverName": "translator", "score": 1.0 }
   ],
   "query": "translate text to french",
   "totalTools": 25
@@ -88,7 +90,7 @@ The model then calls `routermcp.callTool` with the discovered tool:
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "translator.translate",
+    "name": "translate",
     "arguments": {
       "text": "hello world",
       "target_language": "fr"
@@ -143,12 +145,13 @@ The search uses an enhanced token-based ranking algorithm:
 ```json
 {
   "candidates": [
-    { "name": "weather.get_forecast", "score": 3.5 },     // Name + description match
-    { "name": "location.get_current", "score": 1.5 },     // Partial match
-    { "name": "calendar.get_events", "score": 0.0 }       // No match
+    { "name": "get_forecast", "originalName": "get_forecast", "serverName": "weather", "score": 3.5 },
+    { "name": "get_current", "originalName": "get_current", "serverName": "location", "score": 1.5 }
   ]
 }
 ```
+
+Tools with no positive score are omitted from `candidates`.
 
 ## Configuration Examples
 
@@ -211,8 +214,8 @@ Let the AI discover appropriate tools:
 
 **AI:**
 1. Calls `routermcp.searchMcpForTask({ task: "get weather for location" })`
-2. Receives `{ topTool: "weather.get_current" }`
-3. Calls `routermcp.callTool({ name: "weather.get_current", arguments: { city: "Paris" } })`
+2. Receives `{ topTool: "get_current" }`
+3. Calls `routermcp.callTool({ name: "get_current", arguments: { city: "Paris" } })`
 
 ### Fuzzy Tool Names
 
@@ -233,10 +236,10 @@ Discover related tools:
 ```json
 {
   "candidates": [
-    { "name": "git.commit", "score": 2.0 },
-    { "name": "git.push", "score": 2.0 },
-    { "name": "git.status", "score": 1.5 },
-    { "name": "github.create_issue", "score": 1.0 }
+    { "name": "commit", "score": 2.0 },
+    { "name": "push", "score": 2.0 },
+    { "name": "status", "score": 1.5 },
+    { "name": "create_issue", "score": 1.0 }
   ]
 }
 ```
@@ -266,10 +269,13 @@ Search only sees filtered tools:
 // Query: "delete file"
 {
   "topTool": null,
-  "candidates": [],  // delete_file is filtered out
-  "message": "No tools available"
+  "candidates": [],
+  "query": "delete file",
+  "totalTools": 2
 }
 ```
+
+The denied or disallowed tools are not in the searchable set. No candidates means no available tool had a positive score for this query. A zero score is excluded even when `minScore` is `0`.
 
 ## Response Structure
 
@@ -280,7 +286,9 @@ Search only sees filtered tools:
   "topTool": "string | null",           // Best matching tool
   "candidates": [
     {
-      "name": "tool.name",
+      "name": "callable tool name returned by search",
+      "originalName": "upstream tool name",
+      "serverName": "upstream server name",
       "score": 3.5                      // Relevance score (rounded to 2 decimals)
     }
   ],
@@ -310,7 +318,7 @@ Standard MCP `CallToolResult`:
 {
   "content": [{
     "type": "text",
-    "text": "Tool not found: nonexistent. Available tools: translator.translate, weather.get_current, ... Use routermcp.searchMcpForTask to discover tools."
+    "text": "Tool not found: nonexistent. Available tools: translate, get_current, ... Use routermcp.searchMcpForTask to discover tools."
   }],
   "isError": true
 }
@@ -351,14 +359,14 @@ Standard MCP `CallToolResult`:
 
 | Feature | Tool Search Mode | Code Mode |
 |---------|-----------------|-----------|
-| **Discovery** | Semantic search | TypeScript definitions |
+| **Discovery** | Fuzzy keyword ranking | TypeScript definitions |
 | **Execution** | Single tool per call | Multiple tools via JavaScript |
 | **Complexity** | Simple 2-step workflow | Full programming environment |
 | **Use Case** | Tool discovery & single execution | Multi-tool orchestration |
 | **Sandbox** | No code execution | QuickJS WebAssembly |
 
 Choose **Tool Search Mode** when:
-- You want semantic tool discovery
+- You want typo-tolerant keyword search across tool names and descriptions
 - Each task involves one tool call
 - You don't need complex orchestration
 
