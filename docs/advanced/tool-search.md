@@ -1,11 +1,11 @@
 ---
 title: Tool Search Mode
-description: Fuzzy keyword search and execution for MCP tools
+description: Fuzzy task search, literal filters, and execution for MCP tools
 ---
 
 # Tool Search Mode
 
-Tool Search Mode ranks MCP tools by token matches in their names and descriptions. It supports fuzzy matching for small typos. It does not use semantic embeddings.
+Tool Search Mode supports both fuzzy ranking for natural-language tasks and literal, paged queries over the available MCP tools. Neither mode uses semantic embeddings.
 
 ## Overview
 
@@ -13,7 +13,7 @@ When Tool Search Mode is enabled, RouterMCP exposes two meta-tools:
 
 | Meta-Tool | Description |
 |-----------|-------------|
-| `routermcp.searchMcpForTask` | Search and rank tools by task description |
+| `routermcp.searchMcpForTask` | Rank task suggestions or search tools with literal filters |
 | `routermcp.callTool` | Execute a specific tool by name |
 
 Each candidate's `name` is the exact callable name accepted by `routermcp.callTool`. Candidates also include `originalName` and `serverName` so you can identify the upstream source. When upstream servers expose the same tool name, RouterMCP adds a deterministic suffix to later callable names. Copy `name` exactly; do not build it from the server name.
@@ -26,7 +26,8 @@ Each candidate's `name` is the exact callable name accepted by `routermcp.callTo
     "enabled": true,
     "description": "Find the best MCP tool for your task",
     "maxResults": 5,
-    "minScore": 0.5
+    "minScore": 0.5,
+    "enableFuzzy": true
   }
 }
 ```
@@ -35,8 +36,11 @@ Each candidate's `name` is the exact callable name accepted by `routermcp.callTo
 |--------|------|---------|-------------|
 | `enabled` | boolean | false | Enable Tool Search meta-tools |
 | `description` | string | Auto | Custom description for search tool |
-| `maxResults` | number | 5 | Maximum search results to return (1-50) |
-| `minScore` | number | 0 | Minimum relevance score threshold (0-1) |
+| `maxResults` | number | 5 | Maximum candidates for `task` ranking (1-50) |
+| `minScore` | number | 0 | Minimum relevance score for `task` candidates (0-1) |
+| `enableFuzzy` | boolean | true | Enable typo-tolerant matching for legacy natural-language `task` searches |
+
+Set `enableFuzzy` to `false` to disable typo matching in task ranking. Literal `query` searches are always exact and use their own `limit` (1-50, default 20); `maxResults` does not affect them.
 
 ## Mutual Exclusivity
 
@@ -98,6 +102,71 @@ The model then calls `routermcp.callTool` with the discovered tool:
   }
 }
 ```
+
+## Literal Queries and Paging
+
+Use `query` when you need predictable filtering instead of fuzzy task ranking. `task` and `query` are separate modes and cannot be combined.
+
+```json
+{
+  "name": "routermcp.searchMcpForTask",
+  "arguments": {
+    "query": "server:translator transport:stdio translate",
+    "limit": 20,
+    "includeSchema": true
+  }
+}
+```
+
+Query terms are literal and combined with AND. They can match the tool name, its exact callable name, the server name, the combined `server.tool` name, or the description. Quote phrases that contain spaces. CLI query qualifiers are `type:tool`, `server:<name>`, and `transport:<type>`. For example, `server:"my server" transport:http-streamable "read file" -delete` filters to one server and transport, requires the phrase, and excludes tools whose searchable fields contain `delete`.
+
+The query response is a page:
+
+```json
+{
+  "results": [
+    {
+      "name": "translate_text",
+      "originalName": "translate_text",
+      "serverName": "translator",
+      "description": "Translate text between languages",
+      "transport": "stdio",
+      "inputSchema": { "type": "object" }
+    }
+  ],
+  "count": 1,
+  "nextCursor": "opaque-cursor-or-null",
+  "warnings": [],
+  "coverage": {
+    "status": "observed",
+    "scope": "workspace-tool-catalog",
+    "catalogSize": 25
+  }
+}
+```
+
+`count` is the number of matches in this page. Set `limit` from 1 to 50 (default 20), then pass `nextCursor` as `cursor` with the same query and options to fetch the next page. A cursor is tied to the current visible tool catalog; if the catalog changes, restart without the cursor. Schemas are omitted by default and included only with `includeSchema: true`. Tools without known transport metadata, such as OpenAPI-derived tools, do not get an invented transport value.
+
+Code Mode uses the same literal query and paging fields on `routermcp.listTools`. Its response includes results for the current page and TypeScript definitions for those results. Continue with the returned cursor:
+
+```javascript
+const firstPage = await routermcp.listTools({
+  query: 'server:translator translate',
+  limit: 10,
+  includeSchema: true,
+});
+
+const nextPage = await routermcp.listTools({
+  query: 'server:translator translate',
+  limit: 10,
+  includeSchema: true,
+  cursor: firstPage.nextCursor,
+});
+```
+
+The legacy `filter` option continues to return TypeScript definitions using substring matching.
+
+Authenticated daemon clients can use the same query mode with `GET /api/v1/workspaces/{workspaceId}/tools?query=...&limit=...&cursor=...&includeSchema=true`, or `POST /api/v1/workspaces/{workspaceId}/tools/search` with a JSON body containing `query` and the optional paging fields. Task searches remain available through the POST route with `{ "task": "..." }`.
 
 **Response:**
 
@@ -359,14 +428,14 @@ Standard MCP `CallToolResult`:
 
 | Feature | Tool Search Mode | Code Mode |
 |---------|-----------------|-----------|
-| **Discovery** | Fuzzy keyword ranking | TypeScript definitions |
+| **Discovery** | Fuzzy task ranking or literal filters | TypeScript definitions or literal filters |
 | **Execution** | Single tool per call | Multiple tools via JavaScript |
 | **Complexity** | Simple 2-step workflow | Full programming environment |
 | **Use Case** | Tool discovery & single execution | Multi-tool orchestration |
 | **Sandbox** | No code execution | QuickJS WebAssembly |
 
 Choose **Tool Search Mode** when:
-- You want typo-tolerant keyword search across tool names and descriptions
+- You want typo-tolerant task ranking or need literal filters over tool names and descriptions
 - Each task involves one tool call
 - You don't need complex orchestration
 
@@ -374,6 +443,20 @@ Choose **Code Mode** when:
 - You need multi-tool workflows
 - You require conditional logic
 - You want data transformation between calls
+
+## Shared Contract Maintenance
+
+The CLI's parser, validator, matcher, ranking functions, types, and semantic fixture are generated from the canonical `packages/search` source at an immutable commit. Sync only from a SHA contained in the freshly fetched published branch:
+
+```bash
+node scripts/sync-search-contract.mjs \
+  --source-repo /path/to/routermcp \
+  --commit <published-source-sha> \
+  --published-ref refs/heads/feat/search/h02-contract
+node scripts/verify-search-contract.mjs
+```
+
+This records `prepared-published-head` provenance; it confirms publication, not landing in `main`. After the source lands, rerun the sync with `--merged-parent <canonical-main-commit-containing-source>` to record verified merged provenance before treating the contract as landed.
 
 ---
 

@@ -1,6 +1,7 @@
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CodeModeConfig } from "../../config/types.js";
 import type { Aggregator, ToolWithSource } from "../aggregator.js";
+import type { ExecutionService } from "../execution-service.js";
 import { generateTypeScriptDefinitions, groupToolsByServer, toolsToToolInfo } from "./codegen.js";
 import { executeCodeMode } from "./sandbox.js";
 
@@ -16,6 +17,24 @@ export const META_TOOL_LIST_TOOLS: Tool = {
       filter: {
         type: "string",
         description: "Optional filter string to search tools by name or description",
+      },
+      query: {
+        type: "string",
+        description: "Literal search query with optional type, server, or transport qualifiers",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Maximum results in this query page (default 20)",
+      },
+      cursor: {
+        type: "string",
+        description: "Cursor returned by the previous query page",
+      },
+      includeSchema: {
+        type: "boolean",
+        description: "Include tool input schemas in explicit-query results",
       },
     },
   },
@@ -49,31 +68,57 @@ export function getCodeModeMetaTools(): Tool[] {
 
 export async function handleListTools(
   args: Record<string, unknown>,
-  toolsMap: Map<string, ToolWithSource>,
+  executionService: ExecutionService,
 ): Promise<CallToolResult> {
-  const filter = typeof args.filter === "string" ? args.filter.toLowerCase().trim() : "";
-
-  const toolInfoList = toolsToToolInfo(toolsMap);
-
-  let filtered = toolInfoList;
-  if (filter) {
-    filtered = toolInfoList.filter((t) => {
-      const fullName = `${t.serverName}.${t.name}`.toLowerCase();
-      const desc = (t.description ?? "").toLowerCase();
-      return fullName.includes(filter) || desc.includes(filter);
-    });
+  if (args.query !== undefined) {
+    if (args.filter !== undefined) {
+      return {
+        content: [{ type: "text", text: "Error: filter and query cannot be used together" }],
+        isError: true,
+      };
+    }
+    try {
+      const result = executionService.queryTools(args.query, {
+        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        ...(args.includeSchema !== undefined ? { includeSchema: args.includeSchema } : {}),
+      });
+      const typeDefinitions = generateTypeScriptDefinitions(
+        result.results.map((tool) => ({
+          serverName: tool.serverName,
+          name: tool.originalName,
+          callableName: tool.name,
+          transport: tool.transport,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        })),
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ...result, typeDefinitions }, null, 2) }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Tool listing failed";
+      return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+    }
   }
 
-  const typeDefinitions = generateTypeScriptDefinitions(filtered);
+  if (args.cursor !== undefined || args.limit !== undefined || args.includeSchema !== undefined) {
+    return {
+      content: [
+        { type: "text", text: "Error: cursor, limit, and includeSchema require query mode" },
+      ],
+      isError: true,
+    };
+  }
 
-  return {
-    content: [
-      {
-        type: "text",
-        text: typeDefinitions,
-      },
-    ],
-  };
+  const filter = typeof args.filter === "string" ? args.filter : "";
+  try {
+    const result = executionService.listTools(filter);
+    return { content: [{ type: "text", text: result.typeDefinitions }] };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tool listing failed";
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+  }
 }
 
 export async function handleExecuteCode(

@@ -123,6 +123,8 @@ export interface McpToolSearchConfig {
   maxResults?: number;
   /** Minimum relevance score threshold (default: 0, range: 0-1) */
   minScore?: number;
+  /** Enable legacy fuzzy typo matching for task searches (default: true). */
+  enableFuzzy?: boolean;
 }
 
 export interface RouterMcpConfig {

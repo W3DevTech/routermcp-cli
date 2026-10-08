@@ -1,34 +1,38 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/compat/index.js", () => ({
   serve: vi.fn(),
 }));
 
-import { serve, type ServeOptions } from "../../../src/compat/index.js";
-import { ConnectionTracker } from "../../../src/daemon/connection-tracker.js";
-import {
-  ControlPlane,
-  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
-  CONTROL_PLANE_BROWSER_DEVICES_PATH,
-  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
-  MANAGEMENT_BODY_LIMIT_BYTES,
-  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
-  ManagementCredentialStore,
-  BrowserManagementSessionStore,
-  browserChallengeSigningPayload,
-} from "../../../src/control-plane/index.js";
+import { type ServeOptions, serve } from "../../../src/compat/index.js";
 import type {
+  ControlPlaneExecutionSource,
   ControlPlaneMetrics,
   ControlPlaneStatus,
   ControlPlaneWorkspace,
 } from "../../../src/control-plane/index.js";
 import {
-  DAEMON_BRIDGE_LEASES_PATH,
-  DAEMON_BRIDGE_LEASE_HEADER,
-  DAEMON_WORKSPACE_HEADER,
+  BrowserManagementSessionStore,
+  browserChallengeSigningPayload,
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  ControlPlane,
+  MANAGEMENT_BODY_LIMIT_BYTES,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  ManagementCredentialStore,
+} from "../../../src/control-plane/index.js";
+import type { ToolWithSource } from "../../../src/core/aggregator.js";
+import { ConnectionTracker } from "../../../src/daemon/connection-tracker.js";
+import {
   createHttpServerTransport,
+  DAEMON_BRIDGE_LEASE_HEADER,
+  DAEMON_BRIDGE_LEASES_PATH,
+  DAEMON_WORKSPACE_HEADER,
 } from "../../../src/transports/http-streamable.js";
+import { createTestExecutionService } from "../../helpers/execution-service.js";
 
 describe("createHttpServerTransport bridge lifecycle routes", () => {
   let fetchHandler: (request: Request) => Promise<Response>;
@@ -68,9 +72,7 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
 
-    const unsupported = await fetchHandler(
-      new Request("http://127.0.0.1/", { method: "POST" }),
-    );
+    const unsupported = await fetchHandler(new Request("http://127.0.0.1/", { method: "POST" }));
     expect(unsupported.status).toBe(405);
     expect(unsupported.headers.get("Allow")).toBe("GET, HEAD");
 
@@ -147,6 +149,142 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     await handle.stop();
     expect(serverStop).toHaveBeenCalledTimes(1);
     tracker.destroy();
+  });
+
+  it("routes literal tool queries through the claimed workspace execution", async () => {
+    const firstWorkspace = createTestWorkspace("workspace-search-a");
+    const secondWorkspace = createTestWorkspace("workspace-search-b");
+    const firstTools = new Map<string, ToolWithSource>([
+      [
+        "echo",
+        {
+          tool: {
+            name: "echo",
+            description: "Echo text",
+            inputSchema: { type: "object", properties: { text: { type: "string" } } },
+          } as Tool,
+          serverName: "alpha",
+          transport: "stdio",
+        },
+      ],
+    ]);
+    const secondTools = new Map<string, ToolWithSource>([
+      [
+        "add",
+        {
+          tool: {
+            name: "add",
+            description: "Add numbers",
+            inputSchema: { type: "object", properties: { a: { type: "number" } } },
+          } as Tool,
+          serverName: "beta",
+          transport: "http-streamable",
+        },
+      ],
+    ]);
+    const executions = new Map([
+      [firstWorkspace.id, createTestExecutionService({ tools: firstTools })],
+      [secondWorkspace.id, createTestExecutionService({ tools: secondTools })],
+    ]);
+    const execution: ControlPlaneExecutionSource = {
+      getWorkspaceExecution: (workspaceId) => executions.get(workspaceId) ?? null,
+    };
+    const controlPlane = new ControlPlane({
+      getStatus: () => createTestStatus(firstWorkspace),
+      getServers: () => [],
+      getSessions: () => [],
+      getCurrentWorkspaceId: () => firstWorkspace.id,
+      getWorkspaces: () => [firstWorkspace, secondWorkspace],
+      execution,
+    });
+    const tokens = ["search-grant-a", "search-grant-b"];
+    const credentials = new ManagementCredentialStore({
+      authority: "workspace",
+      workspaceId: firstWorkspace.id,
+      allowedWorkspaceIds: [secondWorkspace.id],
+      generateToken: () => tokens.shift() ?? "search-grant-unused",
+    });
+    const firstGrant = credentials.issue(firstWorkspace.id);
+    const secondGrant = credentials.issue(secondWorkspace.id);
+    const handle = createHttpServerTransport(7858, "127.0.0.1", {
+      controlPlane,
+      managementCredentials: credentials,
+    });
+    await handle.start();
+
+    const firstHeaders = { Authorization: `Bearer ${firstGrant.token}` };
+    const secondHeaders = { Authorization: `Bearer ${secondGrant.token}` };
+    const firstPage = await fetchHandler(
+      new Request(
+        "http://127.0.0.1/api/v1/workspaces/workspace-search-a/tools?query=server%3Aalpha&limit=1&includeSchema=true",
+        { headers: firstHeaders },
+      ),
+    );
+    expect(firstPage.status).toBe(200);
+    expect(await firstPage.json()).toMatchObject({
+      count: 1,
+      results: [
+        {
+          name: "echo",
+          serverName: "alpha",
+          transport: "stdio",
+          inputSchema: { properties: { text: { type: "string" } } },
+        },
+      ],
+    });
+
+    for (const malformedValue of ["null", "[]", '"search"', "1", "true"]) {
+      const cursor = Buffer.from(malformedValue, "utf8").toString("base64url");
+      const malformedCursor = await fetchHandler(
+        new Request(
+          `http://127.0.0.1/api/v1/workspaces/workspace-search-a/tools?query=type%3Atool&cursor=${cursor}`,
+          { headers: firstHeaders },
+        ),
+      );
+      expect(malformedCursor.status, `cursor JSON ${malformedValue}`).toBe(400);
+      expect(await malformedCursor.json()).toMatchObject({ error: "invalid-request" });
+    }
+
+    const secondPage = await fetchHandler(
+      new Request(
+        "http://127.0.0.1/api/v1/workspaces/workspace-search-b/tools?query=server%3Abeta&includeSchema=true",
+        { headers: secondHeaders },
+      ),
+    );
+    expect(secondPage.status).toBe(200);
+    expect((await secondPage.json()).results).toMatchObject([
+      { name: "add", serverName: "beta", transport: "http-streamable" },
+    ]);
+
+    const postSearch = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/workspace-search-a/tools/search", {
+        method: "POST",
+        headers: { ...firstHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "type:tool", limit: 1 }),
+      }),
+    );
+    expect(postSearch.status).toBe(200);
+    expect((await postSearch.json()).results).toMatchObject([
+      { name: "echo", serverName: "alpha" },
+    ]);
+
+    const mixedModes = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/workspace-search-a/tools/search", {
+        method: "POST",
+        headers: { ...firstHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ task: "echo", query: "type:tool" }),
+      }),
+    );
+    expect(mixedModes.status).toBe(400);
+
+    const wrongWorkspaceClaim = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/workspaces/workspace-search-b/tools?query=type%3Atool", {
+        headers: firstHeaders,
+      }),
+    );
+    expect(wrongWorkspaceClaim.status).toBe(401);
+
+    await handle.stop();
   });
 
   it("does not expose lease mutations without an explicit auth contract", async () => {
@@ -228,9 +366,7 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
       }),
     );
     expect(preflight.status).toBe(204);
-    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(
-      "https://cli.routermcp.com",
-    );
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("https://cli.routermcp.com");
     expect(preflight.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
     expect(preflight.headers.get("Access-Control-Allow-Private-Network")).toBe("true");
     expect(preflight.headers.get("Vary")).toContain("Origin");
@@ -251,28 +387,28 @@ describe("createHttpServerTransport bridge lifecycle routes", () => {
     tracker.destroy();
   });
 
-  it.each(["http://localhost:7953", "http://127.0.0.1:7953"])(
-    "allows the documented local Next.js origin (%s) without enabling wildcard CORS",
-    async (origin) => {
-      const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
-      await handle.start();
+  it.each([
+    "http://localhost:7953",
+    "http://127.0.0.1:7953",
+  ])("allows the documented local Next.js origin (%s) without enabling wildcard CORS", async (origin) => {
+    const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
+    await handle.start();
 
-      const response = await fetchHandler(
-        new Request("http://127.0.0.1/api/v1/status", {
-          headers: {
-            Authorization: "Bearer secret",
-            Origin: origin,
-          },
-        }),
-      );
+    const response = await fetchHandler(
+      new Request("http://127.0.0.1/api/v1/status", {
+        headers: {
+          Authorization: "Bearer secret",
+          Origin: origin,
+        },
+      }),
+    );
 
-      expect(response.status).toBe(404);
-      expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
-      expect(response.headers.get("Access-Control-Allow-Origin")).not.toBe("*");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    expect(response.headers.get("Access-Control-Allow-Origin")).not.toBe("*");
 
-      await handle.stop();
-    },
-  );
+    await handle.stop();
+  });
 
   it("does not broaden the authenticated CORS policy to nearby or arbitrary origins", async () => {
     const handle = createHttpServerTransport(7858, "127.0.0.1", { authToken: "secret" });
@@ -658,18 +794,14 @@ describe("createHttpServerTransport control-plane routes", () => {
       Authorization: "Bearer secret",
       Origin: "https://cli.routermcp.com",
     };
-    const status = await fetchHandler(
-      new Request("http://127.0.0.1/api/v1/status", { headers }),
-    );
+    const status = await fetchHandler(new Request("http://127.0.0.1/api/v1/status", { headers }));
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({
       status: expect.objectContaining({ instanceId: "instance-1", port: 7858 }),
     });
     expect(status.headers.get("Access-Control-Allow-Origin")).toBe("https://cli.routermcp.com");
 
-    const servers = await fetchHandler(
-      new Request("http://127.0.0.1/api/v1/servers", { headers }),
-    );
+    const servers = await fetchHandler(new Request("http://127.0.0.1/api/v1/servers", { headers }));
     expect((await servers.json()).servers[0]).toMatchObject({
       url: "https://example.com/mcp",
       lastError: "Bearer [redacted]",
@@ -680,9 +812,7 @@ describe("createHttpServerTransport control-plane routes", () => {
     );
     expect((await sessions.json()).sessions).toHaveLength(1);
 
-    const metrics = await fetchHandler(
-      new Request("http://127.0.0.1/api/v1/metrics", { headers }),
-    );
+    const metrics = await fetchHandler(new Request("http://127.0.0.1/api/v1/metrics", { headers }));
     expect(await metrics.json()).toMatchObject({
       metrics: {
         requestsTotal: 2,
@@ -880,7 +1010,11 @@ describe("createHttpServerTransport control-plane routes", () => {
     );
     expect(inventory.status).toBe(200);
     expect((await inventory.json()).workspaces).toEqual([
-      expect.objectContaining({ id: workspace.id, state: "current", directory: workspace.directory }),
+      expect.objectContaining({
+        id: workspace.id,
+        state: "current",
+        directory: workspace.directory,
+      }),
     ]);
 
     const status = await fetchHandler(
@@ -1092,7 +1226,10 @@ describe("createHttpServerTransport control-plane routes", () => {
   });
 
   it("allows a host grant to read and mutate every registered workspace", async () => {
-    const currentWorkspace = createTestWorkspace("workspace-host-current", "2026-01-01T00:00:02.000Z");
+    const currentWorkspace = createTestWorkspace(
+      "workspace-host-current",
+      "2026-01-01T00:00:02.000Z",
+    );
     const otherWorkspace = createTestWorkspace("workspace-host-other", "2026-01-01T00:00:01.000Z");
     const workspaceStatus = (workspace: ControlPlaneWorkspace) => ({
       workspace,
@@ -1145,7 +1282,9 @@ describe("createHttpServerTransport control-plane routes", () => {
             ? workspaceStatus(otherWorkspace)
             : null,
       getWorkspaceManagement: (workspaceId) =>
-        workspaceId === currentWorkspace.id || workspaceId === otherWorkspace.id ? management : null,
+        workspaceId === currentWorkspace.id || workspaceId === otherWorkspace.id
+          ? management
+          : null,
       getWorkspaceEvents: (workspaceId) =>
         workspaceId === otherWorkspace.id
           ? [
@@ -1207,10 +1346,9 @@ describe("createHttpServerTransport control-plane routes", () => {
     expect(otherMetrics.status).toBe(200);
 
     const otherEvents = await fetchHandler(
-      new Request(
-        `http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/events?limit=5`,
-        { headers },
-      ),
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/events?limit=5`, {
+        headers,
+      }),
     );
     expect(otherEvents.status).toBe(200);
     expect((await otherEvents.json()).events).toEqual([
@@ -1222,14 +1360,11 @@ describe("createHttpServerTransport control-plane routes", () => {
     ]);
 
     const patchResponse = await fetchHandler(
-      new Request(
-        `http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/servers/mcp%3Ademo`,
-        {
-          method: "PATCH",
-          headers: { ...headers, "If-Match": otherWorkspace.configDigest },
-          body: JSON.stringify({ enabled: false }),
-        },
-      ),
+      new Request(`http://127.0.0.1/api/v1/workspaces/${otherWorkspace.id}/servers/mcp%3Ademo`, {
+        method: "PATCH",
+        headers: { ...headers, "If-Match": otherWorkspace.configDigest },
+        body: JSON.stringify({ enabled: false }),
+      }),
     );
     expect(patchResponse.status).toBe(202);
     expect(await patchResponse.json()).toMatchObject({
@@ -1361,7 +1496,12 @@ describe("createHttpServerTransport control-plane routes", () => {
     await handle.start();
 
     const oversizedBytes = new TextEncoder().encode(
-      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", padding: "x".repeat(MANAGEMENT_BODY_LIMIT_BYTES) }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ping",
+        padding: "x".repeat(MANAGEMENT_BODY_LIMIT_BYTES),
+      }),
     );
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1584,19 +1724,29 @@ describe("createHttpServerTransport management handoff route", () => {
     );
     expect(challengeResponse.status).toBe(200);
     const challenge = await challengeResponse.json();
-    const signature = sign(null, browserChallengeSigningPayload(challenge), keyPair.privateKey).toString(
-      "base64url",
-    );
+    const signature = sign(
+      null,
+      browserChallengeSigningPayload(challenge),
+      keyPair.privateKey,
+    ).toString("base64url");
     const exchange = await fetchHandler(
       new Request(`http://127.0.0.1${CONTROL_PLANE_BROWSER_EXCHANGE_PATH}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deviceId: device.id, challengeId: challenge.challengeId, signature }),
+        body: JSON.stringify({
+          deviceId: device.id,
+          challengeId: challenge.challengeId,
+          signature,
+        }),
       }),
     );
     expect(exchange.status).toBe(201);
     const exchangeBody = await exchange.json();
-    expect(exchangeBody.grant).toMatchObject({ token: "fresh-token", authority: "host", scope: "management" });
+    expect(exchangeBody.grant).toMatchObject({
+      token: "fresh-token",
+      authority: "host",
+      scope: "management",
+    });
     expect(JSON.stringify(exchangeBody)).not.toContain("root-token");
 
     const devices = await fetchHandler(

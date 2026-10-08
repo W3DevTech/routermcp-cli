@@ -7,36 +7,36 @@ import type {
   TransportSendOptions,
 } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import type { ConnectionLease } from "../daemon/connection-tracker.js";
 import { type ServerHandle, serve } from "../compat/index.js";
 import type { ServerConfig } from "../config/types.js";
 import {
-  CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
+  BrowserManagementError,
+  type BrowserManagementSessionStore,
   CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
   CONTROL_PLANE_BROWSER_DEVICES_PATH,
   CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  CONTROL_PLANE_DEFAULT_EVENT_LIMIT,
   CONTROL_PLANE_HEALTH_PATH,
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
   ConfigMutationError,
+  type ControlPlane,
+  type ControlPlaneMutationResult,
+  ControlPlaneWorkspaceNotFoundError,
+  isValidWorkspaceId,
   MANAGEMENT_BODY_LIMIT_BYTES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
-  isValidWorkspaceId,
+  type ManagementCredentialStore,
   parseExecutionModePatch,
   parseManagementJsonBody,
   parseServerEnabledPatch,
   sanitizeText,
-  ControlPlaneWorkspaceNotFoundError,
-  type ControlPlane,
-  type ControlPlaneMutationResult,
-  BrowserManagementError,
-  type ManagementCredentialStore,
   WorkspaceMcpCredentialStore,
-  type BrowserManagementSessionStore,
 } from "../control-plane/index.js";
-import { TransportError } from "../utils/errors.js";
-import { ExecutionError } from "../core/execution-service.js";
 import { ExecutionJobQueueFullError } from "../core/execution-jobs.js";
+import { ExecutionError } from "../core/execution-service.js";
+import type { ConnectionLease } from "../daemon/connection-tracker.js";
+import { TransportError } from "../utils/errors.js";
 
 export {
   CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
@@ -366,10 +366,8 @@ export function createHttpServerTransport(
 
   const corsHeaders = (request: Request): Record<string, string> => ({
     "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers":
-      `Authorization, Content-Type, If-Match, Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
-    "Access-Control-Expose-Headers":
-      `Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
+    "Access-Control-Allow-Headers": `Authorization, Content-Type, If-Match, Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
+    "Access-Control-Expose-Headers": `Mcp-Session-Id, ${DAEMON_BRIDGE_LEASE_HEADER}, ${DAEMON_WORKSPACE_HEADER}`,
     ...corsPolicyHeaders(request, corsPolicy),
   });
 
@@ -469,7 +467,10 @@ export function createHttpServerTransport(
 
                 if (managementRoute.kind === "workspace-mcp-credential") {
                   if (!options.workspaceMcpCredentials || !options.authToken) {
-                    return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                    return new Response("Not Found", {
+                      status: 404,
+                      headers: corsHeaders(request),
+                    });
                   }
                   if (!isLocalAuthorized(request, options.authToken)) {
                     return new Response("Unauthorized", {
@@ -492,8 +493,8 @@ export function createHttpServerTransport(
                 }
 
                 if (
-                  (managementRoute.kind === "browser-devices" ||
-                    managementRoute.kind === "browser-device")
+                  managementRoute.kind === "browser-devices" ||
+                  managementRoute.kind === "browser-device"
                     ? !isBrowserManagementAuthorized(request, options)
                     : !isLocalAuthorized(request, options.authToken)
                 ) {
@@ -858,9 +859,7 @@ export function createHttpServerTransport(
   return handle;
 }
 
-type BridgeLeaseRoute =
-  | { kind: "acquire" }
-  | { kind: "heartbeat" | "release"; leaseId: string };
+type BridgeLeaseRoute = { kind: "acquire" } | { kind: "heartbeat" | "release"; leaseId: string };
 
 type ControlPlaneRoute =
   | { kind: "status" }
@@ -881,7 +880,15 @@ type ControlPlaneRoute =
   | { kind: "workspace-sessions"; workspaceId: string }
   | { kind: "workspace-metrics"; workspaceId: string }
   | { kind: "workspace-events"; workspaceId: string; limit: number }
-  | { kind: "workspace-tools"; workspaceId: string; filter: string }
+  | {
+      kind: "workspace-tools";
+      workspaceId: string;
+      filter: string;
+      query?: string;
+      cursor?: string;
+      limit?: number;
+      includeSchema?: boolean;
+    }
   | { kind: "workspace-tool-search"; workspaceId: string }
   | { kind: "workspace-tool-call"; workspaceId: string }
   | { kind: "workspace-code-run"; workspaceId: string }
@@ -905,7 +912,10 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
   }
   if (url.pathname === WORKSPACE_MCP_CREDENTIAL_PATH) {
     return url.search
-      ? { kind: "invalid", message: "The workspace MCP credential does not accept query parameters" }
+      ? {
+          kind: "invalid",
+          message: "The workspace MCP credential does not accept query parameters",
+        }
       : { kind: "workspace-mcp-credential" };
   }
   if (
@@ -914,7 +924,10 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
     url.pathname === CONTROL_PLANE_BROWSER_EXCHANGE_PATH
   ) {
     if (url.search) {
-      return { kind: "invalid", message: "Browser management endpoints do not accept query parameters" };
+      return {
+        kind: "invalid",
+        message: "Browser management endpoints do not accept query parameters",
+      };
     }
     if (url.pathname === CONTROL_PLANE_BROWSER_DEVICES_PATH) return { kind: "browser-devices" };
     if (url.pathname === CONTROL_PLANE_BROWSER_CHALLENGE_PATH) return { kind: "browser-challenge" };
@@ -922,7 +935,10 @@ function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | nu
   }
   if (url.pathname.startsWith(`${CONTROL_PLANE_BROWSER_DEVICES_PATH}/`)) {
     if (url.search) {
-      return { kind: "invalid", message: "Browser device endpoints do not accept query parameters" };
+      return {
+        kind: "invalid",
+        message: "Browser device endpoints do not accept query parameters",
+      };
     }
     const rawDeviceId = url.pathname.slice(`${CONTROL_PLANE_BROWSER_DEVICES_PATH}/`.length);
     const deviceId = decodePathPart(rawDeviceId);
@@ -980,7 +996,10 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
             };
           }
           if (!/^\d+$/.test(rawLimit)) {
-            return { kind: "invalid", message: "The limit query parameter must be a positive integer" };
+            return {
+              kind: "invalid",
+              message: "The limit query parameter must be a positive integer",
+            };
           }
           const parsed = Number(rawLimit);
           if (!Number.isSafeInteger(parsed)) {
@@ -993,9 +1012,74 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
           };
         }
         case "tools": {
+          const allowedParameters = new Set([
+            "filter",
+            "query",
+            "limit",
+            "cursor",
+            "includeSchema",
+          ]);
+          for (const [name] of url.searchParams) {
+            if (!allowedParameters.has(name)) {
+              return { kind: "invalid", message: `Unsupported tools query parameter: ${name}` };
+            }
+          }
+          for (const name of allowedParameters) {
+            if (url.searchParams.getAll(name).length > 1) {
+              return { kind: "invalid", message: `The ${name} query parameter cannot be repeated` };
+            }
+          }
+
+          const rawQuery = url.searchParams.get("query");
           const rawFilter = url.searchParams.get("filter");
-          if (url.searchParams.size > (rawFilter === null ? 0 : 1)) {
-            return { kind: "invalid", message: "Only the filter query parameter is supported" };
+          if (rawQuery !== null) {
+            if (rawFilter !== null) {
+              return {
+                kind: "invalid",
+                message: "The filter and query parameters cannot be combined",
+              };
+            }
+            const rawLimit = url.searchParams.get("limit");
+            let limit: number | undefined;
+            if (rawLimit !== null) {
+              if (!/^\d+$/u.test(rawLimit)) {
+                return { kind: "invalid", message: "The limit query parameter must be an integer" };
+              }
+              limit = Number(rawLimit);
+              if (!Number.isSafeInteger(limit)) {
+                return { kind: "invalid", message: "The limit query parameter is too large" };
+              }
+            }
+            const rawIncludeSchema = url.searchParams.get("includeSchema");
+            let includeSchema: boolean | undefined;
+            if (rawIncludeSchema !== null) {
+              if (!/^(?:true|false)$/iu.test(rawIncludeSchema)) {
+                return {
+                  kind: "invalid",
+                  message: "The includeSchema query parameter must be true or false",
+                };
+              }
+              includeSchema = rawIncludeSchema.toLowerCase() === "true";
+            }
+            return {
+              kind: "workspace-tools",
+              workspaceId,
+              filter: "",
+              query: rawQuery,
+              ...(url.searchParams.has("cursor")
+                ? { cursor: url.searchParams.get("cursor") ?? "" }
+                : {}),
+              ...(limit !== undefined ? { limit } : {}),
+              ...(includeSchema !== undefined ? { includeSchema } : {}),
+            };
+          }
+
+          if (
+            url.searchParams.has("limit") ||
+            url.searchParams.has("cursor") ||
+            url.searchParams.has("includeSchema")
+          ) {
+            return { kind: "invalid", message: "Paging parameters require an explicit query" };
           }
           if (rawFilter !== null && (rawFilter.length === 0 || rawFilter.length > 256)) {
             return { kind: "invalid", message: "The filter query parameter is invalid" };
@@ -1005,15 +1089,24 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
         case "tool-calls":
         case "tools-call":
           return url.search
-            ? { kind: "invalid", message: "The tool call endpoint does not accept query parameters" }
+            ? {
+                kind: "invalid",
+                message: "The tool call endpoint does not accept query parameters",
+              }
             : { kind: "workspace-tool-call", workspaceId };
         case "code-runs":
           return url.search
-            ? { kind: "invalid", message: "The code-runs endpoint does not accept query parameters" }
+            ? {
+                kind: "invalid",
+                message: "The code-runs endpoint does not accept query parameters",
+              }
             : { kind: "workspace-code-run", workspaceId };
         case "jobs": {
           if (url.search) {
-            return { kind: "invalid", message: "The jobs endpoint does not accept query parameters" };
+            return {
+              kind: "invalid",
+              message: "The jobs endpoint does not accept query parameters",
+            };
           }
           return { kind: "invalid", message: "A job ID is required" };
         }
@@ -1056,7 +1149,10 @@ function parseControlPlanePath(url: URL): ControlPlaneRoute | null {
     }
     if (parts.length === 3 && parts[1] === "code" && parts[2] === "execute") {
       return url.search
-        ? { kind: "invalid", message: "The code execution endpoint does not accept query parameters" }
+        ? {
+            kind: "invalid",
+            message: "The code execution endpoint does not accept query parameters",
+          }
         : { kind: "workspace-code-run", workspaceId };
     }
 
@@ -1149,17 +1245,16 @@ async function handleControlPlaneRequest(
   );
 
   if (route.kind === "invalid") {
-    return jsonResponse(
-      { error: "Invalid request", message: route.message },
-      400,
-      responseHeaders,
-    );
+    return jsonResponse({ error: "Invalid request", message: route.message }, 400, responseHeaders);
   }
 
   const workspaceId = getControlPlaneRouteWorkspaceId(route);
   if (workspaceId && !controlPlane.isWorkspaceRegistered(workspaceId)) {
     return jsonResponse(
-      { error: "workspace-not-found", message: "Workspace is not registered with this daemon host" },
+      {
+        error: "workspace-not-found",
+        message: "Workspace is not registered with this daemon host",
+      },
       404,
       responseHeaders,
     );
@@ -1208,8 +1303,17 @@ async function handleControlPlaneRequest(
       return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
     }
     try {
-      const tools = controlPlane.listWorkspaceTools(route.workspaceId, route.filter);
-      return tools ? jsonResponse(tools, 200, responseHeaders) : executionUnavailableResponse(responseHeaders);
+      const tools =
+        route.query === undefined
+          ? controlPlane.listWorkspaceTools(route.workspaceId, route.filter)
+          : controlPlane.queryWorkspaceTools(route.workspaceId, route.query, {
+              ...(route.cursor !== undefined ? { cursor: route.cursor } : {}),
+              ...(route.limit !== undefined ? { limit: route.limit } : {}),
+              ...(route.includeSchema !== undefined ? { includeSchema: route.includeSchema } : {}),
+            });
+      return tools
+        ? jsonResponse(tools, 200, responseHeaders)
+        : executionUnavailableResponse(responseHeaders);
     } catch (error) {
       return executionErrorResponse(error, responseHeaders);
     }
@@ -1221,9 +1325,18 @@ async function handleControlPlaneRequest(
     }
     try {
       const body = await parseManagementJsonBody(request);
-      const task = parseExecutionTask(body);
-      const result = controlPlane.searchWorkspaceTools(route.workspaceId, task);
-      return result ? jsonResponse(result, 200, responseHeaders) : executionUnavailableResponse(responseHeaders);
+      const searchRequest = parseExecutionSearchRequest(body);
+      const result =
+        searchRequest.kind === "task"
+          ? controlPlane.searchWorkspaceTools(route.workspaceId, searchRequest.task)
+          : controlPlane.queryWorkspaceTools(
+              route.workspaceId,
+              searchRequest.query,
+              searchRequest.options,
+            );
+      return result
+        ? jsonResponse(result, 200, responseHeaders)
+        : executionUnavailableResponse(responseHeaders);
     } catch (error) {
       return executionErrorResponse(error, responseHeaders);
     }
@@ -1236,7 +1349,9 @@ async function handleControlPlaneRequest(
     try {
       const body = await parseManagementJsonBody(request);
       const executionRequest =
-        route.kind === "workspace-tool-call" ? parseExecutionToolCall(body) : parseExecutionCodeRun(body);
+        route.kind === "workspace-tool-call"
+          ? parseExecutionToolCall(body)
+          : parseExecutionCodeRun(body);
       const job = controlPlane.submitWorkspaceExecution(route.workspaceId, executionRequest);
       return jsonResponse({ job }, 202, responseHeaders);
     } catch (error) {
@@ -1246,12 +1361,17 @@ async function handleControlPlaneRequest(
 
   if (route.kind === "workspace-job") {
     if (request.method === "GET" || request.method === "DELETE") {
-      const job = request.method === "GET"
-        ? controlPlane.getWorkspaceJob(route.workspaceId, route.jobId)
-        : controlPlane.cancelWorkspaceJob(route.workspaceId, route.jobId);
+      const job =
+        request.method === "GET"
+          ? controlPlane.getWorkspaceJob(route.workspaceId, route.jobId)
+          : controlPlane.cancelWorkspaceJob(route.workspaceId, route.jobId);
       return job
         ? jsonResponse({ job }, 200, responseHeaders)
-        : jsonResponse({ error: "job-not-found", message: "Execution job was not found" }, 404, responseHeaders);
+        : jsonResponse(
+            { error: "job-not-found", message: "Execution job was not found" },
+            404,
+            responseHeaders,
+          );
     }
     return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
   }
@@ -1426,7 +1546,10 @@ async function handleWorkspaceMcpRequest(
       sessionId ??= randomUUID();
       const existingContext = sessionContexts.get(sessionId);
       if (existingContext?.workspaceId && existingContext.workspaceId !== workspaceId) {
-        throw new BridgeRequestContextError("MCP session is already bound to another workspace", 400);
+        throw new BridgeRequestContextError(
+          "MCP session is already bound to another workspace",
+          400,
+        );
       }
       requestContext = { ...existingContext, workspaceId };
       if (!existingContext) newlyBound = true;
@@ -1581,7 +1704,10 @@ async function handleServerPatch(
   const expectedDigest = requireIfMatch(request);
   if (!expectedDigest) {
     return jsonResponse(
-      { error: "precondition-required", message: "If-Match must contain the current config digest" },
+      {
+        error: "precondition-required",
+        message: "If-Match must contain the current config digest",
+      },
       428,
       responseHeaders,
     );
@@ -1611,7 +1737,10 @@ async function handleFeaturesPatch(
   const expectedDigest = requireIfMatch(request);
   if (!expectedDigest) {
     return jsonResponse(
-      { error: "precondition-required", message: "If-Match must contain the current config digest" },
+      {
+        error: "precondition-required",
+        message: "If-Match must contain the current config digest",
+      },
       428,
       responseHeaders,
     );
@@ -1637,10 +1766,7 @@ function requireIfMatch(request: Request): string | null {
   return value && !value.includes(",") ? value : null;
 }
 
-function managementErrorResponse(
-  error: unknown,
-  headers: Record<string, string>,
-): Response {
+function managementErrorResponse(error: unknown, headers: Record<string, string>): Response {
   if (error instanceof ControlPlaneWorkspaceNotFoundError) {
     return jsonResponse(
       { error: error.code, message: "Workspace is not registered with this daemon host" },
@@ -1697,15 +1823,50 @@ function executionErrorResponse(error: unknown, headers: Record<string, string>)
   );
 }
 
-function parseExecutionTask(value: unknown): string {
+function parseExecutionSearchRequest(value: unknown):
+  | { kind: "task"; task: string }
+  | {
+      kind: "query";
+      query: string;
+      options: { cursor?: unknown; limit?: unknown; includeSchema?: unknown };
+    } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ExecutionError("Request body must be a JSON object", "invalid-request", 400);
   }
-  const task = (value as Record<string, unknown>).task;
-  if (typeof task !== "string" || task.trim().length === 0 || task.length > 2_048) {
-    throw new ExecutionError("task is required and must be at most 2048 characters", "invalid-request", 400);
+  const body = value as Record<string, unknown>;
+  if (body.query !== undefined) {
+    if (body.task !== undefined) {
+      throw new ExecutionError("task and query cannot be used together", "invalid-request", 400);
+    }
+    if (typeof body.query !== "string") {
+      throw new ExecutionError("query must be a string", "invalid-request", 400);
+    }
+    return {
+      kind: "query",
+      query: body.query,
+      options: {
+        ...(body.cursor !== undefined ? { cursor: body.cursor } : {}),
+        ...(body.limit !== undefined ? { limit: body.limit } : {}),
+        ...(body.includeSchema !== undefined ? { includeSchema: body.includeSchema } : {}),
+      },
+    };
   }
-  return task;
+  if (body.cursor !== undefined || body.limit !== undefined || body.includeSchema !== undefined) {
+    throw new ExecutionError(
+      "cursor, limit, and includeSchema require query mode",
+      "invalid-request",
+      400,
+    );
+  }
+  const task = body.task;
+  if (typeof task !== "string" || task.trim().length === 0 || task.length > 2_048) {
+    throw new ExecutionError(
+      "task is required and must be at most 2048 characters",
+      "invalid-request",
+      400,
+    );
+  }
+  return { kind: "task", task };
 }
 
 function parseExecutionToolCall(value: unknown): {
@@ -1718,7 +1879,11 @@ function parseExecutionToolCall(value: unknown): {
   }
   const body = value as Record<string, unknown>;
   if (typeof body.name !== "string" || body.name.trim().length === 0 || body.name.length > 512) {
-    throw new ExecutionError("name is required and must be at most 512 characters", "invalid-request", 400);
+    throw new ExecutionError(
+      "name is required and must be at most 512 characters",
+      "invalid-request",
+      400,
+    );
   }
   return {
     operation: "tool-call",
@@ -1733,7 +1898,11 @@ function parseExecutionCodeRun(value: unknown): { operation: "code-run"; code: s
   }
   const code = (value as Record<string, unknown>).code;
   if (typeof code !== "string" || code.trim().length === 0 || code.length > 64 * 1024) {
-    throw new ExecutionError("code is required and must be at most 65536 characters", "invalid-request", 400);
+    throw new ExecutionError(
+      "code is required and must be at most 65536 characters",
+      "invalid-request",
+      400,
+    );
   }
   return { operation: "code-run", code };
 }
@@ -1818,7 +1987,8 @@ async function handleManagementCredentialRequest(
     return jsonResponse(
       {
         error: "invalid-request",
-        message: status === 413 ? "Management handoff body is too large" : "Invalid management handoff",
+        message:
+          status === 413 ? "Management handoff body is too large" : "Invalid management handoff",
       },
       status,
       headers(request),
@@ -1849,7 +2019,10 @@ async function handleWorkspaceMcpCredentialRequest(
     if (Object.keys(record).some((key) => key !== "workspaceId" && key !== "rotate")) {
       throw new Error("Workspace MCP credential body contains an unsupported field");
     }
-    if (!isValidWorkspaceId(record.workspaceId) || !credentials.canIssueForWorkspace(record.workspaceId)) {
+    if (
+      !isValidWorkspaceId(record.workspaceId) ||
+      !credentials.canIssueForWorkspace(record.workspaceId)
+    ) {
       throw new Error("Workspace MCP credential workspace is not available");
     }
 
@@ -1903,13 +2076,10 @@ async function handleBrowserManagementRequest(
 ): Promise<Response> {
   const responseHeaders = headers(request);
   if (route.kind === "invalid") {
-    return jsonResponse(
-      { error: "invalid-request", message: route.message },
-      400,
-      responseHeaders,
-    );
+    return jsonResponse({ error: "invalid-request", message: route.message }, 400, responseHeaders);
   }
-  if (!browserManagement) return new Response("Not Found", { status: 404, headers: responseHeaders });
+  if (!browserManagement)
+    return new Response("Not Found", { status: 404, headers: responseHeaders });
 
   try {
     if (route.kind === "browser-challenge") {
@@ -1928,7 +2098,11 @@ async function handleBrowserManagementRequest(
         await readBoundedJsonBody(request, MAX_MANAGEMENT_HANDOFF_BODY_BYTES, "browser exchange"),
       );
       const result = await browserManagement.exchange(input, credentials);
-      return jsonResponse(result, 201, withWorkspaceAttribution(responseHeaders, result.grant.workspaceId));
+      return jsonResponse(
+        result,
+        201,
+        withWorkspaceAttribution(responseHeaders, result.grant.workspaceId),
+      );
     }
 
     if (route.kind === "browser-devices") {
@@ -1939,7 +2113,11 @@ async function handleBrowserManagementRequest(
         return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
       }
       const input = parseBrowserDeviceRegistration(
-        await readBoundedJsonBody(request, MAX_MANAGEMENT_HANDOFF_BODY_BYTES, "browser device registration"),
+        await readBoundedJsonBody(
+          request,
+          MAX_MANAGEMENT_HANDOFF_BODY_BYTES,
+          "browser device registration",
+        ),
       );
       const device = await browserManagement.register(input);
       return jsonResponse({ device }, 201, responseHeaders);
@@ -1952,21 +2130,40 @@ async function handleBrowserManagementRequest(
       const removed = await browserManagement.revoke(route.deviceId);
       return removed
         ? new Response(null, { status: 204, headers: responseHeaders })
-        : jsonResponse({ error: "device-not-found", message: "Browser device was not found" }, 404, responseHeaders);
+        : jsonResponse(
+            { error: "device-not-found", message: "Browser device was not found" },
+            404,
+            responseHeaders,
+          );
     }
 
     return new Response("Method Not Allowed", { status: 405, headers: responseHeaders });
   } catch (error) {
     if (error instanceof RequestBodyLimitError) {
-      return jsonResponse({ error: "request-too-large", message: "Browser management body is too large" }, 413, responseHeaders);
+      return jsonResponse(
+        { error: "request-too-large", message: "Browser management body is too large" },
+        413,
+        responseHeaders,
+      );
     }
     if (error instanceof BrowserManagementError) {
       const status =
-        error.code === "DEVICE_NOT_FOUND" || error.code === "CHALLENGE_NOT_FOUND" ? 404 :
-        error.code === "DEVICE_KEY_MISMATCH" || error.code === "DEVICE_CAPACITY" ? 409 : 400;
-      return jsonResponse({ error: error.code.toLowerCase(), message: sanitizeControlError(error) }, status, responseHeaders);
+        error.code === "DEVICE_NOT_FOUND" || error.code === "CHALLENGE_NOT_FOUND"
+          ? 404
+          : error.code === "DEVICE_KEY_MISMATCH" || error.code === "DEVICE_CAPACITY"
+            ? 409
+            : 400;
+      return jsonResponse(
+        { error: error.code.toLowerCase(), message: sanitizeControlError(error) },
+        status,
+        responseHeaders,
+      );
     }
-    return jsonResponse({ error: "management-failed", message: sanitizeControlError(error) }, 500, responseHeaders);
+    return jsonResponse(
+      { error: "management-failed", message: sanitizeControlError(error) },
+      500,
+      responseHeaders,
+    );
   }
 }
 
@@ -1976,13 +2173,23 @@ function parseBrowserDeviceRegistration(value: unknown): {
   label?: string;
 } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new BrowserManagementError("Browser device registration must be an object", "INVALID_REQUEST");
+    throw new BrowserManagementError(
+      "Browser device registration must be an object",
+      "INVALID_REQUEST",
+    );
   }
   const record = value as Record<string, unknown>;
   if (Object.keys(record).some((key) => !["deviceId", "publicKey", "label"].includes(key))) {
-    throw new BrowserManagementError("Browser device registration contains an unsupported field", "INVALID_REQUEST");
+    throw new BrowserManagementError(
+      "Browser device registration contains an unsupported field",
+      "INVALID_REQUEST",
+    );
   }
-  if (record.publicKey === undefined || (record.deviceId !== undefined && typeof record.deviceId !== "string") || (record.label !== undefined && typeof record.label !== "string")) {
+  if (
+    record.publicKey === undefined ||
+    (record.deviceId !== undefined && typeof record.deviceId !== "string") ||
+    (record.label !== undefined && typeof record.label !== "string")
+  ) {
     throw new BrowserManagementError("Browser device registration is invalid", "INVALID_REQUEST");
   }
   return {
@@ -2003,7 +2210,9 @@ function parseBrowserManagementExchange(value: unknown): {
   }
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).some((key) => !["protocolVersion", "deviceId", "challengeId", "signature"].includes(key)) ||
+    Object.keys(record).some(
+      (key) => !["protocolVersion", "deviceId", "challengeId", "signature"].includes(key),
+    ) ||
     (record.protocolVersion !== undefined && record.protocolVersion !== "1") ||
     typeof record.deviceId !== "string" ||
     typeof record.challengeId !== "string" ||
@@ -2260,10 +2469,7 @@ function isJsonRpcResultError(message: JSONRPCMessage | null): boolean {
 
   const result = message.result;
   return (
-    typeof result === "object" &&
-    result !== null &&
-    "isError" in result &&
-    result.isError === true
+    typeof result === "object" && result !== null && "isError" in result && result.isError === true
   );
 }
 
@@ -2316,10 +2522,7 @@ function resolveRequestContext(
   // header-only compatibility path below.
   if (requestedWorkspaceId && tracker?.leases) {
     if (!sessionContext) {
-      throw new BridgeRequestContextError(
-        "MCP workspace selection requires a bridge lease",
-        400,
-      );
+      throw new BridgeRequestContextError("MCP workspace selection requires a bridge lease", 400);
     }
     return sessionContext;
   }
@@ -2358,9 +2561,7 @@ function readContextHeader(request: Request, name: string): string | undefined {
   return value && value.length <= 256 ? value : undefined;
 }
 
-function requestContextMetadata(
-  context: HttpRequestContext | undefined,
-): Record<string, string> {
+function requestContextMetadata(context: HttpRequestContext | undefined): Record<string, string> {
   return {
     ...(context?.workspaceId ? { workspaceId: context.workspaceId } : {}),
     ...(context?.leaseId ? { leaseId: context.leaseId } : {}),
@@ -2407,7 +2608,8 @@ function isControlPlaneAuthorized(
   if (!authorization) return false;
   return (
     authorization.authority === "host" ||
-    (currentWorkspaceId !== null && currentWorkspaceId !== undefined &&
+    (currentWorkspaceId !== null &&
+      currentWorkspaceId !== undefined &&
       authorization.workspaceId === currentWorkspaceId)
   );
 }
@@ -2450,10 +2652,7 @@ function isWorkspaceControlPlaneAuthorized(
   // A host grant is explicitly minted by the user-scoped daemon host and may
   // select any registered workspace. A workspace grant retains its original
   // claim and cannot be used to switch contexts.
-  return (
-    authorization.authority === "host" ||
-    authorization.workspaceId === workspaceId
-  );
+  return authorization.authority === "host" || authorization.workspaceId === workspaceId;
 }
 
 function getControlPlaneRouteWorkspaceId(route: ControlPlaneRoute): string | undefined {
@@ -2503,11 +2702,7 @@ function getBearerToken(request: Request): string | undefined {
   return token.length > 0 ? token : undefined;
 }
 
-function jsonResponse(
-  value: unknown,
-  status: number,
-  headers: Record<string, string>,
-): Response {
+function jsonResponse(value: unknown, status: number, headers: Record<string, string>): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: {

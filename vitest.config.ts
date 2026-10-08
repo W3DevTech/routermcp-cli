@@ -14,6 +14,9 @@ export default defineConfig({
       reporter: ["text", "lcov", "html"],
       include: ["src/**/*.ts"],
       exclude: [
+        // Generated portable contract code is owned and coverage-tested by canonical H02.
+        // CLI CI gates its source digests/provenance and shared semantic conformance separately.
+        "src/core/search/**",
         "src/cli/serve.ts",
         "src/cli/connect.ts",
         "src/cli/daemon.ts",

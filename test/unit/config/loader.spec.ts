@@ -70,6 +70,24 @@ describe("loadConfig", () => {
   });
 
   describe("basic loading", () => {
+    it.each([
+      { input: { enabled: true }, expected: true },
+      { input: { enabled: true, enableFuzzy: false }, expected: false },
+    ])("defaults legacy task fuzzy matching to $expected", async ({ input, expected }) => {
+      const configPath = join(tempDir, "routermcp.jsonc");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          mcpServers: { test: { transport: "stdio", command: "echo" } },
+          mcpToolSearch: input,
+        }),
+      );
+
+      const config = await loadConfig(configPath);
+
+      expect(config.mcpToolSearch?.enableFuzzy).toBe(expected);
+    });
+
     it("loads valid stdio config", async () => {
       const configPath = join(tempDir, "routermcp.jsonc");
       await writeFile(

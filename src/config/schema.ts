@@ -88,6 +88,7 @@ const McpToolSearchConfigSchema = z.object({
   description: z.string().optional(),
   maxResults: z.number().int().min(1).max(50).optional().default(5),
   minScore: z.number().min(0).max(1).optional().default(0),
+  enableFuzzy: z.boolean().optional().default(true),
 });
 
 const OpenApiAuthSchema = z

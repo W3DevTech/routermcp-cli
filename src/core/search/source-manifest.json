@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 2,
+  "sourceRepository": "https://github.com/W3DevTech/routermcp.git",
+  "sourceCommit": "934729828cae77d09e77f242db0dedcaef28317d",
+  "sourcePackage": "packages/search",
+  "contractVersion": 1,
+  "sourceState": "prepared-published-head",
+  "publishedRef": "refs/heads/feat/search/h02-contract",
+  "publishedHead": "934729828cae77d09e77f242db0dedcaef28317d",
+  "mergedParent": null,
+  "files": [
+    {
+      "sourcePath": "packages/search/src/date.ts",
+      "targetPath": "src/core/search/date.ts",
+      "sourceSha256": "3f023b1afa0f164ac876704f5d2d4a8cdd597b56a6686d833911f196dd25d593",
+      "sha256": "28a32fba3dc27d5435c43cd3d602da9d5a84080fb1f173d83f8351c7a1dccce1"
+    },
+    {
+      "sourcePath": "packages/search/src/index.ts",
+      "targetPath": "src/core/search/index.ts",
+      "sourceSha256": "c4e67bf9bfb4a8d313e466a87599a06c27b4cd68f2d8e68ba7bdfe8693ed2d10",
+      "sha256": "e8e851b8cb088a69e81a794f3327b8913399e34b092196c9009abe09caace04c"
+    },
+    {
+      "sourcePath": "packages/search/src/match.ts",
+      "targetPath": "src/core/search/match.ts",
+      "sourceSha256": "77e1116f2944d7c559ad42425ff9d03d04c813bec8123c5caf79a0495c4b360c",
+      "sha256": "e077159865877d90f48b4896f3524586687f56ded584928fd0e071884120ed27"
+    },
+    {
+      "sourcePath": "packages/search/src/parser.ts",
+      "targetPath": "src/core/search/parser.ts",
+      "sourceSha256": "5f2e7d3dcc969f132f8f5b06db6b7cbc20ff4c3f8abdd695f6e076daf4f79349",
+      "sha256": "e90180ab4290250bfd40c30ceb36daaeb24bb2befcd9595ddf12a97311eb9fbc"
+    },
+    {
+      "sourcePath": "packages/search/src/ranking.ts",
+      "targetPath": "src/core/search/ranking.ts",
+      "sourceSha256": "c2967a904ea76053ad9de5aa6cc55e17184bc26c4e7d5845cddebe078d94dc06",
+      "sha256": "bdce299565797b1fa6c59656c5d409ce17a5c5406fc88630ee2d1e5c1913ff37"
+    },
+    {
+      "sourcePath": "packages/search/src/types.ts",
+      "targetPath": "src/core/search/types.ts",
+      "sourceSha256": "feb08a2d70b980209a9e93178063f2cc1caae4150d6b726364208c35f70b6761",
+      "sha256": "308cbce45ac3772e7f98110ee8dbb0eaad2d3478029fe45549c810b01ce24127"
+    },
+    {
+      "sourcePath": "packages/search/src/validation.ts",
+      "targetPath": "src/core/search/validation.ts",
+      "sourceSha256": "9e43de98b17bddfee326a6264805a50972303de43c5ff5c395a2fc6ffba3471e",
+      "sha256": "b7bbd24fd2a81f8af1db3c02d0a7f51f25cb235ded7b3abed7ab4f19ee4fd305"
+    },
+    {
+      "sourcePath": "packages/search/fixtures/semantic-corpus.json",
+      "targetPath": "test/fixtures/search/semantic-corpus.json",
+      "sourceSha256": "2caa596afdbb64e7400ed7d2d5d1e77531e221600dfe429c1f6a43cc9ce2cb92",
+      "sha256": "2caa596afdbb64e7400ed7d2d5d1e77531e221600dfe429c1f6a43cc9ce2cb92"
+    }
+  ]
+}

@@ -1,0 +1,147 @@
+{
+  "contractVersion": 1,
+  "grammarCases": [
+    {
+      "name": "literal terms combine and exclusions stay separate",
+      "surface": "dashboard",
+      "query": "Cache café -archived",
+      "expected": {
+        "requiredText": ["Cache", "café"],
+        "excludedText": ["archived"],
+        "effectiveTypes": ["project", "server", "tool"],
+        "groups": {},
+        "spans": [[0, 5], [6, 10], [11, 20]]
+      }
+    },
+    {
+      "name": "entity aliases and repeated type values form one OR group",
+      "surface": "dashboard",
+      "query": "entity:TOOL type:server",
+      "expected": {
+        "requiredText": [],
+        "excludedText": [],
+        "effectiveTypes": ["tool", "server"],
+        "groups": {"type": {"include": ["tool", "server"], "exclude": []}},
+        "spans": [[0, 11], [12, 23]]
+      }
+    },
+    {
+      "name": "repeated tag filters OR and each negative tag excludes",
+      "surface": "registry",
+      "query": "type:registry tag:FileSystem tag:search -tag:internal",
+      "expected": {
+        "requiredText": [],
+        "excludedText": [],
+        "effectiveTypes": ["registry"],
+        "groups": {
+          "type": {"include": ["registry"], "exclude": []},
+          "tag": {"include": ["FileSystem", "search"], "exclude": ["internal"]}
+        },
+        "spans": [[0, 13], [14, 28], [29, 39], [40, 53]]
+      }
+    },
+    {
+      "name": "quoted text unescapes quotes and backslashes",
+      "surface": "dashboard",
+      "query": "\"say \\\"hello\\\" and \\\\ backslash\"",
+      "expected": {
+        "requiredText": ["say \"hello\" and \\ backslash"],
+        "excludedText": [],
+        "effectiveTypes": ["project", "server", "tool"],
+        "groups": {},
+        "spans": [[0, 32]]
+      }
+    },
+    {
+      "name": "quoted reference values preserve spaces",
+      "surface": "dashboard",
+      "query": "team:\"Research Team\"",
+      "expected": {
+        "requiredText": [],
+        "excludedText": [],
+        "effectiveTypes": ["project", "server", "tool"],
+        "groups": {"team": {"include": ["Research Team"], "exclude": []}},
+        "spans": [[0, 20]]
+      }
+    },
+    {
+      "name": "astral symbols use code-point offsets",
+      "surface": "dashboard",
+      "query": "🔎 type:TOOL",
+      "expected": {
+        "requiredText": ["🔎"],
+        "excludedText": [],
+        "effectiveTypes": ["tool"],
+        "groups": {"type": {"include": ["tool"], "exclude": []}},
+        "spans": [[0, 1], [2, 11]]
+      }
+    }
+  ],
+  "literalCases": [
+    {"query": "café", "fields": ["CAFÉ noir"], "matches": true},
+    {"query": "café", "fields": ["café noir"], "matches": true},
+    {"query": "café", "fields": ["café noir"], "matches": true},
+    {"query": "МОСКВА", "fields": ["москва на реке"], "matches": true},
+    {"query": "東京", "fields": ["東京で地図を探す"], "matches": true},
+    {"query": "cafe", "fields": ["café noir"], "matches": false},
+    {"query": "%_", "fields": ["100%_ literal"], "matches": true},
+    {"query": "snake_case", "fields": ["snake_case tool"], "matches": true}
+  ],
+  "rankingCases": [
+    {
+      "profile": "hosted",
+      "task": "search documents",
+      "candidates": [
+        {"identity": "z-doc", "name": "searchDocuments", "description": ""},
+        {"identity": "none", "name": "calendar", "description": "Create events"},
+        {"identity": "a-doc", "name": "search", "description": "documents"}
+      ],
+      "expected": [
+        {"identity": "a-doc", "score": 2.5}
+      ]
+    },
+    {
+      "profile": "cli",
+      "task": "search files",
+      "candidates": [
+        {"identity": "workspace.searchFiles", "name": "searchFiles", "description": ""},
+        {"identity": "workspace.listFiles", "name": "listFiles", "description": "search files"},
+        {"identity": "workspace.unrelated", "name": "unrelated", "description": ""}
+      ],
+      "expected": [
+        {"identity": "workspace.searchFiles", "score": 4.5},
+        {"identity": "workspace.listFiles", "score": 4}
+      ]
+    },
+    {
+      "profile": "hosted",
+      "task": "foobar",
+      "candidates": [{"identity": "camel", "name": "fooBar", "description": ""}],
+      "expected": [{"identity": "camel", "score": 1.5}]
+    },
+    {
+      "profile": "cli",
+      "task": "foobar",
+      "candidates": [{"identity": "camel", "name": "fooBar", "description": ""}],
+      "expected": []
+    },
+    {
+      "profile": "hosted",
+      "task": "foo",
+      "candidates": [{"identity": "camel", "name": "fooBar", "description": ""}],
+      "expected": [{"identity": "camel", "score": 0.5}]
+    },
+    {
+      "profile": "cli",
+      "task": "foo",
+      "candidates": [{"identity": "camel", "name": "fooBar", "description": ""}],
+      "expected": [{"identity": "camel", "score": 2.5}]
+    },
+    {
+      "profile": "cli",
+      "task": "bar",
+      "candidates": [{"identity": "digit-boundary", "name": "foo2Bar", "description": ""}],
+      "expected": [{"identity": "digit-boundary", "score": 0.5}]
+    }
+  ]
+}

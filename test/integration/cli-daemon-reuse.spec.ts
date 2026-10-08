@@ -2,13 +2,13 @@ import { spawn } from "node:child_process";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getWorkspaceId, isProcessRunning } from "../../src/daemon/index.js";
 import {
   cleanupTempDir,
   createTempDir,
   getAvailablePort,
   writeConfigFile,
 } from "../helpers/test-utils.js";
-import { getWorkspaceId, isProcessRunning } from "../../src/daemon/index.js";
 
 interface CliResult {
   code: number | null;
@@ -171,8 +171,14 @@ describe("CLI daemon reuse", () => {
       };
       expect(registry.workspaces).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: getWorkspaceId(projectDir, configPath), directory: projectDir }),
-          expect.objectContaining({ id: getWorkspaceId(secondProjectDir, configPath), directory: secondProjectDir }),
+          expect.objectContaining({
+            id: getWorkspaceId(projectDir, configPath),
+            directory: projectDir,
+          }),
+          expect.objectContaining({
+            id: getWorkspaceId(secondProjectDir, configPath),
+            directory: secondProjectDir,
+          }),
         ]),
       );
 
@@ -419,10 +425,13 @@ describe("CLI daemon reuse", () => {
       const hostManifest = JSON.parse(
         await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
       ) as { controlUrl: string; localAuthToken: string };
-      const handoff = await fetch(new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
-      });
+      const handoff = await fetch(
+        new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`),
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
+        },
+      );
       expect(handoff.status).toBe(201);
       const grant = (await handoff.json()) as { token: string };
       const headers = { Authorization: `Bearer ${grant.token}` };
@@ -452,7 +461,8 @@ describe("CLI daemon reuse", () => {
       );
       let afterPayload = await after.json();
       while (Date.now() < deadline) {
-        if (afterPayload.status.state === "ready" || afterPayload.status.state === "degraded") break;
+        if (afterPayload.status.state === "ready" || afterPayload.status.state === "degraded")
+          break;
         await new Promise((resolveWait) => setTimeout(resolveWait, 50));
         after = await fetch(
           new URL(`/api/v1/workspaces/${workspaceId}/status`, `${hostManifest.controlUrl}/`),
@@ -524,10 +534,13 @@ describe("CLI daemon reuse", () => {
       const hostManifest = JSON.parse(
         await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
       ) as { controlUrl: string; localAuthToken: string };
-      const handoff = await fetch(new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
-      });
+      const handoff = await fetch(
+        new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`),
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${hostManifest.localAuthToken}` },
+        },
+      );
       expect(handoff.status).toBe(201);
       const grant = (await handoff.json()) as { token: string };
       const headers = { Authorization: `Bearer ${grant.token}` };
@@ -550,7 +563,7 @@ describe("CLI daemon reuse", () => {
       expect(missingPayload.status.state).toBe("offline");
       expect(missingPayload.servers).toEqual([]);
 
-      await writeFile(secondConfigPath, "{\"mcpServers\":", "utf8");
+      await writeFile(secondConfigPath, '{"mcpServers":', "utf8");
       const malformed = await fetch(endpoint, { headers });
       expect(malformed.status).toBe(200);
       const malformedPayload = (await malformed.json()) as {
@@ -637,13 +650,65 @@ describe("CLI daemon reuse", () => {
 
       const parseTools = (result: CliResult) => {
         const line = result.stdout.trim().split("\n").at(-1);
-        return (JSON.parse(line ?? "{}") as { result?: { tools?: Array<{ name: string }> } }).result
-          ?.tools?.map((tool) => tool.name) ?? [];
+        return (
+          (
+            JSON.parse(line ?? "{}") as { result?: { tools?: Array<{ name: string }> } }
+          ).result?.tools?.map((tool) => tool.name) ?? []
+        );
       };
       expect(parseTools(firstTools)).toContain("echo");
       expect(parseTools(firstTools)).not.toContain("add");
       expect(parseTools(secondTools)).toContain("add");
       expect(parseTools(secondTools)).not.toContain("echo");
+
+      const hostManifest = JSON.parse(
+        await readFile(resolve(stateDir, "routermcp", "host", "runtime.json"), "utf8"),
+      ) as { controlUrl: string; localAuthToken: string };
+      const issueWorkspaceGrant = async (workspaceId: string): Promise<string> => {
+        const response = await fetch(
+          new URL("/api/v1/management/handoff", `${hostManifest.controlUrl}/`),
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${hostManifest.localAuthToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ workspaceId }),
+          },
+        );
+        expect(response.status).toBe(201);
+        return ((await response.json()) as { token: string }).token;
+      };
+      const firstWorkspaceId = getWorkspaceId(projectDir, configPath);
+      const secondWorkspaceId = getWorkspaceId(secondProjectDir, secondConfigPath);
+      const firstGrant = await issueWorkspaceGrant(firstWorkspaceId);
+      const secondGrant = await issueWorkspaceGrant(secondWorkspaceId);
+      const searchWorkspaceTools = (workspaceId: string, token: string) =>
+        fetch(
+          new URL(
+            `/api/v1/workspaces/${workspaceId}/tools?query=type%3Atool&limit=20`,
+            `${hostManifest.controlUrl}/`,
+          ),
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+
+      const firstSearch = await searchWorkspaceTools(firstWorkspaceId, firstGrant);
+      expect(firstSearch.status).toBe(200);
+      expect((await firstSearch.json()).results.map((tool: { name: string }) => tool.name)).toEqual(
+        ["echo"],
+      );
+
+      const secondSearch = await searchWorkspaceTools(secondWorkspaceId, secondGrant);
+      expect(secondSearch.status).toBe(200);
+      expect(
+        (await secondSearch.json()).results.map((tool: { name: string }) => tool.name),
+      ).toEqual(["add"]);
+
+      const crossWorkspaceSearch = await searchWorkspaceTools(secondWorkspaceId, firstGrant);
+      expect(crossWorkspaceSearch.status).toBe(200);
+      expect(
+        (await crossWorkspaceSearch.json()).results.map((tool: { name: string }) => tool.name),
+      ).toEqual(["add"]);
     } finally {
       const stopped = await runCli(
         entrypoint,
@@ -654,7 +719,6 @@ describe("CLI daemon reuse", () => {
       await cleanupTempDir(secondProjectDir);
     }
   }, 60_000);
-
 });
 
 async function runCli(
