@@ -103,6 +103,16 @@ The model then calls `routermcp.callTool` with the discovered tool:
 }
 ```
 
+**Response:**
+
+```json
+{
+  "content": [
+    { "type": "text", "text": "bonjour le monde" }
+  ]
+}
+```
+
 ## Literal Queries and Paging
 
 Use `query` when you need predictable filtering instead of fuzzy task ranking. `task` and `query` are separate modes and cannot be combined.
@@ -147,36 +157,69 @@ The query response is a page:
 
 `count` is the number of matches in this page. Set `limit` from 1 to 50 (default 20), then pass `nextCursor` as `cursor` with the same query and options to fetch the next page. A cursor is tied to the current visible tool catalog; if the catalog changes, restart without the cursor. Schemas are omitted by default and included only with `includeSchema: true`. Tools without known transport metadata, such as OpenAPI-derived tools, do not get an invented transport value.
 
-Code Mode uses the same literal query and paging fields on `routermcp.listTools`. Its response includes results for the current page and TypeScript definitions for those results. Continue with the returned cursor:
-
-```javascript
-const firstPage = await routermcp.listTools({
-  query: 'server:translator translate',
-  limit: 10,
-  includeSchema: true,
-});
-
-const nextPage = await routermcp.listTools({
-  query: 'server:translator translate',
-  limit: 10,
-  includeSchema: true,
-  cursor: firstPage.nextCursor,
-});
-```
-
-The legacy `filter` option continues to return TypeScript definitions using substring matching.
-
-Authenticated daemon clients can use the same query mode with `GET /api/v1/workspaces/{workspaceId}/tools?query=...&limit=...&cursor=...&includeSchema=true`, or `POST /api/v1/workspaces/{workspaceId}/tools/search` with a JSON body containing `query` and the optional paging fields. Task searches remain available through the POST route with `{ "task": "..." }`.
-
-**Response:**
+In Code Mode, `routermcp.listTools` is a separately registered MCP meta-tool. Call it through the
+MCP `tools/call` method; it is not a JavaScript namespace inside `routermcp.executeCode`:
 
 ```json
 {
-  "content": [
-    { "type": "text", "text": "bonjour le monde" }
-  ]
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "routermcp.listTools",
+    "arguments": {
+      "query": "server:translator translate",
+      "limit": 10,
+      "includeSchema": true
+    }
+  }
 }
 ```
+
+The successful MCP response wraps the Code Mode page as JSON text in
+`result.content[0].text`. That parsed object contains `results`, `count`, `nextCursor`, `warnings`,
+`coverage`, and `typeDefinitions` for the current page. Read and continue it with normal client-side
+MCP calls:
+
+```javascript
+const firstCall = await client.callTool({
+  name: "routermcp.listTools",
+  arguments: {
+    query: "server:translator translate",
+    limit: 10,
+    includeSchema: true,
+  },
+});
+const firstPage = JSON.parse(firstCall.content[0].text);
+const pageDeclarations = firstPage.typeDefinitions;
+
+if (firstPage.nextCursor !== null) {
+  const nextCall = await client.callTool({
+    name: "routermcp.listTools",
+    arguments: {
+      query: "server:translator translate",
+      limit: 10,
+      includeSchema: true,
+      cursor: firstPage.nextCursor,
+    },
+  });
+  const nextPage = JSON.parse(nextCall.content[0].text);
+}
+```
+
+`pageDeclarations` contains the generated declarations for the first page.
+
+Use the page-specific `typeDefinitions` when composing JavaScript for a separate
+`routermcp.executeCode` call. `nextCursor` is opaque and must be sent with the same query and
+options.
+
+The legacy `filter` option continues to return TypeScript definitions using substring matching.
+
+Authenticated daemon clients can use the same query mode with
+`GET /api/v1/workspaces/{workspaceId}/tools?query=...&limit=...&cursor=...&includeSchema=true`, or
+`POST /api/v1/workspaces/{workspaceId}/tools/search` with a JSON body containing `query` and the
+optional paging fields. Task searches remain available through the POST route with
+`{ "task": "..." }`.
 
 ## Ranking Algorithm
 

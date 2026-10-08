@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,10 @@ function parseArgs(args) {
 
 function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function readCommittedFile(repository, commit, filePath) {
+  return execFileSync("git", ["-C", repository, "show", `${commit}:${filePath}`]);
 }
 
 function generatedHeader(sourceCommit, sourcePath) {
@@ -152,6 +157,7 @@ async function main() {
   const generatedTypeScriptFiles = new Set(
     manifest.files.filter((entry) => entry.targetPath.endsWith(".ts")).map((entry) => entry.targetPath),
   );
+  const generatedFiles = new Map();
   const expectedFiles = new Set([manifestPath]);
   for (const entry of manifest.files) {
     const targetPath = path.resolve(repositoryRoot, entry.targetPath);
@@ -164,6 +170,7 @@ async function main() {
       throw new Error(`Generated search file digest mismatch: ${entry.targetPath}`);
     }
 
+    let sourceBytes = bytes;
     if (entry.targetPath.endsWith(".ts")) {
       const sourceFile = entry.sourcePath.slice(`${SEARCH_CONTRACT_SOURCE_PACKAGE}/`.length);
       const header = generatedHeader(manifest.sourceCommit, sourceFile);
@@ -171,8 +178,13 @@ async function main() {
       if (!contents.startsWith(header)) {
         throw new Error(`Generated search provenance header mismatch: ${entry.targetPath}`);
       }
-      validatePortableImports(contents.slice(header.length), entry, generatedTypeScriptFiles);
+      sourceBytes = bytes.subarray(Buffer.byteLength(header));
+      validatePortableImports(sourceBytes.toString("utf8"), entry, generatedTypeScriptFiles);
     }
+    if (digest(sourceBytes) !== entry.sourceSha256) {
+      throw new Error(`Generated search source digest mismatch: ${entry.targetPath}`);
+    }
+    generatedFiles.set(entry.targetPath, bytes);
   }
 
   for (const directory of ["src/core/search", "test/fixtures/search"]) {
@@ -196,6 +208,28 @@ async function main() {
       manifest.mergedParent !== verifiedParent
     ) {
       throw new Error("Manifest must be regenerated from the merged source SHA before landing verification");
+    }
+    for (const entry of manifest.files) {
+      const sourceBytes = readCommittedFile(sourceRepo, manifest.sourceCommit, entry.sourcePath);
+      if (digest(sourceBytes) !== entry.sourceSha256) {
+        throw new Error(`Pinned search source digest mismatch: ${entry.sourcePath}`);
+      }
+      const expectedBytes = entry.targetPath.endsWith(".ts")
+        ? Buffer.concat([
+            Buffer.from(
+              generatedHeader(
+                manifest.sourceCommit,
+                entry.sourcePath.slice(`${SEARCH_CONTRACT_SOURCE_PACKAGE}/`.length),
+              ),
+            ),
+            sourceBytes,
+          ])
+        : sourceBytes;
+      if (!generatedFiles.get(entry.targetPath)?.equals(expectedBytes)) {
+        throw new Error(
+          `Generated search content does not match pinned source: ${entry.targetPath}`,
+        );
+      }
     }
   }
 
