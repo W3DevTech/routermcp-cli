@@ -1,4 +1,4 @@
-// Generated from https://github.com/W3DevTech/routermcp.git@934729828cae77d09e77f242db0dedcaef28317d:packages/search/src/types.ts. Do not edit.
+// Generated from https://github.com/W3DevTech/routermcp.git@5fb9136c81e4a1c683a0bbd616e5f551cbe71849:packages/search/src/types.ts. Do not edit.
 export const SEARCH_CONTRACT_VERSION = 1 as const;
 
 export const SEARCH_LIMITS = {

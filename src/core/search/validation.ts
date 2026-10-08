@@ -1,4 +1,4 @@
-// Generated from https://github.com/W3DevTech/routermcp.git@934729828cae77d09e77f242db0dedcaef28317d:packages/search/src/validation.ts. Do not edit.
+// Generated from https://github.com/W3DevTech/routermcp.git@5fb9136c81e4a1c683a0bbd616e5f551cbe71849:packages/search/src/validation.ts. Do not edit.
 import { compareDateBounds, parseDateBound } from "./date";
 import {
   type ParsedQualifierClause,
@@ -437,10 +437,8 @@ function validateDateRange(clauses: readonly ValidatedSearchClause[]): void {
   if (after.length === 0 || before.length === 0) return;
 
   const earliestAfter = after.map(({ value }) => value).sort(compareDateBounds)[0];
-  const latestBefore = before
-    .map(({ value }) => value)
-    .sort(compareDateBounds)
-    .at(-1);
+  const sortedBefore = before.map(({ value }) => value).sort(compareDateBounds);
+  const latestBefore = sortedBefore[sortedBefore.length - 1];
   if (earliestAfter && latestBefore && compareDateBounds(earliestAfter, latestBefore) >= 0) {
     const bounds = [...after, ...before];
     const span = {
