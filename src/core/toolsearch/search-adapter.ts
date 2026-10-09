@@ -9,7 +9,6 @@ import {
   type SearchFieldValue,
   type SearchQualifierKey,
   type SearchWarning,
-  type ValidatedSearchQuery,
   validateSearchQuery,
 } from "../search/index.js";
 
@@ -18,6 +17,7 @@ export const TOOL_SEARCH_MAX_PAGE_SIZE = 50;
 export const TOOL_SEARCH_MAX_CURSOR_LENGTH = 16_384;
 
 const SEARCH_ORDER = "explicit-search-v1";
+const SHA256_HEX = /^[a-f0-9]{64}$/u;
 
 export interface ToolSearchPageOptions {
   cursor?: string;
@@ -60,6 +60,7 @@ export class ToolSearchCursorError extends Error {
 
 interface SearchableTool {
   identity: string;
+  identityFingerprint: string;
   source: ToolWithSource;
   candidate: {
     id: string;
@@ -71,14 +72,14 @@ interface SearchableTool {
 }
 
 interface ToolSearchCursor {
-  version: 1;
-  query: string;
+  version: 2;
+  queryHash: string;
   scope: "cli";
   order: typeof SEARCH_ORDER;
-  catalog: string;
+  catalogHash: string;
   limit: number;
   includeSchema: boolean;
-  lastIdentity: string;
+  lastIdentityHash: string;
 }
 
 /** Search the workspace-authorized, already-filtered CLI tool catalog. */
@@ -89,10 +90,11 @@ export function searchToolCatalog(
 ): ToolSearchPage {
   const parsed = parseSearchQuery(rawQuery);
   const query = validateSearchQuery(parsed, { surface: "cli" });
+  const queryHash = fingerprintString(query.canonical);
   const catalog = Array.from(tools, ([identity, source]) => toSearchableTool(identity, source));
   const catalogFingerprint = fingerprintCatalog(catalog);
-  const afterIdentity = options.cursor
-    ? decodeCursor(options.cursor, query, catalogFingerprint, options)
+  const afterIdentityHash = options.cursor
+    ? decodeCursor(options.cursor, queryHash, catalogFingerprint, options)
     : null;
 
   const matched = catalog
@@ -104,8 +106,10 @@ export function searchToolCatalog(
     .sort((left, right) => compareExplicitSearchOrder(left.order, right.order));
 
   let start = 0;
-  if (afterIdentity !== null) {
-    const previousIndex = matched.findIndex(({ entry }) => entry.identity === afterIdentity);
+  if (afterIdentityHash !== null) {
+    const previousIndex = matched.findIndex(
+      ({ entry }) => entry.identityFingerprint === afterIdentityHash,
+    );
     if (previousIndex < 0) {
       throw new ToolSearchCursorError(
         "The previous search page is no longer available. Restart the search without a cursor.",
@@ -123,10 +127,10 @@ export function searchToolCatalog(
     nextCursor:
       hasMore && page.length > 0
         ? encodeCursor(
-            query,
+            queryHash,
             catalogFingerprint,
             options,
-            page[page.length - 1]?.entry.identity ?? "",
+            page[page.length - 1]?.entry.identityFingerprint ?? "",
           )
         : null,
     warnings: [...query.warnings],
@@ -141,6 +145,7 @@ export function searchToolCatalog(
 function toSearchableTool(identity: string, source: ToolWithSource): SearchableTool {
   return {
     identity,
+    identityFingerprint: fingerprintString(identity),
     source,
     candidate: {
       id: identity,
@@ -212,28 +217,28 @@ function stableValue(value: unknown): unknown {
 }
 
 function encodeCursor(
-  query: ValidatedSearchQuery,
-  catalog: string,
+  queryHash: string,
+  catalogHash: string,
   options: ToolSearchPageOptions,
-  lastIdentity: string,
+  lastIdentityHash: string,
 ): string {
   const cursor: ToolSearchCursor = {
-    version: 1,
-    query: query.canonical,
+    version: 2,
+    queryHash,
     scope: "cli",
     order: SEARCH_ORDER,
-    catalog,
+    catalogHash,
     limit: options.limit,
     includeSchema: options.includeSchema,
-    lastIdentity,
+    lastIdentityHash,
   };
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
 function decodeCursor(
   token: string,
-  query: ValidatedSearchQuery,
-  catalog: string,
+  queryHash: string,
+  catalogHash: string,
   options: ToolSearchPageOptions,
 ): string {
   if (token.length > TOOL_SEARCH_MAX_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/u.test(token)) {
@@ -259,18 +264,23 @@ function decodeCursor(
   const cursor = parsed;
 
   if (
-    cursor.version !== 1 ||
+    cursor.version !== 2 ||
     cursor.scope !== "cli" ||
     cursor.order !== SEARCH_ORDER ||
-    typeof cursor.lastIdentity !== "string" ||
-    cursor.lastIdentity.length === 0
+    typeof cursor.queryHash !== "string" ||
+    !SHA256_HEX.test(cursor.queryHash) ||
+    typeof cursor.catalogHash !== "string" ||
+    !SHA256_HEX.test(cursor.catalogHash) ||
+    typeof cursor.lastIdentityHash !== "string" ||
+    !SHA256_HEX.test(cursor.lastIdentityHash) ||
+    typeof cursor.includeSchema !== "boolean"
   ) {
     throw new ToolSearchCursorError(
       "The search cursor is invalid. Restart the search without a cursor.",
     );
   }
   if (
-    cursor.query !== query.canonical ||
+    cursor.queryHash !== queryHash ||
     cursor.limit !== options.limit ||
     cursor.includeSchema !== options.includeSchema
   ) {
@@ -278,13 +288,18 @@ function decodeCursor(
       "The search cursor does not match this query. Restart the search.",
     );
   }
-  if (cursor.catalog !== catalog) {
+  if (cursor.catalogHash !== catalogHash) {
     throw new ToolSearchCursorError(
       "The tool catalog changed since the previous search page. Restart the search without a cursor.",
       true,
     );
   }
-  return cursor.lastIdentity;
+  return cursor.lastIdentityHash;
+}
+
+function fingerprintString(value: string): string {
+  // Hash exact UTF-16 code units so size is fixed even for long callable names.
+  return createHash("sha256").update(value, "utf16le").digest("hex");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ToolWithSource } from "../../../../src/core/aggregator.js";
 import {
   searchToolCatalog,
+  TOOL_SEARCH_MAX_CURSOR_LENGTH,
   ToolSearchCursorError,
 } from "../../../../src/core/toolsearch/search-adapter.js";
 
@@ -108,6 +109,55 @@ describe("searchToolCatalog", () => {
       expect(error).toBeInstanceOf(ToolSearchCursorError);
       expect((error as ToolSearchCursorError).stale).toBe(true);
     }
+  });
+
+  it("paginates the maximum-length quoted control-character query", () => {
+    const queryText = "\u0001".repeat(2_046);
+    const query = `"${queryText}"`;
+    const catalog = new Map<string, ToolWithSource>([
+      ["alpha_tool", createTool("alpha_tool", "alpha", queryText, "stdio")],
+      ["beta_tool", createTool("beta_tool", "beta", queryText, "stdio")],
+    ]);
+
+    const first = searchToolCatalog(catalog, query, { limit: 1, includeSchema: false });
+    const cursor = first.nextCursor;
+    expect(cursor).not.toBeNull();
+    if (cursor === null) return;
+
+    expect(cursor.length).toBeLessThanOrEqual(TOOL_SEARCH_MAX_CURSOR_LENGTH);
+    const second = searchToolCatalog(catalog, query, {
+      cursor,
+      limit: 1,
+      includeSchema: false,
+    });
+
+    expect([...first.results, ...second.results].map(({ name }) => name).sort()).toEqual([
+      "alpha_tool",
+      "beta_tool",
+    ]);
+  });
+
+  it("paginates catalog entries with long callable identities", () => {
+    const identities = ["a", "b"].map((prefix) => `${prefix}${"x".repeat(20_000)}`);
+    const catalog = new Map<string, ToolWithSource>(
+      identities.map((identity) => [identity, createTool("echo", "server", "Echo text", "stdio")]),
+    );
+
+    const first = searchToolCatalog(catalog, "type:tool", { limit: 1, includeSchema: false });
+    const cursor = first.nextCursor;
+    expect(cursor).not.toBeNull();
+    if (cursor === null) return;
+
+    expect(cursor.length).toBeLessThanOrEqual(TOOL_SEARCH_MAX_CURSOR_LENGTH);
+    const second = searchToolCatalog(catalog, "type:tool", {
+      cursor,
+      limit: 1,
+      includeSchema: false,
+    });
+
+    expect([...first.results, ...second.results].map(({ name }) => name).sort()).toEqual(
+      [...identities].sort(),
+    );
   });
 
   it("includes input schemas only when explicitly requested and leaves OpenAPI transport unknown", () => {
