@@ -1,4 +1,4 @@
-// Generated from https://github.com/W3DevTech/routermcp.git@5fb9136c81e4a1c683a0bbd616e5f551cbe71849:packages/search/src/ranking.ts. Do not edit.
+// Generated from https://github.com/W3DevTech/routermcp.git@70c59b571e9e247941718f89c5312aac9805538d:packages/search/src/ranking.ts. Do not edit.
 import { normalizeSearchText } from "./match";
 import type {
   RankedToolCandidate,

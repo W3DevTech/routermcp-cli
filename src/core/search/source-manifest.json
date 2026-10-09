@@ -1,55 +1,55 @@
 {
   "manifestVersion": 2,
   "sourceRepository": "https://github.com/W3DevTech/routermcp.git",
-  "sourceCommit": "5fb9136c81e4a1c683a0bbd616e5f551cbe71849",
+  "sourceCommit": "70c59b571e9e247941718f89c5312aac9805538d",
   "sourcePackage": "packages/search",
   "contractVersion": 1,
   "sourceState": "prepared-published-head",
   "publishedRef": "refs/heads/feat/search/h02-contract",
-  "publishedHead": "5fb9136c81e4a1c683a0bbd616e5f551cbe71849",
+  "publishedHead": "70c59b571e9e247941718f89c5312aac9805538d",
   "mergedParent": null,
   "files": [
     {
       "sourcePath": "packages/search/src/date.ts",
       "targetPath": "src/core/search/date.ts",
       "sourceSha256": "3f023b1afa0f164ac876704f5d2d4a8cdd597b56a6686d833911f196dd25d593",
-      "sha256": "f948d816c1554a96dfa24920d41299b162509812df6f812173910de6378c3130"
+      "sha256": "a4f78fbb990951905969480f5ff21e5edb9e8d33a6da62f2e3939ed4b83c6d77"
     },
     {
       "sourcePath": "packages/search/src/index.ts",
       "targetPath": "src/core/search/index.ts",
       "sourceSha256": "c4e67bf9bfb4a8d313e466a87599a06c27b4cd68f2d8e68ba7bdfe8693ed2d10",
-      "sha256": "42833f55d575837a98334ffc1bf8bb40353edded49279eb91440514475496c18"
+      "sha256": "b5d478dfa4117296707290328753f9220925937d61bccef3b873b37744160da0"
     },
     {
       "sourcePath": "packages/search/src/match.ts",
       "targetPath": "src/core/search/match.ts",
       "sourceSha256": "77e1116f2944d7c559ad42425ff9d03d04c813bec8123c5caf79a0495c4b360c",
-      "sha256": "4fc5e7e74ed892f09daf55a242ac64ffe8121d4880e421c169010a558f1ac3d8"
+      "sha256": "cece09037abf9bf2d8418695268a497152ca632bd0607da14eaada2f35f223f4"
     },
     {
       "sourcePath": "packages/search/src/parser.ts",
       "targetPath": "src/core/search/parser.ts",
       "sourceSha256": "5f2e7d3dcc969f132f8f5b06db6b7cbc20ff4c3f8abdd695f6e076daf4f79349",
-      "sha256": "92c85f9492bee3c939318809734d22b46f11b5cb95d67c2880b85fe5d93a36f4"
+      "sha256": "33b83fafd1ed2ec9bc681c17f1952eb74f6e88ca38f40b37f1bf44a598816bff"
     },
     {
       "sourcePath": "packages/search/src/ranking.ts",
       "targetPath": "src/core/search/ranking.ts",
       "sourceSha256": "c2967a904ea76053ad9de5aa6cc55e17184bc26c4e7d5845cddebe078d94dc06",
-      "sha256": "e9be30c03eeb825d2935059fa9f6290169e3c8d62fe40b8719b3a996c3b973e0"
+      "sha256": "492c107435470a32a257a6409e74263e1be0bacb6e956297eb8af08df14c4809"
     },
     {
       "sourcePath": "packages/search/src/types.ts",
       "targetPath": "src/core/search/types.ts",
       "sourceSha256": "feb08a2d70b980209a9e93178063f2cc1caae4150d6b726364208c35f70b6761",
-      "sha256": "009a8db06f675a87ab35c5ede1d11cbd433ea5470e47acef62f85b3150c7ef68"
+      "sha256": "74dc61b40ead9b5ac984056c42103044d8ae43911aef6fb1d5402225548297f3"
     },
     {
       "sourcePath": "packages/search/src/validation.ts",
       "targetPath": "src/core/search/validation.ts",
       "sourceSha256": "abac6fd27504cf90ca8816f16636902231a1497fa9d0eb81a74d809e47044ad0",
-      "sha256": "2fc4cbed1838b686a92af916d1566dd7b90d5ec3acbb0b6fa398ba2ee027ea93"
+      "sha256": "4022b83b0d0546443746ea2009ed1643574fb48e8398b4b5988fa75cbf6c6286"
     },
     {
       "sourcePath": "packages/search/fixtures/semantic-corpus.json",
