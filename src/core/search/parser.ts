@@ -1,4 +1,4 @@
-// Generated from https://github.com/W3DevTech/routermcp.git@70c59b571e9e247941718f89c5312aac9805538d:packages/search/src/parser.ts. Do not edit.
+// Generated from https://github.com/W3DevTech/routermcp.git@fef976aebacb05d5a2f4cfeac602fea7e89c4d8a:packages/search/src/parser.ts. Do not edit.
 import {
   type ParsedSearchClause,
   type ParsedSearchQuery,
@@ -12,6 +12,24 @@ import {
 
 const EMPTY_WARNINGS: readonly SearchWarning[] = [];
 
+function measureQuerySize(input: string): { codePoints: number; utf8Bytes: number } {
+  let codePoints = 0;
+  let utf8Bytes = 0;
+
+  for (const character of input) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint === undefined) continue;
+
+    codePoints += 1;
+    if (codePoint <= 0x7f) utf8Bytes += 1;
+    else if (codePoint <= 0x7ff) utf8Bytes += 2;
+    else if (codePoint <= 0xffff) utf8Bytes += 3;
+    else utf8Bytes += 4;
+  }
+
+  return { codePoints, utf8Bytes };
+}
+
 export type SearchParseResult =
   | { ok: true; query: ParsedSearchQuery; warnings: readonly SearchWarning[] }
   | { ok: false; error: SearchDiagnostic; warnings: readonly SearchWarning[] };
@@ -22,10 +40,8 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
     throw new SearchError("INVALID_QUERY_TYPE", "Search query must be a string.");
   }
 
-  const chars = Array.from(input);
-  const codePoints = chars.length;
-  const byteLength = new TextEncoder().encode(input).length;
-  if (byteLength > SEARCH_LIMITS.maxUtf8Bytes) {
+  const { codePoints, utf8Bytes } = measureQuerySize(input);
+  if (utf8Bytes > SEARCH_LIMITS.maxUtf8Bytes) {
     throw new SearchError(
       "QUERY_TOO_MANY_BYTES",
       `Search query exceeds ${SEARCH_LIMITS.maxUtf8Bytes} UTF-8 bytes.`,
@@ -37,6 +53,16 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
       "QUERY_TOO_LONG",
       `Search query exceeds ${SEARCH_LIMITS.maxCodePoints} Unicode code points.`,
       { start: SEARCH_LIMITS.maxCodePoints, end: codePoints },
+    );
+  }
+
+  const chars = Array.from(input);
+  const nulIndex = chars.indexOf("\u0000");
+  if (nulIndex !== -1) {
+    throw unsupportedSyntax(
+      "NUL characters (U+0000) are not supported in search queries.",
+      nulIndex,
+      nulIndex + 1,
     );
   }
 
