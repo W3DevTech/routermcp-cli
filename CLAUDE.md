@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Package Overview
 
-RouterMCP CLI is a Bun-based MCP (Model Context Protocol) Gateway that aggregates multiple upstream MCP servers into a single unified interface. It provides comprehensive tool/resource/prompt filtering, session multiplexing, daemon mode for process sharing, Code Mode for secure JavaScript execution, and Tool Search Mode for intelligent tool discovery with semantic search.
+RouterMCP CLI is a Bun-based MCP (Model Context Protocol) Gateway that aggregates multiple upstream MCP servers into a single unified interface. It provides comprehensive tool/resource/prompt filtering, session multiplexing, daemon mode for process sharing, Code Mode for secure JavaScript execution, and Tool Search Mode for fuzzy keyword matching across tool names and descriptions.
 
 This package is part of the RouterMCP monorepo but can be developed independently. It's published to npm as `routermcp`.
 
@@ -149,7 +149,7 @@ Vitest config: `vitest.config.ts` with 75% coverage thresholds.
 - **Transport auto-detect**: `command` key → stdio, `url` key → http-streamable
 - **JSONC config**: Supports comments and trailing commas
 - **Env substitution**: `${env:VAR}` syntax with `:-default` support
-- **Collision failure**: Gateway fails on name collisions - use filtering to resolve
+- **Colliding tool names**: Aggregator adds deterministic suffixes; route calls with the callable name and retain the original name/server as metadata
 - **Entry point quirk**: Sets `TERM=linux` before @clack/prompts loads (Bun Unicode workaround)
 
 ## Defaults

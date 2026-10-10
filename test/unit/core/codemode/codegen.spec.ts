@@ -395,8 +395,11 @@ describe("groupToolsByServer", () => {
 
     const result = groupToolsByServer(tools);
 
-    expect(result.get("server1")).toEqual(["tool1", "tool2"]);
-    expect(result.get("server2")).toEqual(["tool3"]);
+    expect(result.get("server1")).toEqual([
+      { name: "tool1", callableName: "tool1" },
+      { name: "tool2", callableName: "tool2" },
+    ]);
+    expect(result.get("server2")).toEqual([{ name: "tool3", callableName: "tool3" }]);
   });
 
   it("handles empty array", () => {
@@ -412,7 +415,7 @@ describe("groupToolsByServer", () => {
 
     const result = groupToolsByServer(tools);
 
-    expect(result.get("server")).toEqual(["tool"]);
+    expect(result.get("server")).toEqual([{ name: "tool", callableName: "tool" }]);
   });
 });
 
@@ -449,6 +452,7 @@ describe("toolsToToolInfo", () => {
     expect(result[0]).toEqual({
       serverName: "filesystem",
       name: "read_file",
+      callableName: "read_file",
       description: "Read a file",
       inputSchema: { type: "object" },
     });

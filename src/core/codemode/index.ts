@@ -1,4 +1,4 @@
-export type { ToolInfo } from "./codegen.js";
+export type { GroupedTool, ToolInfo } from "./codegen.js";
 export { generateTypeScriptDefinitions, groupToolsByServer, toolsToToolInfo } from "./codegen.js";
 export {
   getCodeModeMetaTools,

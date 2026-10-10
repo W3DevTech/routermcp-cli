@@ -1,9 +1,12 @@
 import type { SandboxOptions } from "@sebastianwessel/quickjs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { GroupedTool } from "./codegen.js";
 
 export interface ToolCallDispatcher {
   callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult>;
 }
+
+type CodeModeToolReference = string | GroupedTool;
 
 export interface ToolCallRecord {
   tool: string;
@@ -62,7 +65,7 @@ function formatValue(value: unknown): string {
 export async function executeCodeMode(
   code: string,
   aggregator: ToolCallDispatcher,
-  toolsByServer: Map<string, string[]>,
+  toolsByServer: ReadonlyMap<string, readonly CodeModeToolReference[]>,
   config: SandboxConfig = {},
 ): Promise<CodeModeResult> {
   const { timeout = 30000, allowFetch = true } = config;
@@ -75,18 +78,22 @@ export async function executeCodeMode(
 
   const toolNamespaces: Record<string, Record<string, (args: unknown) => Promise<unknown>>> = {};
 
-  for (const [serverName, toolNames] of toolsByServer) {
+  for (const [serverName, tools] of toolsByServer) {
     toolNamespaces[serverName] = {};
-    for (const toolName of toolNames) {
-      toolNamespaces[serverName][toolName] = async (args: unknown) => {
+    for (const reference of tools) {
+      const tool =
+        typeof reference === "string"
+          ? { name: reference, callableName: reference }
+          : reference;
+      toolNamespaces[serverName][tool.name] = async (args: unknown) => {
         const start = Date.now();
         try {
           const result = await aggregator.callTool(
-            toolName,
+            tool.callableName,
             (args ?? {}) as Record<string, unknown>,
           );
           toolCalls.push({
-            tool: `${serverName}.${toolName}`,
+            tool: `${serverName}.${tool.name}`,
             args,
             result,
             duration: Date.now() - start,
@@ -95,7 +102,7 @@ export async function executeCodeMode(
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           toolCalls.push({
-            tool: `${serverName}.${toolName}`,
+            tool: `${serverName}.${tool.name}`,
             args,
             error: errorMsg,
             duration: Date.now() - start,

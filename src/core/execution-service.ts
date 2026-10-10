@@ -14,6 +14,7 @@ export type ExecutionOperation = "tool-call" | "code-run";
 
 export interface ExecutionTool {
   name: string;
+  callableName: string;
   serverName: string;
   description: string | null;
   inputSchema: unknown;
@@ -21,7 +22,12 @@ export interface ExecutionTool {
 
 export interface ExecutionSearchResult {
   topTool: string | null;
-  candidates: Array<{ name: string; score: number }>;
+  candidates: Array<{
+    name: string;
+    originalName: string;
+    serverName: string;
+    score: number;
+  }>;
   query: string;
   totalTools: number;
 }
@@ -75,6 +81,7 @@ export class ExecutionService {
     return {
       tools: filtered.map((tool) => ({
         name: tool.name,
+        callableName: tool.callableName ?? tool.name,
         serverName: tool.serverName,
         description: tool.description,
         inputSchema: tool.inputSchema,
@@ -86,8 +93,9 @@ export class ExecutionService {
   searchTools(task: string): ExecutionSearchResult {
     const capabilities = this.requireCapabilities();
     const query = validateString(task, "task", EXECUTION_TASK_MAX_LENGTH, true);
-    const tools = Array.from(capabilities.tools.values(), ({ tool }) => ({
-      name: tool.name,
+    const tools = Array.from(capabilities.tools, ([name, { tool }]) => ({
+      name,
+      searchName: tool.name,
       description: tool.description || "",
     }));
     const config = this.runtime.getToolSearchConfig() ?? {};
@@ -99,10 +107,18 @@ export class ExecutionService {
 
     return {
       topTool: ranked[0]?.name ?? null,
-      candidates: ranked.map(({ name, score }) => ({
-        name,
-        score: Math.round(score * 100) / 100,
-      })),
+      candidates: ranked.map(({ name, score }) => {
+        const source = capabilities.tools.get(name);
+        if (!source) {
+          throw new Error(`Search result references unknown callable tool: ${name}`);
+        }
+        return {
+          name,
+          originalName: source.tool.name,
+          serverName: source.serverName,
+          score: Math.round(score * 100) / 100,
+        };
+      }),
       query,
       totalTools: tools.length,
     };

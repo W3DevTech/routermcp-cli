@@ -3,8 +3,15 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 export interface ToolInfo {
   serverName: string;
   name: string;
+  /** Internal Aggregator map key used to dispatch the upstream call. */
+  callableName?: string;
   description: string | null;
   inputSchema: unknown;
+}
+
+export interface GroupedTool {
+  name: string;
+  callableName: string;
 }
 
 interface JsonSchemaProperty {
@@ -135,11 +142,11 @@ export function generateTypeScriptDefinitions(tools: ToolInfo[]): string {
   return lines.join("\n");
 }
 
-export function groupToolsByServer(tools: ToolInfo[]): Map<string, string[]> {
-  const result = new Map<string, string[]>();
+export function groupToolsByServer(tools: ToolInfo[]): Map<string, GroupedTool[]> {
+  const result = new Map<string, GroupedTool[]>();
   for (const tool of tools) {
     const existing = result.get(tool.serverName) ?? [];
-    existing.push(tool.name);
+    existing.push({ name: tool.name, callableName: tool.callableName ?? tool.name });
     result.set(tool.serverName, existing);
   }
   return result;
@@ -149,10 +156,11 @@ export function toolsToToolInfo(
   toolsMap: Map<string, { tool: Tool; serverName: string }>,
 ): ToolInfo[] {
   const result: ToolInfo[] = [];
-  for (const [, { tool, serverName }] of toolsMap) {
+  for (const [callableName, { tool, serverName }] of toolsMap) {
     result.push({
       serverName,
       name: tool.name,
+      callableName,
       description: tool.description ?? null,
       inputSchema: tool.inputSchema,
     });

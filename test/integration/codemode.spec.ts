@@ -1,7 +1,8 @@
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it, vi } from "vitest";
 import type { CodeModeConfig } from "../../src/config/types.js";
-import type { Aggregator, ToolWithSource } from "../../src/core/aggregator.js";
+import { Aggregator, type ToolWithSource } from "../../src/core/aggregator.js";
+import type { UpstreamManager } from "../../src/core/upstream.js";
 import {
   getCodeModeMetaTools,
   handleExecuteCode,
@@ -201,6 +202,30 @@ describe("Code Mode meta-tools", () => {
       expect(parsed.toolCalls[0].tool).toBe("everything.echo");
     });
 
+    it("routes a server-qualified original name through its callable map key", async () => {
+      const { aggregator, clients, toolsMap } = createCollidingTools();
+      const listing = await handleListTools({}, toolsMap);
+      const definitions = (listing.content[0] as { type: "text"; text: string }).text;
+      expect(definitions).toContain("declare const beta:");
+      expect(definitions).toContain("lookup:");
+
+      const result = await handleExecuteCode(
+        { code: 'return await beta.lookup({ invoice: "INV-7" })' },
+        aggregator,
+        toolsMap,
+        { enabled: true, timeout: 30000, allowFetch: true },
+      );
+      const parsed = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
+
+      expect(parsed.success).toBe(true);
+      expect(clients.alpha.callTool).not.toHaveBeenCalled();
+      expect(clients.beta.callTool).toHaveBeenCalledWith({
+        name: "lookup",
+        arguments: { invoice: "INV-7" },
+      });
+      expect(parsed.toolCalls[0].tool).toBe("beta.lookup");
+    });
+
     it("captures console.log output", async () => {
       const aggregator = createMockAggregator();
       const toolsMap = createMockToolsMap();
@@ -287,3 +312,52 @@ describe("Code Mode meta-tools", () => {
     }, 10000);
   });
 });
+
+function createCollidingTools(): {
+  aggregator: Aggregator;
+  clients: {
+    alpha: { callTool: ReturnType<typeof vi.fn> };
+    beta: { callTool: ReturnType<typeof vi.fn> };
+  };
+  toolsMap: Map<string, ToolWithSource>;
+} {
+  const clients = {
+    alpha: {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "alpha result" }] }),
+    },
+    beta: {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "beta result" }] }),
+    },
+  };
+  const manager = {
+    ensureConnected: vi.fn(async (serverName: string) => clients[serverName as "alpha" | "beta"]),
+  } as unknown as UpstreamManager;
+  const aggregator = new Aggregator(manager);
+  const toolsMap = new Map<string, ToolWithSource>([
+    [
+      "lookup",
+      {
+        tool: {
+          name: "lookup",
+          description: "Find an internal support request",
+          inputSchema: { type: "object", properties: {} },
+        } as Tool,
+        serverName: "alpha",
+      },
+    ],
+    [
+      "lookup_beta",
+      {
+        tool: {
+          name: "lookup",
+          description: "Resolve Acme billing invoices and payment status",
+          inputSchema: { type: "object", properties: {} },
+        } as Tool,
+        serverName: "beta",
+      },
+    ],
+  ]);
+  aggregator.initializeFromCache({ tools: toolsMap, resources: new Map(), prompts: new Map() });
+
+  return { aggregator, clients, toolsMap };
+}

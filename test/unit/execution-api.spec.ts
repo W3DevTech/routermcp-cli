@@ -22,6 +22,60 @@ describe("workspace execution control routes", () => {
     vi.clearAllMocks();
   });
 
+  it("returns a callable collision identity from search and accepts it for execution", async () => {
+    const { service, callTool } = createCollisionExecutionService();
+
+    const search = service.searchTools("resolve Acme billing invoice");
+
+    await service.callTool("session-a", search.topTool ?? "", {});
+
+    expect(callTool).toHaveBeenCalledWith("session-a", "lookup_0abc", {});
+    expect(search.topTool).toBe("lookup_0abc");
+    expect(search.candidates[0]).toMatchObject({
+      name: "lookup_0abc",
+      originalName: "lookup",
+      serverName: "beta",
+    });
+  });
+
+  it("retains upstream metadata and exposes callableName in daemon discovery", () => {
+    const { service } = createCollisionExecutionService();
+
+    expect(service.listTools().tools.find((tool) => tool.serverName === "beta")).toMatchObject({
+      name: "lookup",
+      callableName: "lookup_0abc",
+      serverName: "beta",
+    });
+  });
+
+  it("returns an empty result when no tool has a positive score", () => {
+    const service = new ExecutionService({
+      getCapabilities: () => ({
+        tools: new Map([
+          [
+            "weather",
+            {
+              serverName: "weather",
+              tool: { name: "weather", description: "Forecast", inputSchema: { type: "object" } },
+            },
+          ],
+        ]),
+        resources: new Map(),
+        prompts: new Map(),
+        serverCapabilities: new Map(),
+      }),
+      getSession: () => ({}) as never,
+      callTool: async () => ({ content: [] }),
+      getCodeModeConfig: () => ({ enabled: false }),
+      getToolSearchConfig: () => ({ enabled: true, minScore: 0 }),
+    });
+
+    expect(service.searchTools("zzzxqv")).toMatchObject({
+      topTool: null,
+      candidates: [],
+    });
+  });
+
   it("lists tools, queues calls, and scopes jobs to the workspace", async () => {
     const workspace = createWorkspace();
     const service = new ExecutionService({
@@ -111,6 +165,51 @@ describe("workspace execution control routes", () => {
     });
   });
 });
+
+function createCollisionExecutionService(): {
+  service: ExecutionService;
+  callTool: ReturnType<typeof vi.fn>;
+} {
+  const tools = new Map([
+    [
+      "lookup",
+      {
+        serverName: "alpha",
+        tool: {
+          name: "lookup",
+          description: "Find an internal support request",
+          inputSchema: { type: "object" },
+        },
+      },
+    ],
+    [
+      "lookup_0abc",
+      {
+        serverName: "beta",
+        tool: {
+          name: "lookup",
+          description: "Resolve Acme billing invoices and payment status",
+          inputSchema: { type: "object" },
+        },
+      },
+    ],
+  ]);
+  const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "beta result" }] }));
+  const service = new ExecutionService({
+    getCapabilities: () => ({
+      tools,
+      resources: new Map(),
+      prompts: new Map(),
+      serverCapabilities: new Map(),
+    }),
+    getSession: () => ({}) as never,
+    callTool,
+    getCodeModeConfig: () => ({ enabled: false }),
+    getToolSearchConfig: () => ({ enabled: true, minScore: 0 }),
+  });
+
+  return { service, callTool };
+}
 
 function createControlPlane(workspace: ControlPlaneWorkspace, service: ExecutionService): ControlPlane {
   return new ControlPlane({

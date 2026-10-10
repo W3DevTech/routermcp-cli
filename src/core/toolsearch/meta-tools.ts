@@ -78,8 +78,9 @@ export async function handleSearchMcpForTask(
     };
   }
 
-  const tools: ToolRankingInput[] = Array.from(toolsMap.values()).map(({ tool }) => ({
-    name: tool.name,
+  const tools: ToolRankingInput[] = Array.from(toolsMap, ([name, { tool }]) => ({
+    name,
+    searchName: tool.name,
     description: tool.description || "",
   }));
 
@@ -111,10 +112,18 @@ export async function handleSearchMcpForTask(
   });
 
   const topTool = ranked.length > 0 ? ranked[0].name : null;
-  const candidates = ranked.map(({ name, score }) => ({
-    name,
-    score: Math.round(score * 100) / 100, // Round to 2 decimal places
-  }));
+  const candidates = ranked.map(({ name, score }) => {
+    const source = toolsMap.get(name);
+    if (!source) {
+      throw new Error(`Search result references unknown callable tool: ${name}`);
+    }
+    return {
+      name,
+      originalName: source.tool.name,
+      serverName: source.serverName,
+      score: Math.round(score * 100) / 100, // Round to 2 decimal places
+    };
+  });
 
   const response = {
     topTool,

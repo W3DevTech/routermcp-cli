@@ -1,11 +1,15 @@
 ---
 title: Tool Search Workflows
-description: Examples of using Tool Search Mode for intelligent tool discovery
+description: Examples of fuzzy keyword tool search and execution
 ---
 
 # Tool Search Workflows
 
-This example shows how to use Tool Search Mode to discover and execute MCP tools using semantic search.
+This example shows how to discover tools by matching task words against tool names and descriptions, then call the exact name returned by search. Fuzzy token matching can tolerate small typos; RouterMCP does not use semantic embeddings.
+
+Search candidate names are callable identifiers. Use `candidates[0].name` verbatim with `routermcp.callTool`. For a name collision, the candidate also includes its original upstream name and server, and its callable name may have a deterministic suffix.
+
+Shorter response excerpts omit `originalName` and `serverName` when those fields are not relevant to the example.
 
 ## Goal
 
@@ -76,10 +80,10 @@ Create `routermcp.jsonc`:
 
 ```json
 {
-  "topTool": "translator.translate",
+  "topTool": "translate",
   "candidates": [
-    { "name": "translator.translate", "score": 3.5 },
-    { "name": "translator.detect_language", "score": 1.0 }
+    { "name": "translate", "originalName": "translate", "serverName": "translator", "score": 3.5 },
+    { "name": "detect_language", "originalName": "detect_language", "serverName": "translator", "score": 1.0 }
   ],
   "query": "translate text to spanish",
   "totalTools": 42
@@ -92,7 +96,7 @@ Create `routermcp.jsonc`:
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "translator.translate",
+    "name": "translate",
     "arguments": {
       "text": "hello",
       "target_language": "es"
@@ -130,10 +134,10 @@ Create `routermcp.jsonc`:
 
 ```json
 {
-  "topTool": "weather.get_current",
+  "topTool": "get_current",
   "candidates": [
-    { "name": "weather.get_current", "score": 2.5 },    // Fuzzy match!
-    { "name": "weather.get_forecast", "score": 2.0 }
+    { "name": "get_current", "originalName": "get_current", "serverName": "weather", "score": 2.5 },    // Fuzzy match!
+    { "name": "get_forecast", "originalName": "get_forecast", "serverName": "weather", "score": 2.0 }
   ],
   "query": "get wether for location",
   "totalTools": 42
@@ -146,10 +150,37 @@ Create `routermcp.jsonc`:
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "weather.get_current",
+    "name": "get_current",
     "arguments": {
       "location": "Paris"
     }
+  }
+}
+```
+
+## Workflow 2a: Disambiguating a Colliding Tool Name
+
+If two servers expose `lookup`, search returns a callable name for the selected server alongside the original name and server metadata:
+
+```json
+{
+  "topTool": "lookup_0cfa",
+  "candidates": [
+    { "name": "lookup_0cfa", "originalName": "lookup", "serverName": "beta", "score": 3.5 }
+  ],
+  "query": "resolve Acme invoice",
+  "totalTools": 12
+}
+```
+
+Pass `lookup_0cfa` exactly as returned:
+
+```json
+{
+  "name": "routermcp.callTool",
+  "arguments": {
+    "name": "lookup_0cfa",
+    "arguments": { "invoice": "INV-7" }
   }
 }
 ```
@@ -173,13 +204,13 @@ Create `routermcp.jsonc`:
 
 ```json
 {
-  "topTool": "github.list_repositories",
+  "topTool": "list_repositories",
   "candidates": [
-    { "name": "github.list_repositories", "score": 2.0 },
-    { "name": "github.create_repository", "score": 2.0 },
-    { "name": "github.list_issues", "score": 1.5 },
-    { "name": "github.create_issue", "score": 1.0 },
-    { "name": "github.search_repositories", "score": 1.0 }
+    { "name": "list_repositories", "score": 2.0 },
+    { "name": "create_repository", "score": 2.0 },
+    { "name": "list_issues", "score": 1.5 },
+    { "name": "create_issue", "score": 1.0 },
+    { "name": "search_repositories", "score": 1.0 }
   ],
   "query": "git operations",
   "totalTools": 42
@@ -207,11 +238,11 @@ Now the user can choose which tool to execute.
 
 ```json
 {
-  "topTool": "github.create_issue",
+  "topTool": "create_issue",
   "candidates": [
-    { "name": "github.create_issue", "score": 4.0 },     // Strong match
-    { "name": "github.list_issues", "score": 2.0 },
-    { "name": "github.update_issue", "score": 1.5 }
+    { "name": "create_issue", "score": 4.0 },     // Strong match
+    { "name": "list_issues", "score": 2.0 },
+    { "name": "update_issue", "score": 1.5 }
   ],
   "query": "create github issue",
   "totalTools": 42
@@ -224,7 +255,7 @@ Now the user can choose which tool to execute.
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "github.create_issue",
+    "name": "create_issue",
     "arguments": {
       "repo": "owner/repo",
       "title": "Bug: Login fails",
@@ -282,11 +313,11 @@ Now the user can choose which tool to execute.
 
 ```json
 {
-  "topTool": "filesystem.read_file",
+  "topTool": "read_file",
   "candidates": [
-    { "name": "filesystem.read_file", "score": 3.5 },
-    { "name": "filesystem.list_directory", "score": 1.0 },
-    { "name": "filesystem.get_file_info", "score": 1.0 }
+    { "name": "read_file", "score": 3.5 },
+    { "name": "list_directory", "score": 1.0 },
+    { "name": "get_file_info", "score": 1.0 }
   ],
   "query": "read file contents",
   "totalTools": 42
@@ -299,7 +330,7 @@ Now the user can choose which tool to execute.
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "filesystem.read_file",
+    "name": "read_file",
     "arguments": {
       "path": "./README.md"
     }
@@ -326,11 +357,11 @@ Now the user can choose which tool to execute.
 
 ```json
 {
-  "topTool": "api.getUserInfo",
+  "topTool": "getUserInfo",
   "candidates": [
-    { "name": "api.getUserInfo", "score": 4.0 },        // Matches!
-    { "name": "api.updateUserProfile", "score": 2.0 },
-    { "name": "database.queryUsers", "score": 1.5 }
+    { "name": "getUserInfo", "score": 4.0 },        // Matches!
+    { "name": "updateUserProfile", "score": 2.0 },
+    { "name": "queryUsers", "score": 1.5 }
   ],
   "query": "get user info",
   "totalTools": 42
@@ -412,10 +443,10 @@ Now the user can choose which tool to execute.
 
 ```json
 {
-  "topTool": "weather.get_current",
+  "topTool": "get_current",
   "candidates": [
-    { "name": "weather.get_current", "score": 3.0 },
-    { "name": "weather.get_forecast", "score": 2.8 }
+    { "name": "get_current", "score": 3.0 },
+    { "name": "get_forecast", "score": 2.8 }
     // "weather.get_alerts" with score 1.5 is filtered out
   ],
   "query": "weather",
@@ -443,11 +474,11 @@ Now the user can choose which tool to execute.
 ```json
 {
   "candidates": [
-    { "name": "github.list_repositories", "score": 2.5 },
-    { "name": "github.create_repository", "score": 2.5 },
-    { "name": "github.list_issues", "score": 2.0 },
-    { "name": "github.create_issue", "score": 2.0 },
-    { "name": "github.update_issue", "score": 1.5 }
+    { "name": "list_repositories", "score": 2.5 },
+    { "name": "create_repository", "score": 2.5 },
+    { "name": "list_issues", "score": 2.0 },
+    { "name": "create_issue", "score": 2.0 },
+    { "name": "update_issue", "score": 1.5 }
   ]
 }
 ```
@@ -469,9 +500,9 @@ Now the user can choose which tool to execute.
 
 ```json
 {
-  "topTool": "github.list_repositories",
+  "topTool": "list_repositories",
   "candidates": [
-    { "name": "github.list_repositories", "score": 4.5 }
+    { "name": "list_repositories", "score": 4.5 }
   ]
 }
 ```
@@ -482,7 +513,7 @@ Now the user can choose which tool to execute.
 {
   "name": "routermcp.callTool",
   "arguments": {
-    "name": "github.list_repositories",
+    "name": "list_repositories",
     "arguments": {}
   }
 }
@@ -508,7 +539,7 @@ Now the user can choose which tool to execute.
 {
   "content": [{
     "type": "text",
-    "text": "Tool not found: nonexistent.tool. Available tools: filesystem.read_file, github.list_issues, ... Use routermcp.searchMcpForTask to discover tools."
+    "text": "Tool not found: nonexistent.tool. Available tools: read_file, list_issues, ... Use routermcp.searchMcpForTask to discover tools."
   }],
   "isError": true
 }
