@@ -1,5 +1,5 @@
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ServerConfig } from "../../../src/config/types.js";
 import {
   Aggregator,
@@ -245,6 +245,35 @@ describe("Aggregator", () => {
   });
 
   describe("filtering", () => {
+    it("retains trusted transport metadata on the approved tool catalog", () => {
+      const servers = [
+        createMockServer("stdio", {
+          config: { transport: "stdio", command: "echo" },
+          tools: [
+            { name: "read_file", description: "Read a file", inputSchema: { type: "object" } },
+          ],
+        }),
+        createMockServer("remote", {
+          config: { transport: "http-streamable", url: "https://example.test/mcp" },
+          tools: [
+            { name: "lookup", description: "Look up a record", inputSchema: { type: "object" } },
+          ],
+        }),
+      ];
+      const aggregator = new Aggregator(createMockUpstreamManager(servers));
+
+      aggregator.refresh();
+
+      expect(aggregator.getToolsMap().get("read_file")).toMatchObject({
+        serverName: "stdio",
+        transport: "stdio",
+      });
+      expect(aggregator.getToolsMap().get("lookup")).toMatchObject({
+        serverName: "remote",
+        transport: "http-streamable",
+      });
+    });
+
     it("applies allowedTools filter", () => {
       const servers = [
         createMockServer("server1", {

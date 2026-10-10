@@ -1,8 +1,7 @@
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it, vi } from "vitest";
 import type { CodeModeConfig } from "../../src/config/types.js";
 import { Aggregator, type ToolWithSource } from "../../src/core/aggregator.js";
-import type { UpstreamManager } from "../../src/core/upstream.js";
 import {
   getCodeModeMetaTools,
   handleExecuteCode,
@@ -10,6 +9,8 @@ import {
   META_TOOL_EXECUTE_CODE,
   META_TOOL_LIST_TOOLS,
 } from "../../src/core/codemode/meta-tools.js";
+import type { UpstreamManager } from "../../src/core/upstream.js";
+import { createTestExecutionService } from "../helpers/execution-service.js";
 
 function createMockToolsMap(): Map<string, ToolWithSource> {
   const map = new Map<string, ToolWithSource>();
@@ -73,6 +74,10 @@ describe("Code Mode meta-tools", () => {
     it("META_TOOL_LIST_TOOLS has correct schema", () => {
       expect(META_TOOL_LIST_TOOLS.name).toBe("routermcp.listTools");
       expect(META_TOOL_LIST_TOOLS.inputSchema.properties).toHaveProperty("filter");
+      expect(META_TOOL_LIST_TOOLS.inputSchema.properties).toHaveProperty("query");
+      expect(META_TOOL_LIST_TOOLS.inputSchema.properties).toHaveProperty("cursor");
+      expect(META_TOOL_LIST_TOOLS.inputSchema.properties).toHaveProperty("limit");
+      expect(META_TOOL_LIST_TOOLS.inputSchema.properties).toHaveProperty("includeSchema");
     });
 
     it("META_TOOL_EXECUTE_CODE has correct schema", () => {
@@ -85,7 +90,7 @@ describe("Code Mode meta-tools", () => {
     it("returns TypeScript definitions for all tools", async () => {
       const toolsMap = createMockToolsMap();
 
-      const result = await handleListTools({}, toolsMap);
+      const result = await handleListTools({}, createTestExecutionService({ tools: toolsMap }));
 
       expect(result.content).toHaveLength(1);
       expect(result.content[0].type).toBe("text");
@@ -100,7 +105,10 @@ describe("Code Mode meta-tools", () => {
     it("filters tools by name", async () => {
       const toolsMap = createMockToolsMap();
 
-      const result = await handleListTools({ filter: "read" }, toolsMap);
+      const result = await handleListTools(
+        { filter: "read" },
+        createTestExecutionService({ tools: toolsMap }),
+      );
 
       const text = (result.content[0] as { type: "text"; text: string }).text;
       expect(text).toContain("read_file:");
@@ -110,7 +118,10 @@ describe("Code Mode meta-tools", () => {
     it("filters tools by description", async () => {
       const toolsMap = createMockToolsMap();
 
-      const result = await handleListTools({ filter: "echo" }, toolsMap);
+      const result = await handleListTools(
+        { filter: "echo" },
+        createTestExecutionService({ tools: toolsMap }),
+      );
 
       const text = (result.content[0] as { type: "text"; text: string }).text;
       expect(text).toContain("echo:");
@@ -119,7 +130,7 @@ describe("Code Mode meta-tools", () => {
     it("includes built-in declarations", async () => {
       const toolsMap = new Map<string, ToolWithSource>();
 
-      const result = await handleListTools({}, toolsMap);
+      const result = await handleListTools({}, createTestExecutionService({ tools: toolsMap }));
 
       const text = (result.content[0] as { type: "text"; text: string }).text;
       expect(text).toContain("declare function fetch");
@@ -129,11 +140,48 @@ describe("Code Mode meta-tools", () => {
     it("handles empty filter", async () => {
       const toolsMap = createMockToolsMap();
 
-      const result = await handleListTools({ filter: "" }, toolsMap);
+      const result = await handleListTools(
+        { filter: "" },
+        createTestExecutionService({ tools: toolsMap }),
+      );
 
       const text = (result.content[0] as { type: "text"; text: string }).text;
       expect(text).toContain("read_file:");
       expect(text).toContain("echo:");
+    });
+
+    it("supports explicit query paging while keeping the TypeScript view scoped to the page", async () => {
+      const toolsMap = createMockToolsMap();
+
+      const result = await handleListTools(
+        { query: "server:filesystem", limit: 1, includeSchema: true },
+        createTestExecutionService({ tools: toolsMap }),
+      );
+
+      expect(result.isError).toBeUndefined();
+      const response = JSON.parse((result.content[0] as { type: "text"; text: string }).text);
+      expect(response.results).toHaveLength(1);
+      expect(response.results[0]).toMatchObject({
+        name: "read_file",
+        originalName: "read_file",
+        serverName: "filesystem",
+        inputSchema: { properties: { path: { type: "string" } } },
+      });
+      expect(response.typeDefinitions).toContain("declare const filesystem:");
+      expect(response.typeDefinitions).toContain("read_file:");
+      expect(response.typeDefinitions).not.toContain("echo:");
+    });
+
+    it("rejects legacy filters combined with explicit queries", async () => {
+      const result = await handleListTools(
+        { filter: "read", query: "server:filesystem" },
+        createTestExecutionService({ tools: createMockToolsMap() }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect((result.content[0] as { type: "text"; text: string }).text).toContain(
+        "filter and query cannot be used together",
+      );
     });
   });
 
@@ -204,7 +252,7 @@ describe("Code Mode meta-tools", () => {
 
     it("routes a server-qualified original name through its callable map key", async () => {
       const { aggregator, clients, toolsMap } = createCollidingTools();
-      const listing = await handleListTools({}, toolsMap);
+      const listing = await handleListTools({}, createTestExecutionService({ tools: toolsMap }));
       const definitions = (listing.content[0] as { type: "text"; text: string }).text;
       expect(definitions).toContain("declare const beta:");
       expect(definitions).toContain("lookup:");

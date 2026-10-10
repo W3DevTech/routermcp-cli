@@ -6,6 +6,7 @@ import type {
   Resource,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { ServerConfig } from "../config/types.js";
 import { disambiguateNames, type ItemWithSource } from "../filtering/collision.js";
 import {
   getPromptFilter,
@@ -19,6 +20,8 @@ import type { UpstreamManager } from "./upstream.js";
 export interface ToolWithSource {
   tool: Tool;
   serverName: string;
+  /** Trusted transport metadata captured from the workspace-owned server config. */
+  transport?: ServerConfig["transport"];
 }
 
 export interface ResourceWithSource {
@@ -47,7 +50,11 @@ export class Aggregator {
     this.resourcesMap.clear();
     this.promptsMap.clear();
 
-    const toolList: { tool: Tool; serverName: string }[] = [];
+    const toolList: {
+      tool: Tool;
+      serverName: string;
+      transport: ServerConfig["transport"];
+    }[] = [];
     const allTools: ItemWithSource[] = [];
     const resourceList: { resource: Resource; serverName: string }[] = [];
     const allResources: ItemWithSource[] = [];
@@ -63,7 +70,7 @@ export class Aggregator {
       const toolFilter = getToolFilter(server.config);
       for (const tool of tools) {
         if (shouldAllow(tool.name, toolFilter)) {
-          toolList.push({ tool, serverName: server.name });
+          toolList.push({ tool, serverName: server.name, transport: server.config.transport });
           allTools.push({ name: tool.name, serverName: server.name });
         }
       }
@@ -90,6 +97,7 @@ export class Aggregator {
       this.toolsMap.set(toolDisplayNames[i], {
         tool: toolList[i].tool,
         serverName: toolList[i].serverName,
+        transport: toolList[i].transport,
       });
     }
     const resourceDisplayNames = disambiguateNames(allResources);

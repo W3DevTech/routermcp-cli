@@ -42,6 +42,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Verify portable search contract
+        run: bun run search:verify
+
       - name: Typecheck
         run: bun run typecheck
 

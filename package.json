@@ -25,6 +25,8 @@
     "test:integration": "vitest run test/integration",
     "test:e2e": "vitest run test/e2e",
     "test:coverage": "vitest run --coverage",
+    "search:sync": "node scripts/sync-search-contract.mjs",
+    "search:verify": "node scripts/verify-search-contract.mjs",
     "debug:opencode": "OPENCODE_CONFIG_DIR=./debug/opencode opencode"
   },
   "keywords": [

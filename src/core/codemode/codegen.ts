@@ -1,10 +1,12 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { ServerConfig } from "../../config/types.js";
+import type { ToolWithSource } from "../aggregator.js";
 
 export interface ToolInfo {
   serverName: string;
   name: string;
   /** Internal Aggregator map key used to dispatch the upstream call. */
   callableName?: string;
+  transport?: ServerConfig["transport"];
   description: string | null;
   inputSchema: unknown;
 }
@@ -152,15 +154,14 @@ export function groupToolsByServer(tools: ToolInfo[]): Map<string, GroupedTool[]
   return result;
 }
 
-export function toolsToToolInfo(
-  toolsMap: Map<string, { tool: Tool; serverName: string }>,
-): ToolInfo[] {
+export function toolsToToolInfo(toolsMap: Map<string, ToolWithSource>): ToolInfo[] {
   const result: ToolInfo[] = [];
-  for (const [callableName, { tool, serverName }] of toolsMap) {
+  for (const [callableName, { tool, serverName, transport }] of toolsMap) {
     result.push({
       serverName,
       name: tool.name,
       callableName,
+      ...(transport ? { transport } : {}),
       description: tool.description ?? null,
       inputSchema: tool.inputSchema,
     });

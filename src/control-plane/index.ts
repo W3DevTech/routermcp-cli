@@ -1,14 +1,13 @@
-import type { ConnectionLease } from "../daemon/connection-tracker.js";
-import {
-  ExecutionJobManager,
-  type ExecutionJobSnapshot,
-} from "../core/execution-jobs.js";
+import { ExecutionJobManager, type ExecutionJobSnapshot } from "../core/execution-jobs.js";
 import type {
   ExecutionSearchResult,
   ExecutionService,
   ExecutionTool,
+  ExecutionToolQueryOptions,
+  ToolSearchPage,
 } from "../core/execution-service.js";
 import { ExecutionError } from "../core/execution-service.js";
+import type { ConnectionLease } from "../daemon/connection-tracker.js";
 import type {
   ControlPlaneFeatures,
   ControlPlaneManagementSource,
@@ -17,42 +16,63 @@ import type {
   ServerEnabledPatch,
 } from "./management.js";
 import { isValidWorkspaceId } from "./management-credentials.js";
-export { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
+
 export {
   CODE_MODE_TIMEOUT_MAX_MS,
   CODE_MODE_TIMEOUT_MIN_MS,
   CONTROL_PLANE_EXECUTION_MODES,
+  type ConfigFileSnapshot,
   ConfigMutationError,
+  type ConfigMutationErrorCode,
+  type ConfigMutationResult,
   ConfigRevisionConflictError,
+  type ConfigServerKind,
+  type ConfigServerReference,
   createExecutionModeSnapshot,
   digestConfigSource,
+  type ExecutionModePatch,
+  type ExecutionModeSnapshot,
   getExecutionMode,
   MANAGEMENT_BODY_LIMIT_BYTES,
   parseConfigServerId,
   parseExecutionModePatch,
-  parseServerEnabledPatch,
   parseManagementJsonBody,
+  parseServerEnabledPatch,
   readConfigSnapshot,
-  setExecutionMode,
-  setServerEnabled,
-  type ConfigFileSnapshot,
-  type ConfigMutationErrorCode,
-  type ConfigMutationResult,
-  type ConfigServerKind,
-  type ConfigServerReference,
-  type ExecutionModePatch,
-  type ExecutionModeSnapshot,
   type SetExecutionModeOptions,
   type SetServerEnabledOptions,
+  setExecutionMode,
+  setServerEnabled,
 } from "../config/mutation.js";
 export {
-  createConfigManagementSource,
+  BROWSER_MANAGEMENT_PROTOCOL_VERSION,
+  type BrowserDevicePublicKey,
+  type BrowserDeviceRecord,
+  type BrowserDeviceRegistration,
+  type BrowserManagementChallenge,
+  BrowserManagementError,
+  type BrowserManagementExchange,
+  type BrowserManagementExchangeResult,
+  BrowserManagementSessionStore,
+  type BrowserManagementSessionStoreOptions,
+  browserChallengeSigningPayload,
+  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
+  CONTROL_PLANE_BROWSER_DEVICES_PATH,
+  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  DEFAULT_BROWSER_CHALLENGE_CAPACITY,
+  DEFAULT_BROWSER_CHALLENGE_TTL_MS,
+  DEFAULT_BROWSER_DEVICE_CAPACITY,
+  fingerprintPublicKey,
+  MAX_BROWSER_CHALLENGE_TTL_MS,
+} from "./browser-management.js";
+export {
   type ConfigManagementSourceOptions,
   type ControlPlaneFeatures,
   type ControlPlaneManagementReloadResult,
   type ControlPlaneManagementRestartResult,
   type ControlPlaneManagementSource,
   type ControlPlaneMutationResult,
+  createConfigManagementSource,
   type ManagementRestartState,
   type ServerEnabledPatch,
 } from "./management.js";
@@ -60,45 +80,25 @@ export {
 export {
   DEFAULT_MANAGEMENT_CREDENTIAL_TTL_MS,
   DEFAULT_MAX_MANAGEMENT_CREDENTIALS,
-  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
+  isValidWorkspaceId,
   MANAGEMENT_CREDENTIAL_AUTHORITIES,
+  MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   MANAGEMENT_CREDENTIAL_SCOPE,
   MAX_MANAGEMENT_CREDENTIAL_TTL_MS,
-  ManagementCredentialStore,
-  isValidWorkspaceId,
-  type ManagementCredentialAuthorization,
   type ManagementCredentialAuthority,
+  type ManagementCredentialAuthorization,
   type ManagementCredentialGrant,
+  ManagementCredentialStore,
   type ManagementCredentialStoreOptions,
 } from "./management-credentials.js";
+export { CONTROL_PLANE_HEALTH_PATH, CONTROL_PLANE_PATH } from "./paths.js";
 export {
   DEFAULT_MAX_WORKSPACE_MCP_CREDENTIALS,
   WORKSPACE_MCP_CREDENTIALS_SCHEMA_VERSION,
-  WorkspaceMcpCredentialStore,
   type WorkspaceMcpCredentialResult,
+  WorkspaceMcpCredentialStore,
   type WorkspaceMcpCredentialStoreOptions,
 } from "./workspace-mcp-credentials.js";
-export {
-  BROWSER_MANAGEMENT_PROTOCOL_VERSION,
-  CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
-  CONTROL_PLANE_BROWSER_DEVICES_PATH,
-  CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
-  DEFAULT_BROWSER_CHALLENGE_TTL_MS,
-  MAX_BROWSER_CHALLENGE_TTL_MS,
-  DEFAULT_BROWSER_DEVICE_CAPACITY,
-  DEFAULT_BROWSER_CHALLENGE_CAPACITY,
-  BrowserManagementError,
-  BrowserManagementSessionStore,
-  browserChallengeSigningPayload,
-  fingerprintPublicKey,
-  type BrowserDevicePublicKey,
-  type BrowserDeviceRecord,
-  type BrowserDeviceRegistration,
-  type BrowserManagementChallenge,
-  type BrowserManagementExchange,
-  type BrowserManagementExchangeResult,
-  type BrowserManagementSessionStoreOptions,
-} from "./browser-management.js";
 export const CONTROL_PLANE_DEFAULT_EVENT_LIMIT = 40;
 export const CONTROL_PLANE_MAX_EVENT_LIMIT = 200;
 export const CONTROL_PLANE_EVENT_BUFFER_SIZE = 1_000;
@@ -115,12 +115,7 @@ export type ControlPlaneSessionKind = "bridge" | "mcp" | "control";
 export type ControlPlaneSessionState = "active" | "idle" | "expired" | "closing";
 export type ControlPlaneEventLevel = "debug" | "info" | "warn" | "error";
 export type ControlPlaneServerKind = "mcp" | "openapi";
-export type ControlPlaneWorkspaceState =
-  | "current"
-  | "active"
-  | "known"
-  | "stale"
-  | "unavailable";
+export type ControlPlaneWorkspaceState = "current" | "active" | "known" | "stale" | "unavailable";
 
 export interface ControlPlaneStatus {
   state: ControlPlaneDaemonState;
@@ -288,9 +283,7 @@ export interface ControlPlaneSource {
   /** Explicitly materialize a registered workspace runtime; reads stay pure. */
   activateWorkspace?: (
     workspaceId: string,
-  ) =>
-    | ControlPlaneWorkspaceActivationResult
-    | Promise<ControlPlaneWorkspaceActivationResult>;
+  ) => ControlPlaneWorkspaceActivationResult | Promise<ControlPlaneWorkspaceActivationResult>;
   /** Workspace attached to the current CLI handoff, if one was supplied. */
   getCurrentWorkspaceId?: () => string | null;
   /** Optional execution adapter for authenticated workspace control routes. */
@@ -349,7 +342,8 @@ export class ControlPlane {
     this.startedAt = this.now();
     this.executionJobs = new ExecutionJobManager({
       onEvent: (event) => {
-        const level = event.status === "failed" ? "error" : event.status === "cancelled" ? "warn" : "debug";
+        const level =
+          event.status === "failed" ? "error" : event.status === "cancelled" ? "warn" : "debug";
         this.recordEvent({
           level,
           type: `execution.${event.status}`,
@@ -372,12 +366,23 @@ export class ControlPlane {
     return this.source.execution?.getWorkspaceExecution(workspaceId) ?? null;
   }
 
-  listWorkspaceTools(workspaceId: string, filter = ""): { tools: ExecutionTool[]; typeDefinitions: string } | null {
+  listWorkspaceTools(
+    workspaceId: string,
+    filter = "",
+  ): { tools: ExecutionTool[]; typeDefinitions: string } | null {
     return this.getWorkspaceExecution(workspaceId)?.listTools(filter) ?? null;
   }
 
   searchWorkspaceTools(workspaceId: string, task: string): ExecutionSearchResult | null {
     return this.getWorkspaceExecution(workspaceId)?.searchTools(task) ?? null;
+  }
+
+  queryWorkspaceTools(
+    workspaceId: string,
+    query: unknown,
+    options: ExecutionToolQueryOptions = {},
+  ): ToolSearchPage | null {
+    return this.getWorkspaceExecution(workspaceId)?.queryTools(query, options) ?? null;
   }
 
   submitWorkspaceExecution(
@@ -561,7 +566,9 @@ export class ControlPlane {
 
     // Legacy event sources may only have a host-wide buffer. Keep events
     // without an explicit workspace attribution out of a context route.
-    return this.getEvents(boundEventLimit(limit)).filter((event) => event.workspaceId === workspaceId);
+    return this.getEvents(boundEventLimit(limit)).filter(
+      (event) => event.workspaceId === workspaceId,
+    );
   }
 
   /** Update one server while keeping the selected workspace as the scope. */
@@ -622,10 +629,7 @@ export class ControlPlane {
       const status = this.source.getWorkspaceStatus(workspaceId);
       if (!status || status.workspace.id !== workspaceId) return null;
       return {
-        workspace: sanitizeWorkspace(
-          status.workspace,
-          status.workspace.id === currentWorkspaceId,
-        ),
+        workspace: sanitizeWorkspace(status.workspace, status.workspace.id === currentWorkspaceId),
         status: sanitizeStatus(status.status),
         servers: sanitizeServers(status.servers),
         sessions: sanitizeSessions(status.sessions),
@@ -679,9 +683,7 @@ export class ControlPlane {
    * Return a workspace snapshot after allowing the host to materialize any
    * async config-backed state needed for management reads.
    */
-  async getWorkspaceStatusAsync(
-    workspaceId: string,
-  ): Promise<ControlPlaneWorkspaceStatus | null> {
+  async getWorkspaceStatusAsync(workspaceId: string): Promise<ControlPlaneWorkspaceStatus | null> {
     if (!isValidWorkspaceId(workspaceId)) return null;
 
     if (this.source.getWorkspaceStatusAsync) {
@@ -767,13 +769,13 @@ export class ControlPlane {
     const next: ControlPlaneEvent = {
       id: event.id && event.id.length > 0 ? event.id : crypto.randomUUID(),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
-    level: event.level,
-    type: sanitizeText(event.type),
-    message: sanitizeText(event.message),
-    ...(event.workspaceId && isValidWorkspaceId(event.workspaceId)
-      ? { workspaceId: event.workspaceId }
-      : {}),
-    ...(event.metadata ? { metadata: sanitizeMetadata(event.metadata) } : {}),
+      level: event.level,
+      type: sanitizeText(event.type),
+      message: sanitizeText(event.message),
+      ...(event.workspaceId && isValidWorkspaceId(event.workspaceId)
+        ? { workspaceId: event.workspaceId }
+        : {}),
+      ...(event.metadata ? { metadata: sanitizeMetadata(event.metadata) } : {}),
     };
     this.events.unshift(next);
     if (this.events.length > CONTROL_PLANE_EVENT_BUFFER_SIZE) {
@@ -825,9 +827,7 @@ class MetricsAccumulator {
       requestsPerSecond: roundMetric(this.requestsTotal / elapsedSeconds),
       errorsTotal: this.errorsTotal,
       errorRate:
-        this.requestsTotal === 0
-          ? 0
-          : roundMetric((this.errorsTotal / this.requestsTotal) * 100),
+        this.requestsTotal === 0 ? 0 : roundMetric((this.errorsTotal / this.requestsTotal) * 100),
       toolCallsTotal: this.toolCallsTotal,
       activeSessions: 0,
       activeLeases: 0,
@@ -899,9 +899,7 @@ function sanitizeServers(servers: readonly ControlPlaneServer[]): ControlPlaneSe
       ...(server.transport ? { transport: sanitizeText(server.transport) } : {}),
       ...(server.enabled === undefined ? {} : { enabled: server.enabled }),
       ...(server.observedState ? { observedState: server.observedState } : {}),
-      ...(server.configRevision
-        ? { configRevision: sanitizeText(server.configRevision) }
-        : {}),
+      ...(server.configRevision ? { configRevision: sanitizeText(server.configRevision) } : {}),
       ...(server.lastChangedAt ? { lastChangedAt: sanitizeText(server.lastChangedAt) } : {}),
       state: server.state,
       toolCount: normalizeCount(server.toolCount),
@@ -1071,7 +1069,10 @@ function sanitizeMetadata(
 
 /** Keep credentials and URL query material out of the browser-visible feed. */
 export function sanitizeText(value: string): string {
-  let sanitized = value.replace(/[\u0000-\u001f\u007f]/g, " ");
+  let sanitized = Array.from(value, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f ? " " : character;
+  }).join("");
   sanitized = sanitized.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
   sanitized = sanitized.replace(
     /([?&](?:token|access_token|refresh_token|api[_-]?key|key|secret|password)=)[^&\s]+/gi,

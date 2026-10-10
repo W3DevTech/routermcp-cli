@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   boundEventLimit,
   ControlPlane,
-  sanitizeText,
-  sanitizeUrl,
   type ControlPlaneServer,
   type ControlPlaneStatus,
   type ControlPlaneWorkspace,
+  sanitizeText,
+  sanitizeUrl,
 } from "../../src/control-plane/index.js";
 
 describe("ControlPlane", () => {
@@ -29,13 +29,15 @@ describe("ControlPlane", () => {
         uptimeSeconds: 0,
       }),
       getServers: () => [],
-      getSessions: () => [{
-        id: "session",
-        kind: "mcp",
-        state: "active",
-        connectedAt: new Date(now).toISOString(),
-        lastSeenAt: new Date(now).toISOString(),
-      }],
+      getSessions: () => [
+        {
+          id: "session",
+          kind: "mcp",
+          state: "active",
+          connectedAt: new Date(now).toISOString(),
+          lastSeenAt: new Date(now).toISOString(),
+        },
+      ],
       getLeases: () => [],
     });
 
@@ -251,8 +253,7 @@ describe("ControlPlane", () => {
               features,
             }
           : null,
-      getWorkspaceManagement: (workspaceId) =>
-        workspaceId === workspaceA.id ? management : null,
+      getWorkspaceManagement: (workspaceId) => (workspaceId === workspaceA.id ? management : null),
     });
 
     expect(controlPlane.getCurrentWorkspaceId()).toBe(workspaceA.id);
@@ -354,10 +355,16 @@ describe("control-plane redaction helpers", () => {
     const value = sanitizeText(
       "Bearer token https://user:password@example.com/mcp?api_key=secret&x=1",
     );
-    expect(value).toBe("Bearer [redacted] https://[redacted]@example.com/mcp?api_key=[redacted]&x=1");
+    expect(value).toBe(
+      "Bearer [redacted] https://[redacted]@example.com/mcp?api_key=[redacted]&x=1",
+    );
     expect(sanitizeUrl("https://user:password@example.com/mcp?token=secret")).toBe(
       "https://example.com/mcp",
     );
+  });
+
+  it("replaces control characters before returning browser-visible text", () => {
+    expect(sanitizeText("line\u0000break\u001f \u007f")).toBe("line break   ");
   });
 
   it("bounds event limits to a safe range", () => {

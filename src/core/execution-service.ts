@@ -1,9 +1,27 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CodeModeConfig, McpToolSearchConfig } from "../config/types.js";
-import { generateTypeScriptDefinitions, groupToolsByServer, toolsToToolInfo } from "./codemode/codegen.js";
-import { executeCodeMode, type CodeModeResult, type ToolCallDispatcher } from "./codemode/sandbox.js";
-import { rankTools, type RankedTool } from "./toolsearch/ranking.js";
+import {
+  generateTypeScriptDefinitions,
+  groupToolsByServer,
+  toolsToToolInfo,
+} from "./codemode/codegen.js";
+import {
+  type CodeModeResult,
+  executeCodeMode,
+  type ToolCallDispatcher,
+} from "./codemode/sandbox.js";
+import { rankToolCandidates, SearchError } from "./search/index.js";
+import {
+  searchToolCatalog,
+  TOOL_SEARCH_DEFAULT_PAGE_SIZE,
+  TOOL_SEARCH_MAX_CURSOR_LENGTH,
+  TOOL_SEARCH_MAX_PAGE_SIZE,
+  ToolSearchCursorError,
+  type ToolSearchPage,
+} from "./toolsearch/search-adapter.js";
 import type { CachedCapabilities, VirtualSession } from "./virtual-session.js";
+
+export type { ToolSearchPage } from "./toolsearch/search-adapter.js";
 
 export const EXECUTION_CODE_MAX_LENGTH = 64 * 1024;
 export const EXECUTION_ARGUMENTS_MAX_BYTES = 64 * 1024;
@@ -32,10 +50,20 @@ export interface ExecutionSearchResult {
   totalTools: number;
 }
 
+export interface ExecutionToolQueryOptions {
+  cursor?: unknown;
+  limit?: unknown;
+  includeSchema?: unknown;
+}
+
 export interface ExecutionRuntime {
   getCapabilities: () => CachedCapabilities | null;
   getSession: (sessionId: string) => VirtualSession;
-  callTool: (sessionId: string, name: string, args: Record<string, unknown>) => Promise<CallToolResult>;
+  callTool: (
+    sessionId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<CallToolResult>;
   cleanupSession?: (sessionId: string) => Promise<void>;
   getCodeModeConfig: () => CodeModeConfig | undefined;
   getToolSearchConfig: () => McpToolSearchConfig | undefined;
@@ -45,11 +73,7 @@ export class ExecutionError extends Error {
   readonly code: "invalid-request" | "not-ready" | "feature-disabled" | "unknown-tool";
   readonly status: 400 | 404 | 409;
 
-  constructor(
-    message: string,
-    code: ExecutionError["code"],
-    status: ExecutionError["status"],
-  ) {
+  constructor(message: string, code: ExecutionError["code"], status: ExecutionError["status"]) {
     super(message);
     this.name = "ExecutionError";
     this.code = code;
@@ -90,30 +114,30 @@ export class ExecutionService {
     };
   }
 
-  searchTools(task: string): ExecutionSearchResult {
+  searchTools(task: unknown): ExecutionSearchResult {
     const capabilities = this.requireCapabilities();
     const query = validateString(task, "task", EXECUTION_TASK_MAX_LENGTH, true);
-    const tools = Array.from(capabilities.tools, ([name, { tool }]) => ({
-      name,
-      searchName: tool.name,
-      description: tool.description || "",
+    const tools = Array.from(capabilities.tools, ([identity, { tool }]) => ({
+      identity,
+      name: tool.name,
+      description: tool.description ?? "",
     }));
     const config = this.runtime.getToolSearchConfig() ?? {};
-    const ranked: RankedTool[] = rankTools(query, tools, {
-      maxResults: config.maxResults ?? 5,
+    const ranked = rankToolCandidates(query, tools, {
+      profile: "cli",
       minScore: config.minScore ?? 0,
-      enableFuzzy: true,
-    });
+      enableFuzzy: config.enableFuzzy ?? true,
+    }).slice(0, config.maxResults ?? 5);
 
     return {
-      topTool: ranked[0]?.name ?? null,
-      candidates: ranked.map(({ name, score }) => {
-        const source = capabilities.tools.get(name);
+      topTool: ranked[0]?.identity ?? null,
+      candidates: ranked.map(({ identity, score }) => {
+        const source = capabilities.tools.get(identity);
         if (!source) {
-          throw new Error(`Search result references unknown callable tool: ${name}`);
+          throw new Error(`Search result references unknown callable tool: ${identity}`);
         }
         return {
-          name,
+          name: identity,
           originalName: source.tool.name,
           serverName: source.serverName,
           score: Math.round(score * 100) / 100,
@@ -124,11 +148,35 @@ export class ExecutionService {
     };
   }
 
-  async callTool(
-    sessionId: string,
-    name: string,
-    args: unknown,
-  ): Promise<CallToolResult> {
+  queryTools(query: unknown, options: ExecutionToolQueryOptions = {}): ToolSearchPage {
+    const capabilities = this.requireCapabilities();
+    if (typeof query !== "string") {
+      throw new ExecutionError("query must be a string", "invalid-request", 400);
+    }
+
+    const limit = validatePageLimit(options.limit);
+    const cursor = validateCursor(options.cursor);
+    const includeSchema = validateIncludeSchema(options.includeSchema);
+
+    try {
+      return searchToolCatalog(capabilities.tools, query, {
+        ...(cursor ? { cursor } : {}),
+        limit,
+        includeSchema,
+      });
+    } catch (error) {
+      if (error instanceof SearchError) {
+        const span = error.span ? ` (characters ${error.span.start}-${error.span.end})` : "";
+        throw new ExecutionError(`${error.code}: ${error.message}${span}`, "invalid-request", 400);
+      }
+      if (error instanceof ToolSearchCursorError) {
+        throw new ExecutionError(error.message, "invalid-request", 400);
+      }
+      throw error;
+    }
+  }
+
+  async callTool(sessionId: string, name: string, args: unknown): Promise<CallToolResult> {
     const capabilities = this.requireCapabilities();
     const toolName = validateString(name, "name", 512, true);
     const tool = capabilities.tools.get(toolName);
@@ -211,4 +259,45 @@ function validateArguments(value: unknown): Record<string, unknown> {
     throw new ExecutionError("arguments exceed the maximum allowed size", "invalid-request", 400);
   }
   return value as Record<string, unknown>;
+}
+
+function validatePageLimit(value: unknown): number {
+  if (value === undefined) return TOOL_SEARCH_DEFAULT_PAGE_SIZE;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > TOOL_SEARCH_MAX_PAGE_SIZE
+  ) {
+    throw new ExecutionError(
+      `limit must be an integer between 1 and ${TOOL_SEARCH_MAX_PAGE_SIZE}`,
+      "invalid-request",
+      400,
+    );
+  }
+  return value;
+}
+
+function validateCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > TOOL_SEARCH_MAX_CURSOR_LENGTH
+  ) {
+    throw new ExecutionError(
+      "cursor must be a valid encoded search cursor",
+      "invalid-request",
+      400,
+    );
+  }
+  return value;
+}
+
+function validateIncludeSchema(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") {
+    throw new ExecutionError("includeSchema must be a boolean", "invalid-request", 400);
+  }
+  return value;
 }

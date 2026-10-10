@@ -9,30 +9,25 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { RouterMcpConfig } from "../config/types.js";
-import { ConnectionTracker, type ConnectionLease } from "../daemon/connection-tracker.js";
-import { OpenApiHandler } from "../openapi/index.js";
+import { type ConnectionLease, ConnectionTracker } from "../daemon/connection-tracker.js";
 import type { OpenApiServerSnapshot } from "../openapi/index.js";
+import { OpenApiHandler } from "../openapi/index.js";
 import {
-  createServerTransport,
   type BridgeLeaseTracker,
-  type HttpRequestContext,
+  createServerTransport,
   type HttpServerOptions,
   type ServerTransportHandle,
 } from "../transports/index.js";
 import { Aggregator } from "./aggregator.js";
-import { ExecutionService } from "./execution-service.js";
 import { getCodeModeMetaTools, handleExecuteCode, handleListTools } from "./codemode/index.js";
 import type { RuntimeExecutionContext } from "./execution-context.js";
+import { ExecutionService } from "./execution-service.js";
 import {
   getToolSearchMetaTools,
   handleCallTool,
   handleSearchMcpForTask,
 } from "./toolsearch/index.js";
-import {
-  type ServerCapabilityCache,
-  type UpstreamServer,
-  UpstreamManager,
-} from "./upstream.js";
+import { type ServerCapabilityCache, UpstreamManager, type UpstreamServer } from "./upstream.js";
 import {
   type CachedCapabilities,
   type VirtualSession,
@@ -309,7 +304,11 @@ export class Gateway {
               connectionTracker: this.connectionTracker,
               onSessionInitialize: async (sessionId, clientInfo, context) => {
                 this.sessionManager?.getOrCreate(sessionId, clientInfo);
-                await this.options.httpOptions?.onSessionInitialize?.(sessionId, clientInfo, context);
+                await this.options.httpOptions?.onSessionInitialize?.(
+                  sessionId,
+                  clientInfo,
+                  context,
+                );
               },
               onSessionClose: async (sessionId, context) => {
                 await this.sessionManager?.cleanup(sessionId);
@@ -435,7 +434,7 @@ export class Gateway {
     ) {
       this.sessionManager?.getOrCreate(sessionId, {
         name: message.params.clientInfo.name,
-        ...( "version" in message.params.clientInfo &&
+        ...("version" in message.params.clientInfo &&
         typeof message.params.clientInfo.version === "string"
           ? { version: message.params.clientInfo.version }
           : {}),
@@ -540,7 +539,7 @@ export class Gateway {
 
     switch (name) {
       case "routermcp.listTools":
-        return handleListTools(args, this.cachedCapabilities.tools);
+        return handleListTools(args, this.executionService);
 
       case "routermcp.executeCode": {
         const session = this.getSessionForRequest(extra);
@@ -581,11 +580,9 @@ export class Gateway {
       };
     }
 
-    const config = this.options.config.mcpToolSearch ?? { enabled: false };
-
     switch (name) {
       case "routermcp.searchMcpForTask":
-        return handleSearchMcpForTask(args, this.cachedCapabilities.tools, config);
+        return handleSearchMcpForTask(args, this.executionService);
 
       case "routermcp.callTool":
         return handleCallTool(args, aggregator, this.cachedCapabilities.tools);
@@ -620,7 +617,9 @@ export function mergeUpstreamServerHealth(
       candidate.resources.length > base.resources.length ? candidate.resources : base.resources,
     prompts: candidate.prompts.length > base.prompts.length ? candidate.prompts : base.prompts,
     cachedTools:
-      candidate.cachedTools.length > base.cachedTools.length ? candidate.cachedTools : base.cachedTools,
+      candidate.cachedTools.length > base.cachedTools.length
+        ? candidate.cachedTools
+        : base.cachedTools,
     cachedResources:
       candidate.cachedResources.length > base.cachedResources.length
         ? candidate.cachedResources

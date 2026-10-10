@@ -38,6 +38,7 @@ interface RouterMcpConfig {
   httpServer?: HttpServerConfig;
   session?: SessionConfig;
   codeMode?: CodeModeConfig;
+  mcpToolSearch?: McpToolSearchConfig;
   subprocess_timeout?: number;
   discovery_concurrency?: number;
   connection_timeout?: number;
@@ -54,6 +55,7 @@ interface RouterMcpConfig {
 | `httpServer` | object | - | HTTP server settings |
 | `session` | object | - | Session management settings |
 | `codeMode` | object | - | Code Mode settings |
+| `mcpToolSearch` | object | - | Tool Search Mode settings |
 | `subprocess_timeout` | number | 180 | Idle timeout for upstream connections (seconds) |
 | `discovery_concurrency` | number | 5 | Parallel discovery connections |
 | `connection_timeout` | number | 30 | Connection timeout (seconds) |
@@ -294,6 +296,28 @@ interface CodeModeConfig {
 | `enabled` | boolean | false | - | Enable Code Mode |
 | `timeout` | number | 30000 | 1000-120000 | Execution timeout (ms) |
 | `allowFetch` | boolean | true | - | Allow `fetch()` in sandbox |
+
+## Tool Search Configuration
+
+```typescript
+interface McpToolSearchConfig {
+  enabled?: boolean;
+  description?: string;
+  maxResults?: number;
+  minScore?: number;
+  enableFuzzy?: boolean;
+}
+```
+
+| Option | Type | Default | Range | Description |
+|--------|------|---------|-------|-------------|
+| `enabled` | boolean | false | - | Enable Tool Search Mode |
+| `description` | string | Auto | - | Description shown for the search meta-tool |
+| `maxResults` | number | 5 | 1-50 | Maximum candidates for legacy `task` ranking |
+| `minScore` | number | 0 | 0-1 | Minimum score for ranked `task` candidates |
+| `enableFuzzy` | boolean | true | - | Allow typo-tolerant matching for `task` ranking |
+
+`query` searches are literal and paged; they use `limit`, `cursor`, and `includeSchema` instead of `maxResults`. See [Tool Search Mode](../advanced/tool-search.md) for query and Code Mode examples.
 
 ## Environment Variable Substitution
 
