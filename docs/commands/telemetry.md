@@ -18,21 +18,36 @@ routermcp telemetry disable         # Disable telemetry
 
 ## What Is Collected
 
-When enabled, RouterMCP collects **anonymous error reports** to help improve the tool:
+When enabled, RouterMCP sends an **anonymous error report** only when the CLI
+exits with a fatal error. Nothing is sent during normal operation.
 
 **Collected:**
-- Error messages and stack traces
+- Error name, code, message and stack trace, after redaction (see below)
 - CLI command used (e.g., `serve`, `connect`)
+- Flag names passed on the command line (e.g., `--http`, `--config`), never their values
 - RouterMCP version
-- Node.js/Bun version
-- Operating system type
+- Node.js/Bun version, operating system and CPU architecture
+- A random ID generated per process, so events from one run can be grouped
+
+**Redacted before sending:**
+- Every argument value: `routermcp serve --config ./a.jsonc --stdio "npx x --token y"`
+  is reported as `--config <redacted> --stdio <redacted>`
+- Your home directory in messages and stack traces (replaced with `~`)
+- URL credentials, query strings and fragments
+- `Bearer`/`Basic` credentials and `token=`, `secret=`, `password=`, `api_key=`-style values
 
 **NOT Collected:**
 - Configuration file contents
-- Server URLs or credentials
-- Tool names or arguments
+- Credentials or OAuth tokens
+- Tool names, tool arguments or tool results
 - Any user data or file contents
 - IP addresses (anonymized by infrastructure)
+
+Redaction is best-effort pattern matching. If an error message could contain
+something you consider sensitive, disable telemetry.
+
+Reports are sent to `https://telemetry.routermcp.com/v1/ingest`. The code is in
+[`src/telemetry/`](../../src/telemetry/).
 
 ## Status
 
@@ -84,12 +99,19 @@ Contents:
 
 By default, telemetry is **enabled** to help improve RouterMCP. You can opt out at any time with `routermcp telemetry disable`.
 
+Setting the [`DO_NOT_TRACK`](https://consoledonottrack.com) environment variable
+to any value other than `0` or `false` disables telemetry regardless of the
+stored preference:
+
+```bash
+export DO_NOT_TRACK=1
+```
+
 ## Why Telemetry?
 
 Anonymous telemetry helps:
 - Identify common errors and crashes
 - Prioritize bug fixes
-- Understand which features are used
 - Improve overall stability
 
 We respect your privacy and only collect what's needed to improve the tool.

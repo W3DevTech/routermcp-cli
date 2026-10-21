@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock functions must be hoisted for vi.mock factory to access them
 const { mockFileExists, mockFileText, mockWrite, mockMkdir } = vi.hoisted(() => ({
@@ -99,6 +99,29 @@ describe("telemetry/config", () => {
   });
 
   describe("isTelemetryEnabled", () => {
+    beforeEach(() => {
+      vi.stubEnv("DO_NOT_TRACK", "");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it.each(["1", "true", "yes"])("returns false when DO_NOT_TRACK=%s", async (value) => {
+      vi.stubEnv("DO_NOT_TRACK", value);
+      mockFileExists.mockResolvedValue(true);
+      mockFileText.mockResolvedValue(JSON.stringify({ telemetry: { enabled: true } }));
+
+      expect(await isTelemetryEnabled()).toBe(false);
+    });
+
+    it.each(["0", "false"])("ignores DO_NOT_TRACK=%s", async (value) => {
+      vi.stubEnv("DO_NOT_TRACK", value);
+      mockFileExists.mockResolvedValue(false);
+
+      expect(await isTelemetryEnabled()).toBe(true);
+    });
+
     it("returns true when telemetry is enabled", async () => {
       mockFileExists.mockResolvedValue(true);
       mockFileText.mockResolvedValue(JSON.stringify({ telemetry: { enabled: true } }));

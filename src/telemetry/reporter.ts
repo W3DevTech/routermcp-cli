@@ -1,5 +1,6 @@
 import { RouterMcpError } from "../utils/errors.js";
 import { isTelemetryEnabled } from "./config.js";
+import { redactArgs, redactText } from "./redact.js";
 import type { ErrorContext, TelemetryEvent } from "./types.js";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.routermcp.com/v1/ingest";
@@ -27,16 +28,16 @@ export function buildTelemetryEvent(error: Error, context: ErrorContext): Teleme
     event_type: "cli_error",
 
     error: {
-      message: error.message,
+      message: redactText(error.message),
       code: errorCode,
       name: error.name,
-      stack: error.stack || "",
+      stack: redactText(error.stack || ""),
     },
 
     cli: {
       command: context.command,
       version: CLI_VERSION,
-      args: context.args,
+      args: redactArgs(context.args),
     },
 
     environment: {

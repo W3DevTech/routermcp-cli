@@ -68,7 +68,7 @@ describe("telemetry/reporter", () => {
       const event = buildTelemetryEvent(error, context);
 
       expect(event.cli.command).toBe("tunnel");
-      expect(event.cli.args).toEqual(["--tunnel=cloudflare", "-v"]);
+      expect(event.cli.args).toEqual(["--tunnel=<redacted>", "-v"]);
       expect(event.cli.version).toBeDefined();
     });
 

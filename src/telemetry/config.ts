@@ -44,7 +44,14 @@ export async function saveUserConfig(config: UserConfig): Promise<void> {
   await write(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
+/** The DO_NOT_TRACK convention (https://consoledonottrack.com) always opts out. */
+function isDoNotTrackSet(): boolean {
+  const value = process.env.DO_NOT_TRACK?.trim().toLowerCase();
+  return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
 export async function isTelemetryEnabled(): Promise<boolean> {
+  if (isDoNotTrackSet()) return false;
   const config = await loadUserConfig();
   return config.telemetry?.enabled ?? DEFAULT_TELEMETRY_CONFIG.enabled;
 }
