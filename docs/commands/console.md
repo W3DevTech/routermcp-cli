@@ -60,8 +60,9 @@ chat. Run `routermcp console` again to create a fresh handoff.
 
 The initial console is local-only and management-only. It provides visibility
 into daemon status, configured upstreams, sessions, metrics, and events, plus
-the ability to request a daemon restart. Device pairing and peering mutations
-will be added through a separately scoped pairing protocol in a later phase.
+the ability to request a daemon restart. The daemon exposes
+[device-pairing routes](../advanced/device-pairing.md); a command that issues
+pairing links and peering mutations will follow in later phases.
 
 ---
 

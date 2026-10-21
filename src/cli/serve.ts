@@ -16,6 +16,8 @@ import {
   ControlPlane,
   BrowserManagementSessionStore,
   ManagementCredentialStore,
+  createPairingControl,
+  PairingGrantStore,
   WorkspaceMcpCredentialStore,
   createConfigManagementSource,
   getExecutionMode,
@@ -25,6 +27,7 @@ import {
   type ControlPlaneSession,
   type ControlPlaneStatus,
   type ControlPlaneWorkspaceStatus,
+  type PairingControl,
 } from "../control-plane/index.js";
 import {
   DAEMON_HOST_CAPABILITIES,
@@ -95,6 +98,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
   let managementCredentials: ManagementCredentialStore | null = null;
   let workspaceMcpCredentials: WorkspaceMcpCredentialStore | null = null;
   let browserManagement: BrowserManagementSessionStore | null = null;
+  let pairingControl: PairingControl | null = null;
   let workspaceRegistry: WorkspaceRegistry | null = null;
   let workspaceLeaseTracker: WorkspaceLeaseTracker | null = null;
   let workspaceRuntimeManager: WorkspaceRuntimeManager | null = null;
@@ -672,6 +676,32 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
           path: resolve(hostPaths.dir, "browser-devices.json"),
         });
         await browserManagement.initialize();
+
+        const pairingManagementCredentials = managementCredentials;
+        pairingControl = createPairingControl({
+          grants: new PairingGrantStore(),
+          resolveContext: (workspaceId) => {
+            const selectedId = workspaceId ?? currentWorkspace?.id;
+            const workspace = selectedId
+              ? (workspaceRegistry?.getSync(selectedId) ??
+                (selectedId === currentWorkspace?.id ? currentWorkspace : null))
+              : null;
+            // An explicit claim for a workspace this host does not know is rejected,
+            // never silently widened to the host profile.
+            if (selectedId && !workspace) return null;
+            const profileId = workspace?.profileId ?? runtimeManifest?.profileId;
+            const instanceId = runtimeManifest?.instanceId;
+            if (!profileId || !instanceId) return null;
+            return {
+              profileId,
+              instanceId,
+              ...(workspace?.id ? { workspaceId: workspace.id } : {}),
+            };
+          },
+          issueManagementCredential: pairingManagementCredentials
+            ? (workspaceId) => pairingManagementCredentials.issue(workspaceId)
+            : undefined,
+        });
       }
     }
 
@@ -760,6 +790,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
         managementCredentials: managementCredentials ?? undefined,
         workspaceMcpCredentials: workspaceMcpCredentials ?? undefined,
         browserManagement: browserManagement ?? undefined,
+        pairing: pairingControl ?? undefined,
         connectionTracker: leaseTracker,
         dispatchMcp,
         onSessionInitialize: (
@@ -821,6 +852,7 @@ export async function serveCommand(options: ServeCommandOptions): Promise<void> 
                 managementCredentials: managementCredentials ?? undefined,
                 workspaceMcpCredentials: workspaceMcpCredentials ?? undefined,
                 browserManagement: browserManagement ?? undefined,
+                pairing: pairingControl ?? undefined,
                 connectionTracker: workspaceLeaseTracker ?? undefined,
                 onSessionInitialize: (
                   sessionId: string,

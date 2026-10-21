@@ -116,6 +116,38 @@ describe("PairingGrantStore", () => {
     expect(store.get(issued.id, context)?.state).toBe("pending");
   });
 
+  it("binds grants to a workspace claim and returns it from list and exchange", () => {
+    const store = new PairingGrantStore();
+    const workspaceA = { ...context, workspaceId: "workspace-a" };
+    const workspaceB = { ...context, workspaceId: "workspace-b" };
+    const issued = store.issue(workspaceA);
+    const exchange = {
+      credential: issued.credential,
+      challengeId: issued.challenge.id,
+      nonce: issued.challenge.nonce,
+    };
+
+    expect(store.list(workspaceA)).toEqual([
+      expect.objectContaining({ id: issued.id, workspaceId: "workspace-a" }),
+    ]);
+    expect(store.list(workspaceB)).toEqual([]);
+    expect(store.list(context)).toEqual([]);
+    expect(store.revoke(issued.id, workspaceB)).toBe(false);
+    expect(() => store.consume({ ...workspaceB, ...exchange })).toThrow(PairingGrantNotFoundError);
+    expect(() => store.consume({ ...context, ...exchange })).toThrow(PairingGrantNotFoundError);
+    expect(store.consume({ ...workspaceA, ...exchange })).toMatchObject({
+      grantId: issued.id,
+      workspaceId: "workspace-a",
+    });
+  });
+
+  it("rejects malformed workspace claims", () => {
+    const store = new PairingGrantStore();
+    expect(() => store.issue({ ...context, workspaceId: "../escape" })).toThrow(
+      PairingGrantInputError,
+    );
+  });
+
   it("expires pending grants and refuses exchanges after the TTL", () => {
     let now = 1_700_000_000_000;
     const store = new PairingGrantStore({ now: () => now, defaultTtlMs: MIN_PAIRING_GRANT_TTL_MS });

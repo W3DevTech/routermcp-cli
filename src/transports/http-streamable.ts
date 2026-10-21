@@ -19,6 +19,8 @@ import {
   CONTROL_PLANE_HEALTH_PATH,
   CONTROL_PLANE_MAX_EVENT_LIMIT,
   CONTROL_PLANE_PATH,
+  CONTROL_PLANE_PAIRING_EXCHANGE_PATH,
+  CONTROL_PLANE_PAIRING_GRANTS_PATH,
   ConfigMutationError,
   type ControlPlane,
   type ControlPlaneMutationResult,
@@ -27,6 +29,12 @@ import {
   MANAGEMENT_BODY_LIMIT_BYTES,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
   type ManagementCredentialStore,
+  type PairingControl,
+  PairingGrantError,
+  type PairingGrantExchangeRequest,
+  PairingGrantExchangeRequestSchema,
+  type PairingGrantIssueRequest,
+  PairingGrantIssueRequestSchema,
   parseExecutionModePatch,
   parseManagementJsonBody,
   parseServerEnabledPatch,
@@ -42,6 +50,8 @@ export {
   CONTROL_PLANE_BROWSER_CHALLENGE_PATH,
   CONTROL_PLANE_BROWSER_DEVICES_PATH,
   CONTROL_PLANE_BROWSER_EXCHANGE_PATH,
+  CONTROL_PLANE_PAIRING_EXCHANGE_PATH,
+  CONTROL_PLANE_PAIRING_GRANTS_PATH,
   MANAGEMENT_CREDENTIAL_HANDOFF_PATH,
 } from "../control-plane/index.js";
 
@@ -213,6 +223,8 @@ export interface HttpServerOptions {
   workspaceMcpCredentials?: ManagementCredentialStore | WorkspaceMcpCredentialStore;
   /** Public-key registry for remembered same-browser management sessions. */
   browserManagement?: BrowserManagementSessionStore;
+  /** One-time local pairing grants and the hosted-console exchange. */
+  pairing?: PairingControl;
   connectionTracker?: BridgeLeaseTracker;
   /** Route MCP requests into an embedded workspace runtime. */
   dispatchMcp?: HttpMcpRequestHandler;
@@ -440,6 +452,109 @@ export function createHttpServerTransport(
                     },
                   },
                 );
+              }
+
+              const pairingRoute = parsePairingPath(url);
+              if (pairingRoute) {
+                if (request.method === "OPTIONS") {
+                  return new Response(null, { status: 204, headers: corsHeaders(request) });
+                }
+                if (pairingRoute.kind === "invalid") {
+                  return jsonResponse(
+                    { error: "invalid-request", message: pairingRoute.message },
+                    400,
+                    corsHeaders(request),
+                  );
+                }
+                // Pairing mints management credentials, so it is never mounted on an
+                // anonymous transport where local authorization would be open.
+                if (!options.pairing || !options.authToken) {
+                  return new Response("Not Found", { status: 404, headers: corsHeaders(request) });
+                }
+
+                // Exchange is deliberately the only unauthenticated pairing
+                // operation. Possession of the one-time grant and challenge
+                // is its credential; issuance/list/revoke require the daemon
+                // root token and are never available to a browser grant.
+                if (pairingRoute.kind === "exchange") {
+                  if (request.method !== "POST") {
+                    return new Response("Method Not Allowed", {
+                      status: 405,
+                      headers: corsHeaders(request),
+                    });
+                  }
+                  try {
+                    const input = parsePairingExchangeRequest(
+                      await readBoundedJsonBody(
+                        request,
+                        MAX_MANAGEMENT_HANDOFF_BODY_BYTES,
+                        "pairing exchange",
+                      ),
+                    );
+                    const result = await options.pairing.exchange(input);
+                    return jsonResponse(result, 201, corsHeaders(request));
+                  } catch (error) {
+                    return pairingErrorResponse(error, corsHeaders(request));
+                  }
+                }
+
+                if (!isLocalAuthorized(request, options.authToken)) {
+                  return new Response("Unauthorized", {
+                    status: 401,
+                    headers: corsHeaders(request),
+                  });
+                }
+
+                try {
+                  if (pairingRoute.kind === "grants") {
+                    if (request.method === "POST") {
+                      const input = parsePairingIssueRequest(
+                        await readBoundedJsonBody(
+                          request,
+                          MAX_MANAGEMENT_HANDOFF_BODY_BYTES,
+                          "pairing grant",
+                        ),
+                      );
+                      const result = await options.pairing.issue(input);
+                      return jsonResponse(result, 201, corsHeaders(request));
+                    }
+                    if (request.method === "GET") {
+                      const workspaceId = optionalPairingWorkspaceId(
+                        url.searchParams.get("workspaceId"),
+                      );
+                      const includeInactive = parsePairingIncludeInactive(url.searchParams);
+                      const records = await options.pairing.list(workspaceId, includeInactive);
+                      return jsonResponse({ grants: records }, 200, corsHeaders(request));
+                    }
+                  }
+
+                  if (pairingRoute.kind === "grant") {
+                    if (request.method !== "DELETE") {
+                      return new Response("Method Not Allowed", {
+                        status: 405,
+                        headers: corsHeaders(request),
+                      });
+                    }
+                    const workspaceId = optionalPairingWorkspaceId(
+                      url.searchParams.get("workspaceId"),
+                    );
+                    const removed = await options.pairing.revoke(pairingRoute.id, workspaceId);
+                    return removed
+                      ? new Response(null, { status: 204, headers: corsHeaders(request) })
+                      : jsonResponse(
+                          { error: "grant-not-found", message: "Pairing grant was not found" },
+                          404,
+                          corsHeaders(request),
+                        );
+                  }
+
+                  return new Response("Method Not Allowed", {
+                    status: 405,
+                    headers: corsHeaders(request),
+                  });
+                } catch (error) {
+                  return pairingErrorResponse(error, corsHeaders(request));
+                }
               }
 
               const managementRoute = parseManagementCredentialPath(url);
@@ -903,6 +1018,46 @@ type ManagementCredentialRoute =
   | { kind: "browser-challenge" }
   | { kind: "browser-exchange" }
   | { kind: "invalid"; message: string };
+
+type PairingRoute =
+  | { kind: "grants" }
+  | { kind: "grant"; id: string }
+  | { kind: "exchange" }
+  | { kind: "invalid"; message: string };
+
+function parsePairingPath(url: URL): PairingRoute | null {
+  if (url.pathname === CONTROL_PLANE_PAIRING_EXCHANGE_PATH) {
+    return url.search
+      ? { kind: "invalid", message: "The pairing exchange does not accept query parameters" }
+      : { kind: "exchange" };
+  }
+  if (url.pathname === CONTROL_PLANE_PAIRING_GRANTS_PATH) {
+    if (url.searchParams.has("includeInactive")) {
+      const value = url.searchParams.get("includeInactive");
+      if (value !== "true" && value !== "false") {
+        return { kind: "invalid", message: "includeInactive must be true or false" };
+      }
+    }
+    for (const key of url.searchParams.keys()) {
+      if (key !== "workspaceId" && key !== "includeInactive") {
+        return { kind: "invalid", message: "Unsupported pairing grants query parameter" };
+      }
+    }
+    return { kind: "grants" };
+  }
+  if (url.pathname.startsWith(`${CONTROL_PLANE_PAIRING_GRANTS_PATH}/`)) {
+    if (url.searchParams.size > 1 || (url.searchParams.size === 1 && !url.searchParams.has("workspaceId"))) {
+      return { kind: "invalid", message: "Only workspaceId is supported for grant revocation" };
+    }
+    const rawId = url.pathname.slice(`${CONTROL_PLANE_PAIRING_GRANTS_PATH}/`.length);
+    const id = decodePathPart(rawId);
+    if (!id || id.includes("/")) {
+      return { kind: "invalid", message: "The pairing grant endpoint requires one grant ID" };
+    }
+    return { kind: "grant", id };
+  }
+  return null;
+}
 
 function parseManagementCredentialPath(url: URL): ManagementCredentialRoute | null {
   if (url.pathname === MANAGEMENT_CREDENTIAL_HANDOFF_PATH) {
@@ -2235,6 +2390,71 @@ function sanitizeControlError(error: unknown): string {
 
 const MAX_BRIDGE_LEASE_METADATA_BYTES = 16 * 1024;
 const MAX_MANAGEMENT_HANDOFF_BODY_BYTES = 4 * 1024;
+
+function parsePairingIssueRequest(value: unknown): PairingGrantIssueRequest {
+  const parsed = PairingGrantIssueRequestSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new PairingGrantError("Pairing grant request is invalid", "PAIRING_GRANT_INVALID_INPUT");
+  }
+  return parsed.data;
+}
+
+function parsePairingExchangeRequest(value: unknown): PairingGrantExchangeRequest {
+  const parsed = PairingGrantExchangeRequestSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new PairingGrantError(
+      "Pairing exchange request is invalid",
+      "PAIRING_GRANT_INVALID_INPUT",
+    );
+  }
+  return parsed.data;
+}
+
+function optionalPairingWorkspaceId(value: string | null): string | undefined {
+  if (value === null || value.length === 0) return undefined;
+  if (!isValidWorkspaceId(value)) {
+    throw new PairingGrantError("Pairing workspace ID is invalid", "PAIRING_GRANT_INVALID_INPUT");
+  }
+  return value;
+}
+
+function parsePairingIncludeInactive(search: URLSearchParams): boolean {
+  return search.get("includeInactive") === "true";
+}
+
+function pairingErrorResponse(
+  error: unknown,
+  headers: Record<string, string>,
+): Response {
+  if (error instanceof RequestBodyLimitError) {
+    return jsonResponse(
+      { error: "request-too-large", message: "Pairing request body is too large" },
+      413,
+      headers,
+    );
+  }
+  if (error instanceof PairingGrantError) {
+    const status =
+      error.code === "PAIRING_GRANT_NOT_FOUND" ||
+      error.code === "PAIRING_GRANT_EXPIRED" ||
+      error.code === "PAIRING_GRANT_REVOKED" ||
+      error.code === "PAIRING_GRANT_CONSUMED"
+        ? 404
+        : error.code === "PAIRING_GRANT_CAPACITY_REACHED"
+          ? 429
+          : 400;
+    return jsonResponse(
+      { error: error.code.toLowerCase(), message: sanitizeControlError(error) },
+      status,
+      headers,
+    );
+  }
+  return jsonResponse(
+    { error: "pairing-failed", message: sanitizeControlError(error) },
+    500,
+    headers,
+  );
+}
 
 async function readBridgeLeaseMetadata(request: Request): Promise<BridgeLeaseMetadata | undefined> {
   const value = await readBoundedJsonBody(

@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { MANAGEMENT_CREDENTIAL_SCOPE } from "./management-credentials.js";
+import {
+  MANAGEMENT_CREDENTIAL_SCOPE,
+  type ManagementCredentialGrant,
+} from "./management-credentials.js";
 import { CONTROL_PLANE_PATH } from "./paths.js";
 
 /**
@@ -13,9 +16,9 @@ import { CONTROL_PLANE_PATH } from "./paths.js";
 export const PAIRING_PROTOCOL_VERSION = "1" as const;
 
 /**
- * Reserved paths for the later HTTP pairing implementation. This phase only
- * defines the contract and local store; the transport does not mount these
- * routes yet.
+ * Versioned paths for the browser-to-daemon pairing exchange. Grant issuance
+ * and revocation remain local-authenticated; exchange is authenticated by the
+ * one-time grant and challenge.
  */
 export const CONTROL_PLANE_PAIRING_PATH = `${CONTROL_PLANE_PATH}/pairing` as const;
 export const CONTROL_PLANE_PAIRING_GRANTS_PATH =
@@ -57,6 +60,8 @@ export interface PairingGrantContext {
   profileId: string;
   /** Runtime instance identity; a daemon restart invalidates old grants. */
   instanceId: string;
+  /** Optional workspace claim for a multi-workspace daemon host. */
+  workspaceId?: string;
 }
 
 export interface PairingChallenge {
@@ -105,9 +110,9 @@ export interface PairingGrantExchangeInput extends PairingGrantContext {
 }
 
 /**
- * Internal authorization produced by a successful exchange. A later phase
- * uses this to mint a separate management credential. It intentionally has no
- * localAuthToken or other daemon bearer material.
+ * Internal authorization produced by a successful exchange. The pairing
+ * control uses this to mint a separate management credential. It intentionally
+ * has no localAuthToken or other daemon bearer material.
  */
 export interface ConsumedPairingGrant extends PairingGrantContext {
   protocolVersion: typeof PAIRING_PROTOCOL_VERSION;
@@ -119,30 +124,113 @@ export interface ConsumedPairingGrant extends PairingGrantContext {
   consumedAt: string;
 }
 
+/** Local-authenticated HTTP request to issue a grant; the daemon supplies the context. */
+export interface PairingGrantIssueRequest {
+  protocolVersion: typeof PAIRING_PROTOCOL_VERSION;
+  scopes?: PairingScope[];
+  subject?: string;
+  label?: string;
+  ttlMs?: number;
+  /** Required when a host has more than one registered workspace. */
+  workspaceId?: string;
+}
+
 export interface PairingGrantExchangeRequest {
   protocolVersion: typeof PAIRING_PROTOCOL_VERSION;
   grant: string;
   challengeId: string;
   nonce: string;
+  /** Required when a host has more than one registered workspace. */
+  workspaceId?: string;
 }
 
 /**
- * The exchange response is an authorization decision, not a steady-state
- * session credential. The future management-credential phase will add a
- * separately scoped token here without ever returning localAuthToken.
+ * The exchange response is an authorization decision plus, for the management
+ * scope, a separately scoped short-lived token. It never returns localAuthToken.
  */
 export interface PairingGrantExchangeResponse extends ConsumedPairingGrant {
   accepted: true;
+  /** Fresh browser credential; the daemon root token is never returned. */
+  management?: ManagementCredentialGrant;
 }
 
-/** Serialize a successful internal authorization for the future HTTP route. */
+/** Serialize a successful internal authorization for the HTTP exchange route. */
 export function toPairingGrantExchangeResponse(
   grant: ConsumedPairingGrant,
+  management?: ManagementCredentialGrant,
 ): PairingGrantExchangeResponse {
   return {
     accepted: true,
     ...grant,
     scopes: [...grant.scopes],
+    ...(management ? { management } : {}),
+  };
+}
+
+/** Transport-facing pairing adapter. The CLI binds this to its host registry. */
+export interface PairingControl {
+  issue: (
+    input: PairingGrantIssueRequest,
+  ) => IssuedPairingGrant | Promise<IssuedPairingGrant>;
+  list: (
+    workspaceId: string | undefined,
+    includeInactive: boolean,
+  ) => PairingGrantRecord[] | Promise<PairingGrantRecord[]>;
+  revoke: (
+    id: string,
+    workspaceId: string | undefined,
+  ) => boolean | Promise<boolean>;
+  exchange: (
+    input: PairingGrantExchangeRequest,
+  ) => PairingGrantExchangeResponse | Promise<PairingGrantExchangeResponse>;
+}
+
+export interface PairingControlOptions {
+  grants: PairingGrantStore;
+  /**
+   * Bind a request's optional workspace claim to this daemon's profile and
+   * instance. Returns null when the workspace is not registered here.
+   */
+  resolveContext: (workspaceId: string | undefined) => PairingGrantContext | null;
+  /** Mint the browser credential returned for grants with the management scope. */
+  issueManagementCredential?: (workspaceId: string | undefined) => ManagementCredentialGrant;
+}
+
+/** Bind a grant store to the daemon's host registry for the HTTP transport. */
+export function createPairingControl(options: PairingControlOptions): PairingControl {
+  const { grants, resolveContext, issueManagementCredential } = options;
+  return {
+    issue: (input) => {
+      const context = resolveContext(input.workspaceId);
+      if (!context) {
+        throw new PairingGrantInputError("Pairing workspace is not registered with this daemon");
+      }
+      const { protocolVersion: _version, workspaceId: _workspaceId, ...grant } = input;
+      return grants.issue({ ...grant, ...context });
+    },
+    list: (workspaceId, includeInactive) => {
+      const context = resolveContext(workspaceId);
+      return context ? grants.list(context, { includeInactive }) : [];
+    },
+    revoke: (id, workspaceId) => {
+      const context = resolveContext(workspaceId);
+      return context ? grants.revoke(id, context) : false;
+    },
+    exchange: (input) => {
+      // Unauthenticated route: an unknown workspace looks like an unknown grant.
+      const context = resolveContext(input.workspaceId);
+      if (!context) throw new PairingGrantNotFoundError();
+      const consumed = grants.consume({
+        ...context,
+        credential: input.grant,
+        challengeId: input.challengeId,
+        nonce: input.nonce,
+      });
+      const management = consumed.scopes.includes(MANAGEMENT_CREDENTIAL_SCOPE)
+        ? issueManagementCredential?.(consumed.workspaceId)
+        : undefined;
+      return toPairingGrantExchangeResponse(consumed, management);
+    },
   };
 }
 
@@ -353,6 +441,7 @@ export class PairingGrantStore {
       protocolVersion: PAIRING_PROTOCOL_VERSION,
       profileId: record.profileId,
       instanceId: record.instanceId,
+      ...(record.workspaceId === undefined ? {} : { workspaceId: record.workspaceId }),
       grantId: record.id,
       scopes: [...record.scopes],
       subject: record.subject,
@@ -451,6 +540,7 @@ export const PairingGrantContextSchema = z
   .object({
     profileId: z.string().min(1).max(256),
     instanceId: z.string().min(1).max(256),
+    workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
   })
   .strict();
 
@@ -468,6 +558,7 @@ export const PairingGrantRecordSchema = z
     protocolVersion: z.literal(PAIRING_PROTOCOL_VERSION),
     profileId: z.string().min(1).max(256),
     instanceId: z.string().min(1).max(256),
+    workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
     id: z.string().uuid(),
     scopes: z.array(PairingScopeSchema).min(1),
     subject: z.string().min(1).max(256),
@@ -499,6 +590,7 @@ export const PairingGrantIssueRequestSchema = z
       .min(MIN_PAIRING_GRANT_TTL_MS)
       .max(MAX_PAIRING_GRANT_TTL_MS)
       .optional(),
+    workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
   })
   .strict();
 
@@ -508,6 +600,7 @@ export const PairingGrantExchangeRequestSchema = z
     grant: z.string().min(1).max(256),
     challengeId: z.string().uuid(),
     nonce: z.string().min(1).max(256),
+    workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
   })
   .strict();
 
@@ -517,12 +610,23 @@ export const PairingGrantExchangeResponseSchema = z
     protocolVersion: z.literal(PAIRING_PROTOCOL_VERSION),
     profileId: z.string().min(1).max(256),
     instanceId: z.string().min(1).max(256),
+    workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
     grantId: z.string().uuid(),
     scopes: z.array(PairingScopeSchema).min(1),
     subject: z.string().min(1).max(256),
     label: z.string().min(1).max(256).optional(),
     expiresAt: z.string().datetime({ offset: true }),
     consumedAt: z.string().datetime({ offset: true }),
+    management: z
+      .object({
+        token: z.string().min(1).max(256),
+        expiresAt: z.string().datetime({ offset: true }),
+        scope: z.literal(MANAGEMENT_CREDENTIAL_SCOPE),
+        authority: z.enum(["workspace", "host"]),
+        workspaceId: z.string().regex(/^[a-z0-9-]{1,256}$/i).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -530,9 +634,14 @@ function validateContext(input: PairingGrantContext): PairingGrantContext {
   if (!input || typeof input !== "object") {
     throw new PairingGrantInputError("Pairing grant profile and instance are required");
   }
+  const workspaceId = input.workspaceId;
+  if (workspaceId !== undefined && !/^[a-z0-9-]{1,256}$/i.test(workspaceId)) {
+    throw new PairingGrantInputError("Pairing workspace ID is invalid");
+  }
   return {
     profileId: normalizeLabel(input.profileId, "profile id"),
     instanceId: normalizeLabel(input.instanceId, "instance id"),
+    ...(workspaceId ? { workspaceId } : {}),
   };
 }
 
@@ -609,7 +718,11 @@ function digestSecret(secret: string): string {
 }
 
 function sameContext(left: PairingGrantContext, right: PairingGrantContext): boolean {
-  return left.profileId === right.profileId && left.instanceId === right.instanceId;
+  return (
+    left.profileId === right.profileId &&
+    left.instanceId === right.instanceId &&
+    left.workspaceId === right.workspaceId
+  );
 }
 
 function toPublicRecord(record: StoredPairingGrant): PairingGrantRecord {
@@ -617,6 +730,7 @@ function toPublicRecord(record: StoredPairingGrant): PairingGrantRecord {
     protocolVersion: PAIRING_PROTOCOL_VERSION,
     profileId: record.profileId,
     instanceId: record.instanceId,
+    ...(record.workspaceId === undefined ? {} : { workspaceId: record.workspaceId }),
     id: record.id,
     scopes: [...record.scopes],
     subject: record.subject,
