@@ -5,11 +5,12 @@ description: Security model for pairing a hosted RouterMCP console with a local 
 
 # Device Pairing Contract
 
-The hosted RouterMCP console will eventually connect directly to a daemon on
-the same machine. Device pairing is the planned bridge between the hosted
-origin (`https://cli.routermcp.com`) and that loopback control plane. This
-phase defines the contract and process-local grant store; it does not mount
-pairing routes, mint a browser credential, or bundle web code into the CLI.
+The hosted RouterMCP console connects directly to a daemon on the same
+machine. Device pairing is the bridge between the hosted origin
+(`https://cli.routermcp.com`) and that loopback control plane. The daemon
+mounts the pairing routes on its authenticated HTTP transport and mints a
+separate browser management credential on a successful exchange. It does not
+bundle web code into the CLI.
 
 ## Security boundary
 
@@ -17,17 +18,20 @@ The managed daemon's `localAuthToken` protects its internal MCP, health, and
 control-plane requests. It is private runtime state and must never be printed,
 placed in a pairing URL, returned by an API, or handed to the browser.
 
-Pairing uses a different, short-lived one-time grant. After a valid exchange,
-a later implementation will mint a separate scoped management credential for
-the browser. The grant exchange result in this phase is only an authorization
-decision and contains no bearer credential.
+Pairing uses a different, short-lived one-time grant. A valid exchange for a
+grant with the `management` scope returns a fresh, short-lived management
+credential for the browser in the `management` field. The daemon root token is
+never part of the response.
 
 The grant is bound to both:
 
 - the daemon profile (`profileId`), so a token cannot cross configuration
   profiles; and
 - the daemon instance (`instanceId`), so a restart invalidates grants issued by
-  the previous process.
+  the previous process; and
+- on a multi-workspace host, the workspace (`workspaceId`), so a grant issued
+  for one workspace cannot be listed, revoked, or exchanged under another.
+  Requests without `workspaceId` use the daemon's current workspace.
 
 ## Protocol
 
@@ -35,11 +39,25 @@ The contract is versioned independently from the daemon runtime protocol:
 
 ```text
 PAIRING_PROTOCOL_VERSION = 1
-POST /api/v1/pairing/exchange       (reserved; not mounted yet)
-POST /api/v1/pairing/grants         (reserved; issuance is CLI-owned)
-GET  /api/v1/pairing/grants         (reserved; metadata only)
-DELETE /api/v1/pairing/grants/:id   (reserved; revocation)
+POST   /api/v1/pairing/exchange      (grant + challenge; no bearer token)
+POST   /api/v1/pairing/grants        (root token; issue a grant)
+GET    /api/v1/pairing/grants        (root token; metadata only)
+DELETE /api/v1/pairing/grants/:id    (root token; revoke a pending grant)
 ```
+
+Issuance, listing, and revocation require the daemon's private root token, so
+only a local process that can read the runtime manifest can create grants.
+The exchange is the only unauthenticated pairing route: possession of the
+one-time grant and its challenge is the credential. The routes are not mounted
+at all when the daemon runs without an auth token. `GET` accepts
+`includeInactive=true|false` and `workspaceId`; `DELETE` accepts only
+`workspaceId`; the exchange accepts no query parameters. Request bodies are
+limited to 4 KiB.
+
+Errors use stable codes: unknown, expired, revoked, and already-consumed grants
+return `404` (an unknown workspace on exchange is indistinguishable from an
+unknown grant), a full grant store returns `429`, and invalid input or a
+challenge mismatch returns `400`.
 
 An issuer creates a grant with an explicit scope set and receives the opaque
 credential exactly once. It also receives a separate high-entropy challenge
@@ -103,12 +121,11 @@ design is finalized.
 
 ## Deferred work
 
-The next implementation phases should add, in order:
+The remaining phases should add, in order:
 
-1. a separately stored/rotated management credential and authenticated route
-   middleware that maps scopes to the existing control-plane endpoints;
-2. CLI issuance and hosted-console exchange wiring, including fragment cleanup,
-   exact-origin CORS, and rate limits; and
+1. a CLI command that issues a grant and opens the hosted console with the
+   pairing link, plus hosted-console exchange wiring with fragment cleanup;
+2. rate limits on the unauthenticated exchange route; and
 3. peer management models/routes plus a UI that requests `peering:*` scopes
    explicitly and supports revocation and expiry states.
 
