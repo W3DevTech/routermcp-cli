@@ -137,6 +137,43 @@ See the [examples/](./docs/examples/) folder for complete working configurations
 routermcp --help
 ```
 
+## Development
+
+RouterMCP is written in TypeScript and runs on [Bun](https://bun.sh).
+
+```bash
+git clone https://github.com/W3DevTech/routermcp-cli.git
+cd routermcp-cli
+bun install
+
+bun run dev            # Run the CLI in watch mode
+bun run typecheck      # Type-check
+bun run test:run       # Unit, integration and e2e tests
+bun run build          # Bundle to dist/index.js
+```
+
+Bug reports and pull requests are welcome on
+[GitHub](https://github.com/W3DevTech/routermcp-cli/issues). If your change
+adds or upgrades a dependency, run `bun run notices` and commit the updated
+`THIRD_PARTY_NOTICES.md`.
+
+`src/core/search/` is generated from RouterMCP's hosted search package so the
+CLI and the hosted service rank tools identically. Do not edit those files by
+hand. `bun run search:verify` checks them in CI; regenerating them with
+`bun run search:sync` needs access to the source repository and is done by the
+maintainers.
+
+## Telemetry
+
+RouterMCP sends anonymous, redacted error reports when the CLI crashes. See
+[telemetry](./docs/commands/telemetry.md) for exactly what is sent. Opt out with
+`routermcp telemetry disable` or by setting `DO_NOT_TRACK=1`.
+
 ## License
 
-MIT
+[MIT](./LICENSE) © Ashutosh Kumar. Bundled dependencies are listed with their
+licenses in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+RouterMCP is an independent project and is not affiliated with or endorsed by
+Anthropic, Cursor, Cloudflare or ngrok. Product names are trademarks of their
+respective owners.

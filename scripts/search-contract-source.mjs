@@ -1,3 +1,6 @@
+// Maintainer-only: `search:sync` regenerates src/core/search/ from the private
+// RouterMCP monorepo and requires access to it. `search:verify` and the tests
+// run without that access.
 import { execFileSync } from "node:child_process";
 
 export const SEARCH_CONTRACT_SOURCE_REPOSITORY = "https://github.com/W3DevTech/routermcp.git";
