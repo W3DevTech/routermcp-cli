@@ -9,6 +9,12 @@
   "bin": {
     "routermcp": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
     "link": "bun install --global file:$(pwd)",
     "link:opencode": "bun run build && bun link && cd ~/.config/opencode && bun link routermcp && cd - > /dev/null",
@@ -37,13 +43,19 @@
     "router",
     "aggregator"
   ],
-  "author": "Ashutosh Kumar",
+  "author": {
+    "name": "Ashutosh Kumar",
+    "url": "https://ashutoshanand.com"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aistackhq/routermcp"
+    "url": "git+https://github.com/W3DevTech/routermcp-cli.git"
   },
-  "homepage": "https://ashutoshanand.com",
+  "bugs": {
+    "url": "https://github.com/W3DevTech/routermcp-cli/issues"
+  },
+  "homepage": "https://github.com/W3DevTech/routermcp-cli#readme",
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
     "@clack/prompts": "^0.11.0",
