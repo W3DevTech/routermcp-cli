@@ -24,6 +24,7 @@ interface PackageJson {
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 }
 
 interface Notice {
@@ -99,11 +100,16 @@ function collectNotices(): Notice[] {
       texts,
     });
 
-    for (const dep of Object.keys({
-      ...pkg.dependencies,
-      ...pkg.optionalDependencies,
-      ...pkg.peerDependencies,
-    })) {
+    // Optional peers are only present if something else installed them, so
+    // following them would make the output depend on the local node_modules.
+    const requiredPeers = Object.keys(pkg.peerDependencies ?? {}).filter(
+      (peer) => !pkg.peerDependenciesMeta?.[peer]?.optional,
+    );
+    for (const dep of new Set([
+      ...Object.keys(pkg.dependencies ?? {}),
+      ...Object.keys(pkg.optionalDependencies ?? {}),
+      ...requiredPeers,
+    ])) {
       queue.push({ name: dep, from: dir });
     }
   }
