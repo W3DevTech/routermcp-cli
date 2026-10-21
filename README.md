@@ -1,4 +1,3 @@
-<!-- Specific for npmjs, the Github version is at .github/README.md -->
 # RouterMCP
 
 A powerful CLI MCP Gateway that aggregates multiple upstream MCP servers into a single unified interface with comprehensive filtering, Code Mode, and session management.

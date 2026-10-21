@@ -10,3 +10,19 @@ dist/
 .history/
 .mcp.json
 debug/*
+
+# Generated test output
+coverage/
+
+# Local planning notes and backups
+tasks/
+*.bkp
+*.bkp.*
+
+# Local agent and editor configuration
+.claude/
+.cursor/
+opencode.jsonc
+CLAUDE.md
+AGENTS.md
+.github/copilot-instructions.md
