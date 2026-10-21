@@ -13,8 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title for WIP
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
           if echo "$PR_TITLE" | grep -qi "WIP"; then
             echo "::error::PR title contains 'WIP'. Please remove 'WIP' from the title when ready for review."
             exit 1
