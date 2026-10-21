@@ -33,6 +33,8 @@
     "test:coverage": "vitest run --coverage",
     "search:sync": "node scripts/sync-search-contract.mjs",
     "search:verify": "node scripts/verify-search-contract.mjs",
+    "notices": "bun run scripts/generate-third-party-notices.ts",
+    "notices:check": "bun run scripts/generate-third-party-notices.ts --check",
     "debug:opencode": "OPENCODE_CONFIG_DIR=./debug/opencode opencode"
   },
   "keywords": [

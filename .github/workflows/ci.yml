@@ -45,6 +45,9 @@ jobs:
       - name: Verify portable search contract
         run: bun run search:verify
 
+      - name: Verify third-party notices
+        run: bun run notices:check
+
       - name: Typecheck
         run: bun run typecheck
 
