@@ -171,7 +171,7 @@ RouterMCP sends anonymous, redacted error reports when the CLI crashes. See
 
 ## License
 
-[MIT](./LICENSE) © Ashutosh Kumar. Bundled dependencies are listed with their
+[MIT](./LICENSE) © W3 Dev. Bundled dependencies are listed with their
 licenses in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 RouterMCP is an independent project and is not affiliated with or endorsed by
